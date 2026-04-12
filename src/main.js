@@ -1,4 +1,5 @@
 import { parseVsdx } from './vsdx-parser.js';
+import { parseVsd } from './vsd-parser.js';
 import { renderPage } from './svg-renderer.js';
 
 const dropZone = document.getElementById('drop-zone');
@@ -146,14 +147,15 @@ function resetView() {
 }
 
 async function loadFile(file) {
-  if (!file.name.toLowerCase().endsWith('.vsdx')) {
-    showError('Please select a .vsdx file');
+  const name = file.name.toLowerCase();
+  if (!name.endsWith('.vsdx') && !name.endsWith('.vsd')) {
+    showError('Please select a .vsd or .vsdx file');
     return;
   }
   try {
     fileName.textContent = file.name;
     const buffer = await file.arrayBuffer();
-    const result = await parseVsdx(buffer);
+    const result = name.endsWith('.vsd') ? await parseVsd(buffer) : await parseVsdx(buffer);
     currentPages = result.pages;
     // Default to first foreground page
     const firstFg = currentPages.findIndex(p => !p.isBackground);
