@@ -288,6 +288,12 @@ function parseShape(shapeEl, masters) {
     }
   }
 
+  // Layer membership - can be a single index or semicolon-separated list
+  const layerMemberRaw = getCellValue(shapeEl, 'LayerMember') ?? (masterShape ? getCellValue(masterShape.el, 'LayerMember') : null);
+  const layerMembers = layerMemberRaw
+    ? layerMemberRaw.split(';').map(s => s.trim()).filter(Boolean)
+    : [];
+
   // Geometry - merge shape geometry with master geometry
   const geometry = mergeGeometry(masterShape?.el ?? null, shapeEl);
 
@@ -328,7 +334,8 @@ function parseShape(shapeEl, masters) {
     italic,
     geometry,
     subShapes,
-    text
+    text,
+    layerMembers
   };
 }
 
@@ -433,6 +440,25 @@ export async function parseVsdx(arrayBuffer) {
     // Get background page reference
     const backPage = pageSheet ? getCellValue(pageSheet, 'BackPage') : null;
 
+    // Parse layers from PageSheet
+    const layers = [];
+    if (pageSheet) {
+      const layerSections = getDirectChildren(pageSheet, 'Section').filter(s => s.getAttribute('N') === 'Layer');
+      if (layerSections.length > 0) {
+        const layerRows = getDirectChildren(layerSections[0], 'Row');
+        for (const row of layerRows) {
+          const ix = row.getAttribute('IX');
+          const name = getCellValue(row, 'Name') || getCellValue(row, 'NameUniv') || `Layer ${ix}`;
+          const visible = getCellValue(row, 'Visible');
+          layers.push({
+            index: ix,
+            name,
+            visible: visible !== '0'
+          });
+        }
+      }
+    }
+
     const relEl = byTag(pageEl, 'Rel')[0];
     const rId = relEl ? (relEl.getAttribute('r:id') || relEl.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id')) : null;
     const target = rId ? pagesRels[rId] : null;
@@ -473,6 +499,7 @@ export async function parseVsdx(arrayBuffer) {
       height: pageHeight || 11,
       isBackground,
       backPage,
+      layers,
       shapes,
       connects
     });

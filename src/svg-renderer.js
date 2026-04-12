@@ -222,6 +222,11 @@ function getDashArray(linePattern, lineWeight) {
 function renderShape(shape, svgNS, pageHeight, defs, arrowCounter) {
   const g = document.createElementNS(svgNS, 'g');
 
+  // Tag with layer membership for visibility toggling
+  if (shape.layerMembers && shape.layerMembers.length > 0) {
+    g.setAttribute('data-layers', shape.layerMembers.join(','));
+  }
+
   // Calculate transform
   // Visio: shape positioned by PinX,PinY (in page coords), LocPinX,LocPinY is the pin within the shape
   const px = inToPx(shape.pinX);

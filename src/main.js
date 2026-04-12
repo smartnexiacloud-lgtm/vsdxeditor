@@ -9,6 +9,8 @@ const svgContainer = document.getElementById('svg-container');
 const zoomInfo = document.getElementById('zoom-info');
 const fileName = document.getElementById('file-name');
 const errorBox = document.getElementById('error-box');
+const layersSidebar = document.getElementById('layers-sidebar');
+const layersList = document.getElementById('layers-list');
 
 let currentPages = [];
 let currentPageIndex = 0;
@@ -16,6 +18,7 @@ let zoom = 1;
 let panX = 0, panY = 0;
 let isPanning = false;
 let panStartX, panStartY;
+let hiddenLayers = new Set();
 
 function showError(msg) {
   errorBox.textContent = msg;
@@ -61,11 +64,78 @@ function buildPageTabs() {
     btn.addEventListener('click', () => {
       currentPageIndex = currentPages.indexOf(page);
       buildPageTabs();
+      hiddenLayers = new Set();
+      buildLayersSidebar();
       resetView();
       renderCurrentPage();
     });
     pageTabs.appendChild(btn);
   });
+}
+
+function buildLayersSidebar() {
+  layersList.innerHTML = '';
+  if (!currentPages.length) return;
+  const page = currentPages[currentPageIndex];
+  const layers = page.layers || [];
+
+  if (layers.length === 0) {
+    // Collect implicit layers from shapes that have layerMembers
+    // but no layer definitions (shouldn't happen, but handle gracefully)
+    layersSidebar.classList.remove('visible');
+    document.getElementById('btn-layers').classList.remove('active');
+    return;
+  }
+
+  for (const layer of layers) {
+    const item = document.createElement('div');
+    item.className = 'layer-item';
+    if (hiddenLayers.has(layer.index)) item.classList.add('disabled');
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = !hiddenLayers.has(layer.index);
+    checkbox.id = `layer-cb-${layer.index}`;
+
+    const label = document.createElement('label');
+    label.textContent = layer.name;
+    label.setAttribute('for', checkbox.id);
+    label.title = layer.name;
+
+    checkbox.addEventListener('change', () => {
+      if (checkbox.checked) {
+        hiddenLayers.delete(layer.index);
+        item.classList.remove('disabled');
+      } else {
+        hiddenLayers.add(layer.index);
+        item.classList.add('disabled');
+      }
+      applyLayerVisibility();
+    });
+
+    item.addEventListener('click', (e) => {
+      if (e.target !== checkbox) {
+        checkbox.checked = !checkbox.checked;
+        checkbox.dispatchEvent(new Event('change'));
+      }
+    });
+
+    item.appendChild(checkbox);
+    item.appendChild(label);
+    layersList.appendChild(item);
+  }
+}
+
+function applyLayerVisibility() {
+  const svg = svgContainer.querySelector('svg');
+  if (!svg) return;
+  const groups = svg.querySelectorAll('g[data-layers]');
+  for (const g of groups) {
+    const shapeLayers = g.getAttribute('data-layers').split(',');
+    // Hide if ALL of the shape's layers are hidden
+    const allHidden = shapeLayers.every(l => hiddenLayers.has(l));
+    g.style.display = allHidden ? 'none' : '';
+  }
 }
 
 function resetView() {
@@ -90,6 +160,8 @@ async function loadFile(file) {
     currentPageIndex = firstFg >= 0 ? firstFg : 0;
     showViewer();
     buildPageTabs();
+    hiddenLayers = new Set();
+    buildLayersSidebar();
     resetView();
     renderCurrentPage();
   } catch (e) {
@@ -174,6 +246,11 @@ document.getElementById('btn-zoom-fit').addEventListener('click', () => {
 });
 document.getElementById('btn-open').addEventListener('click', () => {
   fileInput.click();
+});
+document.getElementById('btn-layers').addEventListener('click', () => {
+  const btn = document.getElementById('btn-layers');
+  layersSidebar.classList.toggle('visible');
+  btn.classList.toggle('active');
 });
 
 // Export SVG

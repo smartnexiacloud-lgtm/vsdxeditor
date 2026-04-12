@@ -118,6 +118,76 @@
       font-weight: 600;
     }
 
+    /* Main content area: sidebar + viewport */
+    #content-area {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* Layers sidebar */
+    #layers-sidebar {
+      width: 220px;
+      min-width: 220px;
+      background: #16213e;
+      border-right: 1px solid #0f3460;
+      display: none;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #layers-sidebar.visible {
+      display: flex;
+    }
+    .sidebar-header {
+      padding: 10px 12px;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #8888aa;
+      border-bottom: 1px solid #0f3460;
+      flex-shrink: 0;
+    }
+    #layers-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 4px 0;
+    }
+    .layer-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      cursor: pointer;
+      transition: background 0.1s;
+      user-select: none;
+      font-size: 13px;
+    }
+    .layer-item:hover {
+      background: rgba(83, 52, 131, 0.25);
+    }
+    .layer-item input[type="checkbox"] {
+      accent-color: #e94560;
+      width: 15px;
+      height: 15px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .layer-item label {
+      cursor: pointer;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .layer-item.disabled label {
+      opacity: 0.4;
+      text-decoration: line-through;
+    }
+    .toolbar button.active {
+      background: #533483;
+      border-color: #7b52b9;
+    }
+
     /* Viewport */
     #viewport {
       flex: 1;
@@ -173,12 +243,19 @@
       <button id="btn-zoom-in">+</button>
       <button id="btn-zoom-out">&minus;</button>
       <button id="btn-zoom-fit">Fit</button>
+      <button id="btn-layers">Layers</button>
       <button id="btn-export">Export SVG</button>
       <span id="zoom-info">100%</span>
     </div>
     <div id="page-tabs"></div>
-    <div id="viewport">
-      <div id="svg-container"></div>
+    <div id="content-area">
+      <div id="layers-sidebar">
+        <div class="sidebar-header">Layers</div>
+        <div id="layers-list"></div>
+      </div>
+      <div id="viewport">
+        <div id="svg-container"></div>
+      </div>
     </div>
   </div>
 
