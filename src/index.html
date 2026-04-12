@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VSDX Viewer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Drop zone */
+    #drop-zone {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    #drop-zone:hover, #drop-zone.drag-over {
+      background: #16213e;
+    }
+    .drop-icon {
+      font-size: 64px;
+      margin-bottom: 20px;
+      opacity: 0.7;
+    }
+    .drop-text {
+      font-size: 22px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .drop-hint {
+      font-size: 14px;
+      opacity: 0.5;
+    }
+    #file-input { display: none; }
+
+    /* Viewer layout */
+    #viewer {
+      display: none;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    /* Toolbar */
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      background: #16213e;
+      border-bottom: 1px solid #0f3460;
+      flex-shrink: 0;
+    }
+    .toolbar button {
+      background: #0f3460;
+      color: #e0e0e0;
+      border: 1px solid #1a1a5e;
+      padding: 6px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+      transition: background 0.15s;
+    }
+    .toolbar button:hover {
+      background: #533483;
+    }
+    #file-name {
+      font-size: 14px;
+      font-weight: 600;
+      margin-left: 8px;
+      color: #e94560;
+    }
+    #zoom-info {
+      margin-left: auto;
+      font-size: 13px;
+      opacity: 0.7;
+      min-width: 50px;
+      text-align: right;
+    }
+
+    /* Page tabs */
+    #page-tabs {
+      display: flex;
+      gap: 0;
+      background: #16213e;
+      border-bottom: 1px solid #0f3460;
+      overflow-x: auto;
+      flex-shrink: 0;
+    }
+    .page-tab {
+      padding: 8px 20px;
+      background: transparent;
+      color: #e0e0e0;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      font-size: 13px;
+      white-space: nowrap;
+      transition: all 0.15s;
+    }
+    .page-tab:hover {
+      background: rgba(83, 52, 131, 0.3);
+    }
+    .page-tab.active {
+      border-bottom-color: #e94560;
+      color: #e94560;
+      font-weight: 600;
+    }
+
+    /* Viewport */
+    #viewport {
+      flex: 1;
+      overflow: hidden;
+      cursor: grab;
+      background: #2a2a4a;
+      /* Checkerboard pattern */
+      background-image:
+        linear-gradient(45deg, #252545 25%, transparent 25%),
+        linear-gradient(-45deg, #252545 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #252545 75%),
+        linear-gradient(-45deg, transparent 75%, #252545 75%);
+      background-size: 20px 20px;
+      background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+    }
+    #svg-container {
+      transform-origin: 0 0;
+      display: inline-block;
+    }
+    #svg-container svg {
+      display: block;
+      box-shadow: 0 2px 20px rgba(0,0,0,0.4);
+    }
+
+    /* Error */
+    #error-box {
+      display: none;
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #e94560;
+      color: white;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-size: 14px;
+      z-index: 1000;
+    }
+  </style>
+</head>
+<body>
+  <div id="drop-zone">
+    <div class="drop-icon">&#128196;</div>
+    <div class="drop-text">Drop a .vsdx file here</div>
+    <div class="drop-hint">or click to browse</div>
+  </div>
+  <input type="file" id="file-input" accept=".vsdx">
+
+  <div id="viewer">
+    <div class="toolbar">
+      <button id="btn-open">Open</button>
+      <span id="file-name"></span>
+      <button id="btn-zoom-in">+</button>
+      <button id="btn-zoom-out">&minus;</button>
+      <button id="btn-zoom-fit">Fit</button>
+      <button id="btn-export">Export SVG</button>
+      <span id="zoom-info">100%</span>
+    </div>
+    <div id="page-tabs"></div>
+    <div id="viewport">
+      <div id="svg-container"></div>
+    </div>
+  </div>
+
+  <div id="error-box"></div>
+
+  <script src="main.js"></script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+{
+  "name": "vsdxeditor",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build": "esbuild src/main.js --bundle --outfile=dist/main.js --format=esm --minify",
+    "postbuild": "cp src/index.html dist/index.html",
+    "dev": "esbuild src/main.js --bundle --outfile=dist/main.js --format=esm --servedir=dist --serve=8080"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "esbuild": "^0.28.0"
+  },
+  "dependencies": {
+    "jszip": "^3.10.1"
+  }
+}
