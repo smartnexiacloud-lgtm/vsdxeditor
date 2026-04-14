@@ -4,9 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "build": "esbuild src/main.js --bundle --outfile=dist/main.js --format=esm --minify",
+    "build": "esbuild src/main.js --bundle --outfile=dist/main.js --format=iife --minify",
     "postbuild": "cp src/index.html dist/index.html",
-    "dev": "esbuild src/main.js --bundle --outfile=dist/main.js --format=esm --servedir=dist --serve=8080"
+    "dev": "esbuild src/main.js --bundle --outfile=dist/main.js --format=iife --servedir=dist --serve=8080"
   },
   "keywords": [],
   "author": "",
