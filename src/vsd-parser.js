@@ -1,4 +1,5 @@
 import CFB from 'cfb';
+import { inheritFromMaster, resolveFields } from './shape-inheritance.js';
 
 // LZ77 decompression for VSD compressed streams (4096-byte sliding window)
 function decompressVsd(input) {
@@ -46,17 +47,27 @@ const VSD = {
   PAGE:               0x15,
   COLORS:             0x1A,
   FONT_LIST:          0x18,
+  STENCILS:           0x1D,
+  STENCIL_PAGE:       0x1E,
+  OLE_DATA:           0x1F,
+  PAGES:              0x27,
+  NAME_LIST_LOWER:    0x2C,   // per-shape name list (VSD_NAME_LIST)
+  NAME:               0x2D,   // per-shape name (VSD_NAME)
+  NAME_LIST_UPPER:    0x32,   // global name list (VSD_NAME_LIST2)
+  NAME2:              0x33,   // global name (VSD_NAME2)
+  PAGE_SHEET:         0x46,
   SHAPE_GROUP:        0x47,
   SHAPE_SHAPE:        0x48,
-  SHAPE_FOREIGN:      0x4E,
   STYLE_SHEET:        0x4A,
-  PAGE_SHEET:         0x46,
+  SHAPE_FOREIGN:      0x4E,
   SHAPE_LIST:         0x65,
   FIELD_LIST:         0x66,
   PROP_LIST:          0x68,
   CHAR_LIST:          0x69,
   PARA_LIST:          0x6A,
   GEOM_LIST:          0x6C,
+  CUST_PROPS_LIST:    0x6D,
+  NAME_LIST:          0x6E,
   LAYER_LIST:         0x6F,
   LINE:               0x85,
   FILL_AND_SHADOW:    0x86,
@@ -76,18 +87,33 @@ const VSD = {
   TEXT_XFORM:         0x9C,
   XFORM_1D:           0x9D,
   PROTECTION:         0xA0,
+  TEXT_FIELD:         0xA1,
   MISC:               0xA4,
   SPLINE_START:       0xA5,
   SPLINE_KNOT:        0xA6,
   LAYER_MEMBERSHIP:   0xA7,
   LAYER:              0xA8,
   CONTROL:            0xAA,
+  USER_DEFINED_CELLS: 0xB4,
+  CUSTOM_PROPS:       0xB6,
   POLYLINE_TO:        0xC1,
   NURBS_TO:           0xC3,
   NAME_IDX:           0xC9,
-  PAGES:              0x27,
-  OLE_DATA:           0x1F,
 };
+
+// Visio TEXT_FIELD cell-type markers (from libvisio VSDDocumentStructure.h,
+// GPL-3.0 port). These are decimal in the C header; we use hex for clarity.
+const CELL_TYPE_Number              = 32;     // 0x20
+const CELL_TYPE_Date                = 40;     // 0x28
+const CELL_TYPE_Currency            = 111;    // 0x6f
+const CELL_TYPE_String              = 231;    // 0xe7
+const CELL_TYPE_StringWithoutUnit   = 232;    // 0xe8
+
+// Visio "format number" constants we know how to render. The full Visio
+// enumeration is in VSDTypes.h; we only handle the handful that the renderer
+// can produce useful strings for.
+const VSD_FIELD_FORMAT_Unknown       = 0xffff;
+const VSD_FIELD_FORMAT_MsoDateShort  = 20;
 
 // VSD11 trailer chunk types (add 4 bytes if not already 12 or 4)
 const TRAILER_4_CHUNKS = new Set([
@@ -360,35 +386,213 @@ function readText(data, dataLength) {
   r.pos = 0;
   if (dataLength <= 8) return '';
   r.skip(8); // preamble
-  const bytes = [];
-  for (let i = 8; i < dataLength; i++) {
-    bytes.push(r.readU8());
+  const payloadLen = dataLength - 8;
+  if (payloadLen <= 0) return '';
+  const bytes = new Uint8Array(payloadLen);
+  for (let i = 0; i < payloadLen; i++) {
+    bytes[i] = r.readU8();
   }
-  // VSD6 text is ANSI
-  return String.fromCharCode(...bytes.filter(b => b !== 0));
+  // Detect encoding. libvisio treats VSD text chunk payload as UTF-16LE by default
+  // (see VSDParser::readText). Some early/ANSI-only chunks contain single-byte
+  // cp1252 text. Heuristic: if length is even AND roughly half the bytes in odd
+  // positions are 0x00, treat as UTF-16LE; otherwise cp1252.
+  let isUtf16 = false;
+  if ((payloadLen % 2) === 0 && payloadLen >= 2) {
+    let zerosHigh = 0;
+    const pairs = payloadLen / 2;
+    for (let i = 1; i < payloadLen; i += 2) {
+      if (bytes[i] === 0) zerosHigh++;
+    }
+    // If most high bytes are zero, it's ASCII-range UTF-16LE.
+    // Also treat as UTF-16 if it decodes without replacement chars and
+    // cp1252 would produce mostly control-range garbage.
+    if (zerosHigh * 2 >= pairs) isUtf16 = true;
+  }
+  let decoded;
+  try {
+    if (isUtf16) {
+      decoded = new TextDecoder('utf-16le', { fatal: false }).decode(bytes);
+    } else {
+      decoded = new TextDecoder('windows-1252', { fatal: false }).decode(bytes);
+    }
+  } catch (e) {
+    decoded = String.fromCharCode(...bytes);
+  }
+  // Strip trailing NULs (string terminator) and any trailing whitespace NULs.
+  decoded = decoded.replace(/\u0000+$/g, '');
+  // VSD TEXT chunks are universally terminated with a line-feed ("paragraph end")
+  // byte even when the shape has no visible multi-line content. Drop a single
+  // trailing LF so that a shape with empty text ("\n") is reported as empty and
+  // does not produce a stray <text> element in the SVG. Multi-line text
+  // ("Line1\nLine2\n") loses only its final terminator.
+  decoded = decoded.replace(/\n$/, '');
+  return decoded;
+}
+
+// Parse a VSD_TEXT_FIELD (0xa1) chunk payload.
+//
+// Ported from libvisio VSD6Parser::readTextField (GPL-3.0, LibreOffice libvisio,
+// © the LibreOffice contributors). The payload starts with 7 reserved bytes,
+// followed by a one-byte "cell type" marker. For CELL_TYPE_StringWithoutUnit the
+// body is `s32 nameId; 6 bytes; s32 formatStringId` — a symbolic reference to a
+// name in the shape-level NAME table. For numeric / date / currency cells the
+// body is `f64 value; 2 bytes; s32 formatStringId` followed by a variable-length
+// block list; we keep the numeric value and a crude format-code.
+//
+// The returned object is consumed by shape-inheritance.resolveFields via the
+// fields[] context; shape-inheritance expects at least a .ref or .value or
+// .format key.
+function readTextField(data, dataLength) {
+  const result = { type: 'unknown', refs: [] };
+  try {
+    if (dataLength < 8) return result;
+    const u8 = data.u8;
+    const cellType = u8[7];          // VSD6 cell-type byte lives at offset 7
+    result.cellType = cellType;
+
+    if (cellType === CELL_TYPE_StringWithoutUnit || cellType === CELL_TYPE_String) {
+      // In Visio 2013+ (VSD11) TEXT_FIELD chunks pack multiple per-paragraph
+      // references side by side, each as  [0xE8 | u32 nameId | 5 reserved].
+      // Scan the whole payload; collect every nameId.
+      const refs = [];
+      for (let i = 7; i + 4 < dataLength; ) {
+        if (u8[i] === 0xE8) {
+          const v = (u8[i + 1] | (u8[i + 2] << 8) | (u8[i + 3] << 16) | (u8[i + 4] << 24)) >>> 0;
+          if (v !== 0xFFFFFFFF) refs.push(v);
+          i += 10;
+        } else {
+          i += 1;
+        }
+      }
+      result.type = 'name-ref';
+      result.refs = refs;
+      if (refs.length) result.nameId = refs[0];
+      return result;
+    }
+
+    // Numeric / date / currency — read the 8-byte value after the cell type.
+    const r = data;
+    r.pos = 8;
+    if (r.remaining < 8) return result;
+    const numericValue = r.readF64();
+    let formatNumber = VSD_FIELD_FORMAT_Unknown;
+    if (cellType === CELL_TYPE_Date) formatNumber = VSD_FIELD_FORMAT_MsoDateShort;
+
+    let displayValue = null;
+    if (cellType === CELL_TYPE_Date) {
+      if (Number.isFinite(numericValue) && numericValue > 0) {
+        try {
+          const epoch = Date.UTC(1899, 11, 30);
+          const ms = epoch + numericValue * 86400000;
+          displayValue = new Date(ms).toISOString().replace('T', ' ').slice(0, 16);
+        } catch { /* ignore */ }
+      }
+    } else if (Number.isFinite(numericValue)) {
+      displayValue = (Math.abs(numericValue - Math.round(numericValue)) < 1e-9)
+        ? String(Math.round(numericValue))
+        : String(numericValue);
+    }
+
+    result.type = cellType === CELL_TYPE_Date ? 'date' : 'numeric';
+    result.numericValue = numericValue;
+    result.formatNumber = formatNumber;
+    result.value = displayValue;
+    return result;
+  } catch {
+    return result;
+  }
+}
+
+// Expand a TEXT_FIELD "name-ref" that carries multiple nameIds into one logical
+// field entry per ref, so that each U+FFFC placeholder in the shape's TEXT
+// consumes one entry. Called at finalize time once we know the NAME table.
+function expandNameRefFields(fields, namesById) {
+  if (!fields || !fields.length) return fields;
+  const expanded = [];
+  for (const f of fields) {
+    if (f && f.type === 'name-ref' && f.refs && f.refs.length > 1) {
+      for (const id of f.refs) {
+        expanded.push({ type: 'name-ref', nameId: id, refs: [id] });
+      }
+    } else {
+      expanded.push(f);
+    }
+  }
+  return expanded;
+}
+
+// Decode a VSD_NAME / VSD_NAME2 (0x2d / 0x33) chunk payload.
+// Ported from libvisio VSDParser::readName (GPL-3.0, LibreOffice libvisio).
+// The payload is a raw UTF-16LE string; trailing NULs are stripped. The chunk's
+// record-id is used as the table key, matching libvisio's m_names / m_shape.m_names.
+function readNameChunk(chunk) {
+  try {
+    const bytes = chunk.data.u8;
+    const len = chunk.dataLength;
+    if (!len) return '';
+    // Copy to a fresh buffer because the reader's backing buffer may be shared.
+    const view = bytes.slice(0, len);
+    // UTF-16LE decode, then drop NUL terminators.
+    let s = new TextDecoder('utf-16le', { fatal: false }).decode(view);
+    s = s.replace(/\u0000+$/g, '');
+    return s;
+  } catch {
+    return '';
+  }
+}
+
+// Thin wrapper: delegate U+FFFC placeholder substitution to the shared helper.
+// We keep this named function because it's referenced from finalizeShape below.
+function spliceFieldsIntoText(text, fields, ctx) {
+  if (!text) return text;
+  const shape = { text, _fields: fields || [] };
+  return resolveFields(shape, ctx || { fields: fields || [] });
 }
 
 function readCharIx(data) {
+  // VSD6 CharIX layout (from libvisio VSDParser::readCharIX):
+  //   u32 charCount
+  //   u16 fontID
+  //   u8  colorID (skipped)
+  //   u8  r, g, b, a        -- font colour (RGBA)
+  //   u8  fontMod1           -- bit0=bold, bit1=italic, bit2=underline, bit3=smallcaps
+  //   u8  fontMod2           -- bit0=allcaps, bit1=initcaps
+  //   u8  fontMod3           -- bit0=superscript, bit1=subscript
+  //   u16 scaleWidth / 10000
+  //   skip(2)
+  //   f64 fontSize           -- units are INCHES
+  //   u8  fontMod4           -- bit0=doubleunderline, bit2=strikeout, bit5=doublestrikeout
   const r = data;
   r.pos = 0;
-  if (r.remaining < 4) return {};
-  // Skip complex character formatting, try to extract font size and color
-  // The format varies, so we do a best-effort parse
+  if (r.remaining < 26) return {};
   try {
-    r.skip(1); // cell marker
-    r.skip(2); // font index
-    const colorR = r.readU8();
-    const colorG = r.readU8();
-    const colorB = r.readU8();
-    r.skip(1); // alpha
-    r.skip(1); // cell marker
-    const style = r.readU8(); // bold/italic flags
-    const fontSize = r.readCellDouble();
+    r.skip(4);                      // charCount
+    r.skip(2);                      // fontID
+    r.skip(1);                      // colour ID
+    const cr = r.readU8();
+    const cg = r.readU8();
+    const cb = r.readU8();
+    const ca = r.readU8();
+    const fontMod1 = r.readU8();
+    r.skip(1);                      // fontMod2 (allcaps/initcaps)
+    r.skip(1);                      // fontMod3 (super/subscript)
+    r.skip(2);                      // scaleWidth u16
+    r.skip(2);                      // reserved
+    const fontSize = r.readF64();   // inches
+    const bold = (fontMod1 & 1) !== 0;
+    const italic = (fontMod1 & 2) !== 0;
+    // Treat fully transparent (a==0 with all-zero RGB) as "no colour override"
+    const isNullColour = (cr === 0 && cg === 0 && cb === 0 && ca === 0);
+    const fontColor = isNullColour
+      ? null
+      : `#${cr.toString(16).padStart(2,'0')}${cg.toString(16).padStart(2,'0')}${cb.toString(16).padStart(2,'0')}`;
+    // Guard against NaN/negative/absurd sizes
+    const validSize = Number.isFinite(fontSize) && fontSize > 0 && fontSize < 100;
     return {
-      fontColor: `#${colorR.toString(16).padStart(2,'0')}${colorG.toString(16).padStart(2,'0')}${colorB.toString(16).padStart(2,'0')}`,
-      bold: (style & 1) !== 0,
-      italic: (style & 2) !== 0,
-      fontSize: fontSize > 0 ? fontSize : null
+      fontColor,
+      bold,
+      italic,
+      fontSize: validSize ? fontSize : null
     };
   } catch {
     return {};
@@ -427,7 +631,11 @@ function readLayerMembership(data) {
     if (b === 0) break;
     bytes.push(b);
   }
-  return String.fromCharCode(...bytes);
+  // Strip any non-printable bytes; Visio stores layer membership as a
+  // semicolon-separated list of ASCII indices or names. Any control chars we
+  // pick up are scratch bytes from the chunk tail and must never flow into
+  // attribute values (which XML serializers reject).
+  return String.fromCharCode(...bytes.filter(b => b >= 0x20 && b < 0x7f));
 }
 
 function readLayer(data) {
@@ -445,24 +653,83 @@ function readLayer(data) {
   }
 }
 
-// Build shapes from flat chunk list using level-based hierarchy
-function buildShapesFromChunks(chunks) {
+// Read a SHAPE/GROUP chunk's `parent`, `master_page`, and `master_shape` fields.
+// Ported from libvisio VSDParser::readShape (GPL-3.0, LibreOffice libvisio) — the
+// layout is: u8[10] shape-kind, u32 parent, u32 _, u32 masterPage, u32 _,
+// u32 masterShape, u32 _, u32 fillStyle, u32 _, u32 lineStyle, u32 _, u32 textStyle.
+// A parent of 0 means "top-level on the page"; a masterPage of 0xFFFFFFFF
+// (MINUS_ONE) means "no master".
+function readShapeParent(chunk) {
+  try {
+    const r = chunk.data;
+    if (r.length < 14) return { parent: 0, masterPage: 0xFFFFFFFF, masterShape: 0xFFFFFFFF };
+    r.pos = 10;
+    const parent = r.readU32() >>> 0;
+    let masterPage = 0xFFFFFFFF;
+    let masterShape = 0xFFFFFFFF;
+    if (r.remaining >= 8) {
+      r.skip(4);                       // reserved dword
+      masterPage = r.readU32() >>> 0;
+    }
+    if (r.remaining >= 8) {
+      r.skip(4);                       // reserved dword
+      masterShape = r.readU32() >>> 0;
+    }
+    return { parent, masterPage, masterShape };
+  } catch {
+    return { parent: 0, masterPage: 0xFFFFFFFF, masterShape: 0xFFFFFFFF };
+  }
+}
+
+// Build shapes from flat chunk list. Uses the pointer-index (chunk.ptrIdx) as shape id
+// and the SHAPE chunk's `parent` field to attach children into their group's subShapes.
+//
+// `opts.mastersMap` — when present, shapes reference master shapes by
+//   { _masterPage, _masterShapeId }; during finalize we attach the master shape
+//   so shape-inheritance.inheritFromMaster fills in text / style.
+// `opts.isMasterStream` — when true, we are building master shapes; the caller
+//   expects the output to be keyed into a `masters` table, not `pages`.
+function buildShapesFromChunks(chunks, opts = {}) {
+  const mastersMap = opts.mastersMap;
   const pages = [];
   let currentPage = null;
   let currentShape = null;
   let currentGeometry = null;
   let shapes = [];
-  let shapeStack = [];
+  // Map from ptrIdx -> shape object, for resolving group membership on the current page.
+  let shapesById = new Map();
+  // Per-page NAME table, populated from VSD_NAME / VSD_NAME2 chunks. Used to
+  // resolve the `nameId` reference inside a TEXT_FIELD string-cell.
+  let namesById = new Map();
+
+  function attachShape(shape, parentKey) {
+    const parent = parentKey ? shapesById.get(parentKey) : null;
+    if (parent && parent !== shape) {
+      parent.subShapes.push(shape);
+    } else {
+      shapes.push(shape);
+    }
+  }
 
   for (const chunk of chunks) {
     switch (chunk.chunkType) {
       case VSD.PAGE_SHEET: {
         // Start of a new page
+        if (currentShape) {
+          finalizeShape(currentShape, currentGeometry,
+            currentPage && { name: currentPage.name, number: pages.length + 1 },
+            namesById, mastersMap, opts);
+          attachShape(currentShape, currentShape._parentKey);
+          currentShape = null;
+          currentGeometry = null;
+        }
         if (currentPage) {
           currentPage.shapes = shapes;
           pages.push(currentPage);
         }
         shapes = [];
+        shapesById = new Map();
+        namesById = new Map();
         currentShape = null;
         currentGeometry = null;
         currentPage = {
@@ -473,7 +740,10 @@ function buildShapesFromChunks(chunks) {
           isBackground: false,
           layers: [],
           shapes: [],
-          connects: []
+          connects: [],
+          // For master streams we remember which STENCIL_PAGE this PAGE_SHEET belongs to,
+          // so the final masters table can be keyed by that stencil-page's pointer index.
+          _stencilPage: chunk._stencilPage ?? null,
         };
         break;
       }
@@ -492,13 +762,28 @@ function buildShapesFromChunks(chunks) {
       case VSD.SHAPE_FOREIGN: {
         // Save previous shape
         if (currentShape) {
-          finalizeShape(currentShape, currentGeometry);
-          shapes.push(currentShape);
+          finalizeShape(currentShape, currentGeometry,
+            currentPage && { name: currentPage.name, number: pages.length + 1 },
+            namesById, mastersMap, opts);
+          attachShape(currentShape, currentShape._parentKey);
         }
         currentGeometry = null;
+        const hdr = readShapeParent(chunk);
+        // Effective shape id comes from the chunk's own id if present, otherwise falls
+        // back to the pointer-index (libvisio's MINUS_ONE fallback). The shape's `parent`
+        // data field references this same effective id space.
+        const isMinusOne = chunk.id === 0xFFFFFFFF;
+        const effectiveId = isMinusOne ? (chunk.ptrIdx ?? 0) : chunk.id;
+        // Parent key is 0 when top-level; otherwise matches the parent's effectiveId.
+        const parentKey = hdr.parent || 0;
         currentShape = {
-          id: String(chunk.id),
+          id: String(effectiveId),
           masterId: null,
+          // Raw master-page and master-shape references (libvisio's MINUS_ONE
+          // sentinel = "no master"). We keep them for later lookup against
+          // the stencil-pages map.
+          _masterPage: hdr.masterPage === 0xFFFFFFFF ? null : hdr.masterPage,
+          _masterShapeId: hdr.masterShape === 0xFFFFFFFF ? null : hdr.masterShape,
           type: chunk.chunkType === VSD.SHAPE_GROUP ? 'Group' : 'Shape',
           pinX: 0, pinY: 0,
           width: 0, height: 0,
@@ -521,8 +806,17 @@ function buildShapesFromChunks(chunks) {
           geometry: [],
           subShapes: [],
           text: '',
-          layerMembers: []
+          layerMembers: [],
+          propMap: {},
+          userMap: {},
+          // Internal bookkeeping for group reconstruction. _parentKey is resolved at
+          // finalize time via shapesById; 0 means "attach to page".
+          _parentKey: parentKey,
+          _selfKey: effectiveId
         };
+        // Register immediately so later children on the same page can find this shape
+        // as a parent even if we haven't finalized it yet.
+        shapesById.set(effectiveId, currentShape);
         break;
       }
 
@@ -663,6 +957,24 @@ function buildShapesFromChunks(chunks) {
         break;
       }
 
+      case VSD.FIELD_LIST: {
+        // Start of a FIELD_LIST for the current shape. Subsequent TEXT_FIELD
+        // (0xa1) chunks at level 2 belong to this list and should be spliced
+        // into the shape's TEXT at each U+FFFC position. libvisio tracks the
+        // list via an id map; we simply reset per-shape.
+        if (currentShape) currentShape._fields = [];
+        break;
+      }
+
+      case VSD.TEXT_FIELD: {
+        if (currentShape) {
+          if (!currentShape._fields) currentShape._fields = [];
+          const fld = readTextField(chunk.data, chunk.dataLength);
+          currentShape._fields.push(fld);
+        }
+        break;
+      }
+
       case VSD.CHAR_IX: {
         if (currentShape && chunk.dataLength > 4) {
           const charData = readCharIx(chunk.data);
@@ -695,26 +1007,133 @@ function buildShapesFromChunks(chunks) {
         }
         break;
       }
+
+      case VSD.NAME:
+      case VSD.NAME2: {
+        // Per-shape NAME table entry. Keyed by the chunk's record id, which
+        // is the same id a TEXT_FIELD's string-cell `nameId` references.
+        // Ported from libvisio VSDParser::readName (GPL-3.0, LibreOffice libvisio).
+        const s = readNameChunk(chunk);
+        if (s) namesById.set(chunk.id >>> 0, s);
+        break;
+      }
+
+      // Intentional no-ops, mirroring libvisio VSDParser::readPropList and
+      // libvisio-ng's behaviour: PROP_LIST (0x68) and USER_DEFINED_CELLS
+      // (0xb4) are containers whose rows we do not yet decode. See
+      // shape.propMap / shape.userMap — populated via XML for .vsdx but left
+      // empty for .vsd. The upstream C++/Python parsers also leave these
+      // tables empty when reading binary .vsd streams.
+      case VSD.PROP_LIST:
+      case VSD.USER_DEFINED_CELLS:
+      case VSD.CUSTOM_PROPS:
+      case VSD.CUST_PROPS_LIST:
+        break;
     }
   }
 
   // Finalize last shape and page
   if (currentShape) {
-    finalizeShape(currentShape, currentGeometry);
-    shapes.push(currentShape);
+    finalizeShape(currentShape, currentGeometry,
+      currentPage && { name: currentPage.name, number: pages.length + 1 },
+      namesById, mastersMap, opts);
+    attachShape(currentShape, currentShape._parentKey);
   }
   if (currentPage) {
     currentPage.shapes = shapes;
     pages.push(currentPage);
   }
 
+  // Strip internal bookkeeping fields recursively. Master-stream shapes keep
+  // _fields / _masterShape / _masterPage because the page-level build reads
+  // them via inheritFromMaster.
+  function clean(arr) {
+    for (const s of arr) {
+      delete s._parentKey;
+      delete s._selfKey;
+      if (!opts.isMasterStream) delete s._fields;
+      if (s.subShapes && s.subShapes.length) clean(s.subShapes);
+    }
+  }
+  for (const pg of pages) clean(pg.shapes);
+
   return pages;
 }
 
-function finalizeShape(shape, currentGeometry) {
+// Resolve a single field's .ref/.value using the NAME table, in place.
+// `nm` is the decoded name string: names prefixed with a known symbol type
+// ("Prop.", "User.", "ThePage!") are passed to resolveReference as symbolic
+// references; plain names become literal values.
+function applyNameToField(f, nm) {
+  if (!f || !nm) return;
+  if (/^(Prop|User|Property|PageName|PageNumber)\b/i.test(nm) ||
+      /^ThePage!/i.test(nm)) {
+    f.ref = nm;
+  } else {
+    f.value = nm;
+  }
+}
+
+function finalizeShape(shape, currentGeometry, pageCtx, namesById, mastersMap, opts) {
   if (currentGeometry) {
     shape.geometry.push(currentGeometry);
   }
+  // Resolve a master-shape reference via the stencil-pages table, if any.
+  // mastersMap is { masterPageStencilPtrIdx -> { masterShapeId -> masterShape } }.
+  if (!shape._masterShape && shape._masterPage != null && shape._masterShapeId != null && mastersMap) {
+    const page = mastersMap.get(shape._masterPage);
+    if (page) {
+      const master = page.get(shape._masterShapeId);
+      if (master) shape._masterShape = master;
+    }
+  }
+
+  // Expand multi-ref TEXT_FIELD chunks into one field per reference so that
+  // each U+FFFC placeholder in the shape's TEXT is consumed by exactly one
+  // entry, matching libvisio's one-element-per-placeholder model.
+  if (shape._fields && shape._fields.length) {
+    shape._fields = expandNameRefFields(shape._fields);
+    const names = namesById || new Map();
+    for (const f of shape._fields) {
+      if (f && f.nameId != null && names.has(f.nameId)) {
+        applyNameToField(f, names.get(f.nameId));
+      }
+    }
+  }
+
+  // Inherit text + character style from the master. We inherit AFTER expanding
+  // fields so the master's already-expanded _fields are what the child reuses
+  // when it has no TEXT/field chunks of its own.
+  if (shape._masterShape) {
+    inheritFromMaster(shape, shape._masterShape);
+  }
+
+  // When building a master-page stream we want to keep raw U+FFFC placeholders
+  // intact so the page-level builder can run field resolution in the page's
+  // own context (its own propMap/userMap/pageName). For regular pages we run
+  // the resolver now.
+  if (opts && opts.isMasterStream) {
+    // Preserve _fields and _masterPage/_masterShapeId for downstream inheritance.
+    return;
+  }
+
+  const ctx = {
+    fields: shape._fields || [],
+    propMap: shape.propMap,
+    userMap: shape.userMap,
+    pageName: pageCtx ? pageCtx.name : undefined,
+    pageNumber: pageCtx ? pageCtx.number : undefined
+  };
+  if (shape.text && (shape.text.indexOf('\uFFFC') !== -1 || shape.text.indexOf('<fld') !== -1)) {
+    shape.text = resolveFields(shape, ctx);
+  }
+  if (shape.text && !shape.text.replace(/[\s\uFFFC]/g, '')) {
+    shape.text = '';
+  }
+  delete shape._fields;
+  delete shape._masterShape;
+  delete shape._masterPage;
+  delete shape._masterShapeId;
 }
 
 function readPointer(reader) {
@@ -760,8 +1179,16 @@ function readPointersFromStream(streamData, shift) {
   return { pointers, order };
 }
 
-// Recursively handle a stream: if it's a blob with sub-pointers, recurse; if it's chunks, parse
-function handleStream(mainContent, ptr, allChunks, depth) {
+// Recursively handle a stream: if it's a blob with sub-pointers, recurse; if it's chunks, parse.
+// ptrIdx is the pointer's index in its parent container. libvisio uses this index as the
+// effective chunk id when chunk.id is MINUS_ONE (0xFFFFFFFF), and SHAPE chunks reference
+// their group/parent by this same pointer index in their `parent` data field.
+//
+// `ctx` carries per-subtree bookkeeping that the chunk-classifier needs. Currently:
+//   - ctx.stencilPage: null, or the pointer-index of the enclosing STENCIL_PAGE.
+//     Shapes parsed below that STENCIL_PAGE are master shapes and should be
+//     indexed into `mastersMap[stencilPage][shapeId]`.
+function handleStream(mainContent, ptr, allChunks, depth, ptrIdx = 0, ctx = { stencilPage: null }) {
   if (depth > 10 || ptr.offset >= mainContent.length || ptr.length === 0) return;
   if (ptr.type === 0) return;
 
@@ -772,36 +1199,48 @@ function handleStream(mainContent, ptr, allChunks, depth) {
   const shift = compressed ? 4 : 0;
   const formatType = (ptr.format >> 4) & 0xF;
 
+  // If this pointer IS a stencil page, tag its entire subtree so that the
+  // chunks produced for its contained shapes get routed into the masters map.
+  // Ported from libvisio VSDParser::handleStreams (GPL-3.0, LibreOffice libvisio,
+  // © the LibreOffice contributors; see VSD_STENCIL_PAGE branch).
+  const childCtx = (ptr.type === VSD.STENCIL_PAGE)
+    ? { stencilPage: ptrIdx }
+    : ctx;
+
   if (formatType === 0x0 || formatType === 0x4 || formatType === 0x5) {
     // Blob with potential sub-pointers - recurse
     try {
       const { pointers, order } = readPointersFromStream(streamData, shift);
-      // Process in order if available, otherwise sequentially
-      const ordered = order.length > 0
-        ? order.map(i => pointers[i]).filter(Boolean)
-        : pointers;
-      for (const subPtr of ordered) {
-        handleStream(mainContent, subPtr, allChunks, depth + 1);
-      }
-      // Also process any pointers not in the order list
+      // Process in order if available, otherwise sequentially.
+      // IMPORTANT: the effective chunk id is the pointer's ORIGINAL index in `pointers`,
+      // not its position in the order list.
       if (order.length > 0) {
+        for (const oi of order) {
+          if (pointers[oi]) handleStream(mainContent, pointers[oi], allChunks, depth + 1, oi, childCtx);
+        }
         const seen = new Set(order);
         for (let i = 0; i < pointers.length; i++) {
           if (!seen.has(i) && pointers[i].type !== 0) {
-            handleStream(mainContent, pointers[i], allChunks, depth + 1);
+            handleStream(mainContent, pointers[i], allChunks, depth + 1, i, childCtx);
           }
+        }
+      } else {
+        for (let i = 0; i < pointers.length; i++) {
+          handleStream(mainContent, pointers[i], allChunks, depth + 1, i, childCtx);
         }
       }
     } catch {
       // If pointer parsing fails, try as chunks
       const chunkReader = new BinaryReader(streamData);
       const chunks = parseChunks(chunkReader);
+      for (const c of chunks) { c.ptrIdx = ptrIdx; c._stencilPage = childCtx.stencilPage; }
       allChunks.push(...chunks);
     }
   } else {
     // Chunked stream (format type 0x8, 0xC, 0xD)
     const chunkReader = new BinaryReader(streamData);
     const chunks = parseChunks(chunkReader);
+    for (const c of chunks) { c.ptrIdx = ptrIdx; c._stencilPage = childCtx.stencilPage; }
     allChunks.push(...chunks);
   }
 }
@@ -841,36 +1280,84 @@ export async function parseVsd(arrayBuffer) {
   // Recursively process all pointers, collecting chunks
   const allChunks = [];
 
-  // Process in order if available
-  const ordered = order.length > 0
-    ? order.map(i => pointers[i]).filter(Boolean)
-    : pointers;
-  for (const ptr of ordered) {
-    handleStream(mainContent, ptr, allChunks, 0);
-  }
-  // Also process unordered pointers
+  // Process in order if available. Pass the pointer's ORIGINAL index (not order position)
+  // as ptrIdx so that SHAPE chunks can be identified by their pointer-index (libvisio's
+  // MINUS_ONE id fallback scheme).
   if (order.length > 0) {
+    for (const oi of order) {
+      if (pointers[oi]) handleStream(mainContent, pointers[oi], allChunks, 0, oi);
+    }
     const seen = new Set(order);
     for (let i = 0; i < pointers.length; i++) {
       if (!seen.has(i) && pointers[i].type !== 0) {
-        handleStream(mainContent, pointers[i], allChunks, 0);
+        handleStream(mainContent, pointers[i], allChunks, 0, i);
       }
+    }
+  } else {
+    for (let i = 0; i < pointers.length; i++) {
+      handleStream(mainContent, pointers[i], allChunks, 0, i);
     }
   }
 
-  const pages = buildShapesFromChunks(allChunks);
+  // Split chunks into those that belong to stencil pages (master shapes) and
+  // those that belong to real pages. Stencil chunks were tagged during
+  // handleStream with `_stencilPage: <stencil-page ptr-idx>`. Inside each
+  // stencil page we still need the full chunk sequence including PAGE_SHEET;
+  // the simplest reliable approach is to group stencil chunks by their
+  // stencil-page ptr and run the normal builder with isMasterStream=true,
+  // then flatten the resulting pages into a { ptr -> { shapeId -> shape } } map.
+  //
+  // Ported from libvisio VSDParser::handleStreams (GPL-3.0, LibreOffice
+  // libvisio) — that implementation collects stencil shapes into
+  // m_stencils.addStencil(idx, ...); we use the JS map for the same purpose.
+  const regularChunks = [];
+  const stencilChunksByPage = new Map(); // stencilPage ptrIdx -> chunks[]
+  for (const c of allChunks) {
+    if (c._stencilPage != null) {
+      let bucket = stencilChunksByPage.get(c._stencilPage);
+      if (!bucket) { bucket = []; stencilChunksByPage.set(c._stencilPage, bucket); }
+      bucket.push(c);
+    } else {
+      regularChunks.push(c);
+    }
+  }
+
+  // Build the masters table: stencilPtrIdx -> Map(shapeId -> masterShape).
+  const mastersMap = new Map();
+  for (const [stencilPtrIdx, bucket] of stencilChunksByPage) {
+    const masterPages = buildShapesFromChunks(bucket, { isMasterStream: true });
+    const shapeIndex = new Map();
+    function indexShapes(arr) {
+      for (const s of arr) {
+        const id = Number(s.id);
+        if (!Number.isNaN(id)) shapeIndex.set(id, s);
+        if (s.subShapes && s.subShapes.length) indexShapes(s.subShapes);
+      }
+    }
+    for (const mp of masterPages) indexShapes(mp.shapes);
+    mastersMap.set(stencilPtrIdx, shapeIndex);
+  }
+
+  // Build pages with master lookup available.
+  const pages = buildShapesFromChunks(regularChunks, { mastersMap });
 
   // If no pages found, return empty
   if (pages.length === 0) {
-    return { pages: [{ id: '0', name: 'Page 1', width: 8.5, height: 11, isBackground: false, layers: [], shapes: [], connects: [] }], masters: new Map() };
+    return { pages: [{ id: '0', name: 'Page 1', width: 8.5, height: 11, isBackground: false, layers: [], shapes: [], connects: [] }], masters: mastersMap };
   }
 
-  // Filter out empty shapes
+  // Filter out empty shapes (recursively). A shape is kept if it has geometry, text,
+  // non-zero dimensions, OR any surviving subShapes.
+  function isKeepable(s) {
+    if (s.subShapes && s.subShapes.length) {
+      s.subShapes = s.subShapes.filter(isKeepable);
+      if (s.subShapes.length) return true;
+    }
+    return s.geometry.length > 0 || !!s.text || (s.width > 0 && s.height > 0);
+  }
   for (const page of pages) {
-    page.shapes = page.shapes.filter(s =>
-      s.geometry.length > 0 || s.text || (s.width > 0 && s.height > 0)
-    );
+    page.shapes = page.shapes.filter(isKeepable);
   }
 
-  return { pages, masters: new Map() };
+  return { pages, masters: mastersMap };
 }

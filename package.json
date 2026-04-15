@@ -10,12 +10,14 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "GPL-3.0-or-later",
   "type": "commonjs",
   "devDependencies": {
-    "esbuild": "^0.28.0"
+    "esbuild": "^0.28.0",
+    "jsdom": "^29.0.2"
   },
   "dependencies": {
+    "@xmldom/xmldom": "^0.9.9",
     "cfb": "^1.2.2",
     "jszip": "^3.10.1"
   }

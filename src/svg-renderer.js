@@ -4,6 +4,15 @@ function inToPx(inches) {
   return inches * DPI;
 }
 
+// XML 1.0 allows only TAB, LF, CR and the range 0x20+ as character data.
+// Anything else in an attribute value or text node makes rsvg/libxml2 reject
+// the serialized SVG. Strip defensively before emitting.
+function xmlSafe(s) {
+  if (s == null) return s;
+  // eslint-disable-next-line no-control-regex
+  return String(s).replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\uFFFE\uFFFF]/g, '');
+}
+
 // Convert geometry rows to SVG path data
 // Coordinates are in shape-local space (0,0 to width,height) with Y-up
 function geometryToPath(rows, width, height) {
@@ -219,12 +228,13 @@ function getDashArray(linePattern, lineWeight) {
   }
 }
 
-function renderShape(shape, svgNS, pageHeight, defs, arrowCounter) {
+function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, fontScale) {
+  if (fontScale === undefined) fontScale = strokeScale;
   const g = document.createElementNS(svgNS, 'g');
 
   // Tag with layer membership for visibility toggling
   if (shape.layerMembers && shape.layerMembers.length > 0) {
-    g.setAttribute('data-layers', shape.layerMembers.join(','));
+    g.setAttribute('data-layers', xmlSafe(shape.layerMembers.join(',')));
   }
 
   // Calculate transform
@@ -261,13 +271,17 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter) {
         path.setAttribute('fill', shape.fillForeground);
       }
 
-      // Stroke
+      // Stroke. lineWeight is always stored in inches, but the coordinate
+      // space we emit is in the drawing's native unit (mm/inches/...) scaled
+      // up by 96. `strokeScale` converts inch-valued line weights into that
+      // coordinate space so strokes stay visually proportional to the drawing.
       if (geo.noLine || shape.linePattern === 0) {
         path.setAttribute('stroke', 'none');
       } else {
         path.setAttribute('stroke', shape.lineColor);
-        path.setAttribute('stroke-width', String(Math.max(inToPx(shape.lineWeight), 0.5)));
-        const dashArray = getDashArray(shape.linePattern, inToPx(shape.lineWeight));
+        const effectiveWeight = inToPx(shape.lineWeight) * strokeScale;
+        path.setAttribute('stroke-width', String(Math.max(effectiveWeight, 0.5)));
+        const dashArray = getDashArray(shape.linePattern, effectiveWeight);
         if (dashArray) {
           path.setAttribute('stroke-dasharray', dashArray);
         }
@@ -304,7 +318,7 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter) {
       rect.setAttribute('fill', 'none');
     }
     rect.setAttribute('stroke', shape.linePattern === 0 ? 'none' : shape.lineColor);
-    rect.setAttribute('stroke-width', String(Math.max(inToPx(shape.lineWeight), 0.5)));
+    rect.setAttribute('stroke-width', String(Math.max(inToPx(shape.lineWeight) * strokeScale, 0.5)));
     if (shape.rounding > 0) {
       rect.setAttribute('rx', String(inToPx(shape.rounding)));
       rect.setAttribute('ry', String(inToPx(shape.rounding)));
@@ -314,13 +328,15 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter) {
 
   // Render sub-shapes (groups)
   for (const sub of shape.subShapes) {
-    g.appendChild(renderShape(sub, svgNS, shape.height, defs, arrowCounter));
+    g.appendChild(renderShape(sub, svgNS, shape.height, defs, arrowCounter, strokeScale, fontScale));
   }
 
   // Render text
   if (shape.text) {
     const text = document.createElementNS(svgNS, 'text');
-    const fontSize = shape.fontSize ? inToPx(shape.fontSize) : 12;
+    // Font size is stored in inches but must be rendered in the drawing's
+    // coordinate space (matches the strokeScale convention).
+    const fontSize = shape.fontSize ? inToPx(shape.fontSize) * fontScale : 12;
     text.setAttribute('x', String(inToPx(shape.width) / 2));
     text.setAttribute('y', String(inToPx(shape.height) / 2));
     text.setAttribute('text-anchor', 'middle');
@@ -332,9 +348,10 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter) {
     if (shape.italic) text.setAttribute('font-style', 'italic');
 
     // Handle multi-line text
-    const lines = shape.text.split('\n').filter(l => l.trim());
+    const safeText = xmlSafe(shape.text);
+    const lines = safeText.split('\n').filter(l => l.trim());
     if (lines.length <= 1) {
-      text.textContent = shape.text;
+      text.textContent = safeText;
     } else {
       const lineHeight = fontSize * 1.2;
       const startY = inToPx(shape.height) / 2 - (lines.length - 1) * lineHeight / 2;
@@ -392,8 +409,15 @@ export function renderPage(page, container) {
 
   const arrowCounter = { value: 0 };
 
+  // Convert stroke weights (always stored in inches) into the drawing's
+  // coordinate space. When drawingUnitInInches < 1 (e.g. MM), inches need to
+  // scale up; default is 1 for inch-native files so existing tests are
+  // unaffected.
+  const strokeScale = page.drawingUnitInInches ? (1 / page.drawingUnitInInches) : 1;
+  const fontScale = strokeScale;
+
   for (const shape of page.shapes) {
-    svg.appendChild(renderShape(shape, svgNS, page.height, defs, arrowCounter));
+    svg.appendChild(renderShape(shape, svgNS, page.height, defs, arrowCounter, strokeScale, fontScale));
   }
 
   container.innerHTML = '';

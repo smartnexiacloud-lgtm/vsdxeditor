@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import { inheritFromMaster, resolveFields } from './shape-inheritance.js';
 
 // Visio standard color palette (indices 0-25)
 const VISIO_COLORS = [
@@ -50,10 +51,14 @@ function getCell(el, name) {
 function getCellValue(el, name) {
   const cell = getCell(el, name);
   if (!cell) return null;
-  // Check for formula - if it's just 'Inh' (inherited), skip
-  const f = cell.getAttribute('F');
-  if (f === 'Inh') return null;
-  return cell.getAttribute('V');
+  // The V attribute holds the resolved value Visio has computed for this cell,
+  // regardless of whether F is a formula or the sentinel "Inh" (inherited).
+  // Previously we skipped F='Inh' and fell back to the master, but the V value
+  // already reflects the inherited/computed value, so the master lookup would
+  // pick up the unrelated master-template value instead.
+  const v = cell.getAttribute('V');
+  if (v !== null && v !== '') return v;
+  return null;
 }
 
 function getCellFloat(el, name) {
@@ -75,10 +80,103 @@ function getDirectChildren(el, tagName) {
   return result;
 }
 
+// Serialize a <Text> element's children into a string with U+FFFC placeholders
+// at every <fld>/<cp>/<pp>/<tp> position. The resulting string can be fed to
+// resolveFields() which substitutes each placeholder with the resolved field
+// value. We use U+FFFC uniformly so both the .vsd and .vsdx sides share the
+// same splicer. Fields are returned in document order so ctx.fields[i] aligns
+// with the i-th placeholder.
+function serializeTextWithFields(textEl) {
+  let out = '';
+  const fields = [];
+  function walk(node) {
+    for (let i = 0; i < node.childNodes.length; i++) {
+      const n = node.childNodes[i];
+      if (n.nodeType === 3) {
+        out += n.nodeValue;
+      } else if (n.nodeType === 1) {
+        const name = n.localName;
+        if (name === 'fld') {
+          // <fld IX='N'/> — IX references a Field section row on this shape.
+          const ix = n.getAttribute('IX');
+          fields.push({ ix: ix != null ? parseInt(ix, 10) : null, _el: n });
+          out += '\uFFFC';
+        } else if (name === 'cp' || name === 'pp' || name === 'tp') {
+          // Character / paragraph / tab properties index — purely formatting,
+          // no runtime value. Skip silently.
+        } else {
+          walk(n);
+        }
+      }
+    }
+  }
+  walk(textEl);
+  return { text: out, fields };
+}
+
 function getTextContent(shapeEl) {
   const textEls = getDirectChildren(shapeEl, 'Text');
-  if (textEls.length === 0) return '';
-  return textEls[0].textContent.trim();
+  if (textEls.length === 0) return { text: '', fields: [] };
+  const { text, fields } = serializeTextWithFields(textEls[0]);
+  return { text: text.replace(/\n$/, ''), fields };
+}
+
+// Parse a shape's <Section N='Property'> into a name->value map. Names come
+// from the row's `N` attribute (e.g. "ShapeClass", "NetworkName") or fall
+// back to its IX. Values come from the row's Value cell.
+function parsePropSection(shapeEl) {
+  const map = {};
+  const sections = getDirectChildren(shapeEl, 'Section')
+    .filter(s => s.getAttribute('N') === 'Property');
+  for (const sec of sections) {
+    const rows = getDirectChildren(sec, 'Row');
+    for (const row of rows) {
+      const n = row.getAttribute('N') || row.getAttribute('IX');
+      if (!n) continue;
+      const v = getCellValue(row, 'Value');
+      if (v !== null && v !== undefined) map[n] = v;
+    }
+  }
+  return map;
+}
+
+function parseUserSection(shapeEl) {
+  const map = {};
+  const sections = getDirectChildren(shapeEl, 'Section')
+    .filter(s => s.getAttribute('N') === 'User');
+  for (const sec of sections) {
+    const rows = getDirectChildren(sec, 'Row');
+    for (const row of rows) {
+      const n = row.getAttribute('N') || row.getAttribute('IX');
+      if (!n) continue;
+      const v = getCellValue(row, 'Value');
+      if (v !== null && v !== undefined) map[n] = v;
+    }
+  }
+  return map;
+}
+
+// Parse a shape's <Section N='Field'> rows. Each row has Value / Format / Type
+// cells; we keep the raw Value and Format strings so the resolver can fall
+// back to them when the reference itself is unresolvable. Row IX is the index
+// used by <fld IX='N'/>.
+function parseFieldSection(shapeEl) {
+  const fields = [];
+  const sections = getDirectChildren(shapeEl, 'Section')
+    .filter(s => s.getAttribute('N') === 'Field');
+  for (const sec of sections) {
+    const rows = getDirectChildren(sec, 'Row');
+    for (const row of rows) {
+      const ix = parseInt(row.getAttribute('IX') || '0', 10);
+      const value = getCellValue(row, 'Value');
+      const format = getCellValue(row, 'Format');
+      // The formula on the Value cell is the actual reference (e.g. Prop.Foo).
+      const cell = getCell(row, 'Value');
+      const ref = cell ? cell.getAttribute('F') : null;
+      fields[ix] = { ix, value, format, ref };
+    }
+  }
+  return fields;
 }
 
 function parseRowData(row) {
@@ -218,14 +316,21 @@ function mergeGeometry(masterEl, shapeEl) {
   return merged;
 }
 
-function parseShape(shapeEl, masters) {
+function parseShape(shapeEl, masters, parentMaster) {
   const id = shapeEl.getAttribute('ID');
   const masterId = shapeEl.getAttribute('Master');
   const masterShapeId = shapeEl.getAttribute('MasterShape');
   const type = shapeEl.getAttribute('Type');
 
-  const master = masterId ? masters.get(masterId) : null;
-  // Find the master shape definition that matches
+  // Resolution rules:
+  //   - `Master` attribute: the shape is a direct master instance; look up that
+  //     master and (if `MasterShape` is also set) its named sub-shape.
+  //   - Only `MasterShape` set: the shape is a nested child of a group whose
+  //     parent references a master. `MasterShape` then identifies WHICH shape
+  //     inside the parent's master this child inherits from. Without this
+  //     fallback, children-of-group instances report zero size because their
+  //     own cells are all F='Inh' placeholders with no direct master.
+  let master = masterId ? masters.get(masterId) : null;
   let masterShape = null;
   if (master) {
     if (masterShapeId && master.shapesById) {
@@ -233,6 +338,9 @@ function parseShape(shapeEl, masters) {
     } else if (master.shapes && master.shapes.length > 0) {
       masterShape = master.shapes[0];
     }
+  } else if (masterShapeId && parentMaster && parentMaster.shapesById) {
+    masterShape = parentMaster.shapesById.get(masterShapeId) || null;
+    master = parentMaster;
   }
 
   // Position & size - shape values override master values
@@ -297,19 +405,38 @@ function parseShape(shapeEl, masters) {
   // Geometry - merge shape geometry with master geometry
   const geometry = mergeGeometry(masterShape?.el ?? null, shapeEl);
 
-  // Sub-shapes (groups)
+  // Sub-shapes (groups). Propagate the current shape's master so that nested
+  // children with only a `MasterShape` attribute can resolve the sibling
+  // definition inside the same master.
   const subShapes = [];
   const shapesContainer = getDirectChildren(shapeEl, 'Shapes');
   if (shapesContainer.length > 0) {
     const childShapeEls = getDirectChildren(shapesContainer[0], 'Shape');
     for (const childEl of childShapeEls) {
-      subShapes.push(parseShape(childEl, masters));
+      subShapes.push(parseShape(childEl, masters, master));
     }
   }
 
-  const text = getTextContent(shapeEl);
+  const { text: rawText, fields: inlineFields } = getTextContent(shapeEl);
 
-  return {
+  // Field section rows (indexed by IX). Prefer shape's own Field section,
+  // then fall back to the master's.
+  const shapeFields = parseFieldSection(shapeEl);
+  const masterFields = masterShape ? parseFieldSection(masterShape.el) : [];
+  const fieldTable = shapeFields.length > 0 ? shapeFields : masterFields;
+
+  // Map <fld IX=N> references to their Field-section definitions so the
+  // resolver can walk inlineFields in text-document order.
+  const orderedFields = inlineFields.map(f => {
+    if (f.ix != null && fieldTable[f.ix]) return fieldTable[f.ix];
+    return f;
+  });
+
+  // Custom-property and user-defined maps. Shape overrides master.
+  const propMap = { ...(masterShape ? parsePropSection(masterShape.el) : {}), ...parsePropSection(shapeEl) };
+  const userMap = { ...(masterShape ? parseUserSection(masterShape.el) : {}), ...parseUserSection(shapeEl) };
+
+  const shape = {
     id,
     masterId,
     type,
@@ -334,9 +461,43 @@ function parseShape(shapeEl, masters) {
     italic,
     geometry,
     subShapes,
-    text,
-    layerMembers
+    text: rawText,
+    layerMembers,
+    propMap,
+    userMap,
+    _fields: orderedFields
   };
+
+  // Inherit text (and any character style we still don't have) from the
+  // master. When the shape has no text of its own, the master's text + its
+  // ordered field table become the defaults.
+  if (masterShape) {
+    const masterText = serializeTextWithFields(masterShape.el);
+    const masterInherit = {
+      text: masterText.text.replace(/\n$/, ''),
+      fontSize: null, fontColor: null, bold: null, italic: null,
+      _fields: masterText.fields.map(f => f.ix != null && masterFields[f.ix] ? masterFields[f.ix] : f),
+      propMap: {}, userMap: {}
+    };
+    // Master character row 0
+    const mCharSections = getDirectChildren(masterShape.el, 'Section').filter(s => s.getAttribute('N') === 'Character');
+    if (mCharSections.length > 0) {
+      const mCharRows = getDirectChildren(mCharSections[0], 'Row');
+      if (mCharRows.length > 0) {
+        masterInherit.fontSize = getCellFloat(mCharRows[0], 'Size');
+        masterInherit.fontColor = parseColor(getCellValue(mCharRows[0], 'Color'));
+        const style = getCellValue(mCharRows[0], 'Style');
+        if (style) {
+          const sNum = parseInt(style, 10);
+          masterInherit.bold = (sNum & 1) !== 0;
+          masterInherit.italic = (sNum & 2) !== 0;
+        }
+      }
+    }
+    inheritFromMaster(shape, masterInherit);
+  }
+
+  return shape;
 }
 
 function parseMasterShapes(masterDoc) {
@@ -437,6 +598,22 @@ export async function parseVsdx(arrayBuffer) {
     const pageWidth = pageSheet ? getCellFloat(pageSheet, 'PageWidth') : null;
     const pageHeight = pageSheet ? getCellFloat(pageSheet, 'PageHeight') : null;
 
+    // Drawing unit: V values in this page are stored in whatever unit the
+    // document was authored in (usually inches, sometimes MM/CM/M). The cell's
+    // `U` attribute on PageWidth tells us. We convert that to an inch-scale
+    // factor so the renderer can multiply stroke weights (always stored in
+    // inches) by it to match the geometry's coordinate space.
+    let drawingUnitInInches = 1;
+    if (pageSheet) {
+      const pwCell = getCell(pageSheet, 'PageWidth');
+      const u = pwCell ? pwCell.getAttribute('U') : null;
+      if (u === 'MM') drawingUnitInInches = 1 / 25.4;
+      else if (u === 'CM') drawingUnitInInches = 1 / 2.54;
+      else if (u === 'M') drawingUnitInInches = 1 / 0.0254;
+      else if (u === 'PT') drawingUnitInInches = 1 / 72;
+      else if (u === 'FT' || u === 'FT_C') drawingUnitInInches = 12;
+    }
+
     // Get background page reference
     const backPage = pageSheet ? getCellValue(pageSheet, 'BackPage') : null;
 
@@ -492,11 +669,30 @@ export async function parseVsdx(arrayBuffer) {
       }
     }
 
+    // Resolve fields for all shapes on this page, now that propMap/userMap
+    // are populated and the page name/number are known. Walk recursively
+    // through sub-shapes (groups) as well.
+    const resolveCtx = { pageName, pageNumber: i + 1 };
+    function applyFields(shape) {
+      const ctx = {
+        ...resolveCtx,
+        propMap: shape.propMap,
+        userMap: shape.userMap,
+        fields: shape._fields
+      };
+      if (shape.text) shape.text = resolveFields(shape, ctx);
+      // Clean up internal bookkeeping.
+      delete shape._fields;
+      for (const child of shape.subShapes || []) applyFields(child);
+    }
+    for (const sh of shapes) applyFields(sh);
+
     pages.push({
       id: pageId,
       name: pageName,
       width: pageWidth || 8.5,
       height: pageHeight || 11,
+      drawingUnitInInches,
       isBackground,
       backPage,
       layers,
