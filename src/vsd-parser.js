@@ -541,6 +541,40 @@ function readNameChunk(chunk) {
   }
 }
 
+function readName2Chunk(chunk) {
+  try {
+    const bytes = chunk.data.u8;
+    const len = chunk.dataLength;
+    if (len <= 4) return '';
+    const view = bytes.slice(4, len);
+    let s = new TextDecoder('utf-16le', { fatal: false }).decode(view);
+    s = s.replace(/^\u0000+/g, '').replace(/\u0000+$/g, '');
+    return s;
+  } catch {
+    return '';
+  }
+}
+
+function readNameIdxChunk(chunk) {
+  const rows = [];
+  try {
+    const r = chunk.data;
+    r.pos = 0;
+    if (r.remaining < 4) return rows;
+    const recordCount = r.readU32();
+    for (let i = 0; i < recordCount && r.remaining >= 13; i++) {
+      const nameId = r.readU32() >>> 0;
+      r.readU32(); // duplicate name id
+      const elementId = r.readU32() >>> 0;
+      const extra = r.readU8();
+      rows.push({ nameId, elementId, extra });
+    }
+  } catch {
+    return rows;
+  }
+  return rows;
+}
+
 function visibleUtf16Strings(bytes, minLength = 2) {
   const out = [];
   for (const start of [0, 1]) {
@@ -568,6 +602,35 @@ function normalizeMetadataString(value) {
     .trim();
   const match = s.match(/[A-Za-z0-9_ÄÖÜäöüß][A-Za-z0-9_ÄÖÜäöüß .,:;(){}+\-/]*$/);
   return match ? match[0].trim() : '';
+}
+
+function readPropStringsFromChunk(chunk) {
+  const bytes = chunk.data.u8.slice(0, chunk.dataLength);
+  const stringsByTag = new Map();
+  // B6 rows contain repeated string subrecords of the form:
+  //   FE <u32 recordLen> 02 <tag> 60 <u8 charLen> <utf16le payload>
+  // where tag 0=value, 1=prompt, 2=label, 3=format, 4=selected-index text.
+  for (let i = 0; i + 9 < bytes.length; i++) {
+    if (bytes[i] !== 0xFE) continue;
+    const recordLen = bytes[i + 1] | (bytes[i + 2] << 8) | (bytes[i + 3] << 16) | (bytes[i + 4] << 24);
+    const tagGroup = bytes[i + 5];
+    const tag = bytes[i + 6];
+    const marker = bytes[i + 7];
+    const charLen = bytes[i + 8];
+    if (tagGroup !== 0x02 || marker !== 0x60 || charLen < 1 || recordLen < 9) continue;
+    const start = i + 9;
+    const end = start + charLen * 2;
+    if (end > bytes.length) continue;
+    try {
+      const raw = new TextDecoder('utf-16le', { fatal: false }).decode(bytes.slice(start, end));
+      const text = raw.replace(/\u0000+$/g, '');
+      stringsByTag.set(tag, text);
+      i = Math.max(i + recordLen - 1, end - 1);
+    } catch {
+      // Ignore malformed strings and continue scanning.
+    }
+  }
+  return stringsByTag;
 }
 
 const CUSTOM_PROP_NAME_BY_LABEL = new Map([
@@ -608,6 +671,11 @@ function metadataValue(value) {
   return `VT4(${s})`;
 }
 
+function metadataNumericValue(value, unit = '26') {
+  if (!Number.isFinite(value)) return null;
+  return `VT0(${value}):${unit}`;
+}
+
 function rawMetadataValue(value) {
   if (value === null || value === undefined) return null;
   const s = String(value);
@@ -618,24 +686,29 @@ function rawMetadataValue(value) {
   return s;
 }
 
-function parseCustomPropChunk(chunk) {
-  const strings = visibleUtf16Strings(chunk.data.u8.slice(0, chunk.dataLength), 2)
+function parseCustomPropChunk(chunk, rowName = null) {
+  const taggedStrings = readPropStringsFromChunk(chunk);
+  const strings = [
+    ...taggedStrings.values(),
+    ...visibleUtf16Strings(chunk.data.u8.slice(0, chunk.dataLength), 2)
+  ]
     .map(normalizeMetadataString)
     .filter(Boolean);
   if (!strings.length) return null;
 
-  let nameU = CUSTOM_PROP_NAME_CANDIDATES.find(name => strings.includes(name)) || null;
-  let label = null;
+  const normalizedRowName = normalizeMetadataString(rowName || '');
+  let nameU = normalizedRowName || CUSTOM_PROP_NAME_CANDIDATES.find(name => strings.includes(name)) || null;
+  let label = normalizeMetadataString(taggedStrings.get(0x02) || '');
   for (const s of strings) {
     if (CUSTOM_PROP_NAME_BY_LABEL.has(s)) {
-      label = s;
+      label = label || s;
       nameU = nameU || CUSTOM_PROP_NAME_BY_LABEL.get(s);
       break;
     }
   }
   if (!nameU) return null;
 
-  const prompt = strings.find(s =>
+  const prompt = normalizeMetadataString(taggedStrings.get(0x01) || '') || strings.find(s =>
     s !== nameU &&
     s !== label &&
     (/^(Stringwert|Geben Sie|Enter |Select |Set )/.test(s) || s.includes(' für Berichterstellung.'))
@@ -650,7 +723,12 @@ function parseCustomPropChunk(chunk) {
     ) || nameU;
   }
 
-  let value = strings.find(s =>
+  let value = normalizeMetadataString(taggedStrings.get(0x00) || '');
+  if (!value) {
+    value = normalizeMetadataString(taggedStrings.get(0x04) || '');
+  }
+  if (!value) {
+    value = strings.find(s =>
     s !== nameU &&
     s !== label &&
     s !== prompt &&
@@ -659,29 +737,114 @@ function parseCustomPropChunk(chunk) {
     !/^(Stringwert|Geben Sie|Enter |Select |Set )/.test(s) &&
     s.length > 1 &&
     s.length <= 120
-  ) || null;
+    ) || null;
+  }
 
   if (['ShapeClass', 'ShapeType', 'SubShapeType'].includes(nameU) && label && label !== nameU) {
     value = label;
     label = nameU;
-  } else if (['Classification', 'ClassificationSource', 'Material', 'ProjectType', 'TypeDescription',
+  } else if (!value && ['Classification', 'ClassificationSource', 'Material', 'ProjectType', 'TypeDescription',
               'ColumnHeight', 'Length', 'Width', 'BaseElevation'].includes(nameU)) {
     value = '0';
   }
+
+  const format = normalizeMetadataString(taggedStrings.get(0x03) || '') ||
+    (nameU === 'Material' && strings.includes('Beton;Stahl;Holz') ? 'Beton;Stahl;Holz' : null);
 
   return {
     nameU,
     label,
     prompt,
     type: null,
-    format: nameU === 'Material' && strings.includes('Beton;Stahl;Holz') ? 'Beton;Stahl;Holz' : null,
+    format,
     invisible: ['ShapeClass', 'ShapeType', 'SubShapeType', 'Classification', 'ClassificationSource'].includes(nameU) ? '1' : null,
     langID: /[ÄÖÜäöüß]/.test(strings.join(' ')) ? 'de-DE' : null,
     value: metadataValue(value)
   };
 }
 
+const USER_DEF_BOOL_NAMES = new Set([
+  'EndsDontMeet1',
+  'ShapeGone1',
+  'EndNotOnLine1',
+  'DiffMtrls1',
+  'Closed1',
+  'Corner1',
+  'TJointOpen1',
+  'TJointClosed1',
+  'EndsDontMeet2',
+  'ShapeGone2',
+  'EndNotOnLine2',
+  'DiffMtrls2',
+  'Closed2',
+  'Corner2',
+  'TJointOpen2',
+  'TJointClosed2',
+  'Is_arc',
+  'visBESelected',
+  'HasText'
+]);
+
+function unitForUserDefMarker(marker, nameU) {
+  switch (marker) {
+    case 0x40:
+      return 'DL';
+    case 0x46:
+      return 'MM';
+    case 0x47:
+      return 'M';
+    case 0x50:
+      return 'DA';
+    case 0x61:
+      return USER_DEF_BOOL_NAMES.has(nameU) ? 'BOOL' : '26';
+    case 0x20:
+    default:
+      return '26';
+  }
+}
+
+function parseUserDefinedCellChunk(chunk, rowName = null) {
+  const nameU = normalizeMetadataString(rowName || '');
+  if (!nameU || chunk.dataLength < 15) return null;
+  try {
+    const bytes = chunk.data.u8.slice(0, chunk.dataLength);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const marker = view.getUint8(0);
+    const unit = unitForUserDefMarker(marker, nameU);
+    let numericValue;
+    if (marker === 0x61 &&
+        bytes[5] === 0x00 &&
+        bytes[6] === 0x00 &&
+        bytes[7] === 0x00 &&
+        bytes[8] === 0x00) {
+      numericValue = view.getUint32(1, true);
+    } else {
+      numericValue = view.getFloat64(1, true);
+    }
+    if (unit === 'BOOL') numericValue = numericValue ? 1 : 0;
+    return {
+      nameU,
+      prompt: null,
+      value: metadataNumericValue(numericValue, unit)
+    };
+  } catch {
+    return null;
+  }
+}
+
 function mergeCustomProps(masterRows, shapeRows) {
+  const merged = new Map();
+  for (const row of masterRows || []) {
+    if (row?.nameU) merged.set(row.nameU, row);
+  }
+  for (const row of shapeRows || []) {
+    if (!row?.nameU) continue;
+    merged.set(row.nameU, { ...(merged.get(row.nameU) || {}), ...row });
+  }
+  return [...merged.values()];
+}
+
+function mergeUserDefs(masterRows, shapeRows) {
   const merged = new Map();
   for (const row of masterRows || []) {
     if (row?.nameU) merged.set(row.nameU, row);
@@ -717,10 +880,7 @@ function assignShapeMetadata(shape) {
   const masterShape = shape._masterShape || null;
   if (masterShape) {
     shape.customProps = mergeCustomProps(masterShape.customProps, shape.customProps);
-    shape.userDefs = [
-      ...(masterShape.userDefs || []),
-      ...(shape.userDefs || [])
-    ];
+    shape.userDefs = mergeUserDefs(masterShape.userDefs, shape.userDefs);
     shape.propMap = { ...(masterShape.propMap || {}), ...(shape.propMap || {}) };
     shape.userMap = { ...(masterShape.userMap || {}), ...(shape.userMap || {}) };
   }
@@ -1001,9 +1161,18 @@ function buildShapesFromChunks(chunks, opts = {}) {
   let shapes = [];
   // Map from ptrIdx -> shape object, for resolving group membership on the current page.
   let shapesById = new Map();
+  // Global NAME2 table survives page boundaries; NAMEIDX rows often point into it.
+  let globalNamesById = new Map();
+  for (const chunk of chunks) {
+    if (chunk.chunkType !== VSD.NAME2) continue;
+    const s = readName2Chunk(chunk);
+    if (s) globalNamesById.set(chunk.id >>> 0, s);
+  }
   // Per-page NAME table, populated from VSD_NAME / VSD_NAME2 chunks. Used to
   // resolve the `nameId` reference inside a TEXT_FIELD string-cell.
-  let namesById = new Map();
+  let namesById = new Map(globalNamesById);
+  // Per-level elementId -> resolved name map from NAMEIDX chunks.
+  let namesMapByLevel = new Map();
 
   function attachShape(shape, parentKey) {
     const parent = parentKey ? shapesById.get(parentKey) : null;
@@ -1032,7 +1201,8 @@ function buildShapesFromChunks(chunks, opts = {}) {
         }
         shapes = [];
         shapesById = new Map();
-        namesById = new Map();
+        namesById = new Map(globalNamesById);
+        namesMapByLevel = new Map();
         currentShape = null;
         currentGeometry = null;
         currentPage = {
@@ -1326,15 +1496,38 @@ function buildShapesFromChunks(chunks, opts = {}) {
         // Per-shape NAME table entry. Keyed by the chunk's record id, which
         // is the same id a TEXT_FIELD's string-cell `nameId` references.
         // Ported from libvisio VSDParser::readName (GPL-3.0, LibreOffice libvisio).
-        const s = readNameChunk(chunk);
-        if (s) namesById.set(chunk.id >>> 0, s);
+        const s = chunk.chunkType === VSD.NAME2 ? readName2Chunk(chunk) : readNameChunk(chunk);
+        if (s) {
+          namesById.set(chunk.id >>> 0, s);
+          if (chunk.chunkType === VSD.NAME2) globalNamesById.set(chunk.id >>> 0, s);
+        }
+        break;
+      }
+
+      case VSD.NAME_IDX: {
+        const resolved = new Map();
+        for (const row of readNameIdxChunk(chunk)) {
+          const name = namesById.get(row.nameId);
+          if (name) resolved.set(row.elementId, name.replace(/^\u0000+/g, ''));
+        }
+        namesMapByLevel.set(chunk.level, resolved);
         break;
       }
 
       case VSD.CUSTOM_PROPS: {
         if (currentShape) {
-          const prop = parseCustomPropChunk(chunk);
+          const rowName = namesMapByLevel.get(chunk.level)?.get(chunk.id >>> 0) || null;
+          const prop = parseCustomPropChunk(chunk, rowName);
           if (prop) currentShape.customProps = mergeCustomProps(currentShape.customProps, [prop]);
+        }
+        break;
+      }
+
+      case VSD.USER_DEFINED_CELLS: {
+        if (currentShape) {
+          const rowName = namesMapByLevel.get(chunk.level)?.get(chunk.id >>> 0) || null;
+          const userDef = parseUserDefinedCellChunk(chunk, rowName);
+          if (userDef) currentShape.userDefs = mergeUserDefs(currentShape.userDefs, [userDef]);
         }
         break;
       }
@@ -1343,7 +1536,6 @@ function buildShapesFromChunks(chunks, opts = {}) {
       // libvisio-ng's behaviour: these list/user chunks are containers or
       // compact binary rows whose name table wiring is not decoded here.
       case VSD.PROP_LIST:
-      case VSD.USER_DEFINED_CELLS:
       case VSD.CUST_PROPS_LIST:
         break;
     }
@@ -1521,6 +1713,24 @@ function handleStream(mainContent, ptr, allChunks, depth, ptrIdx = 0, ctx = { st
   const streamData = getStreamData(mainContent, ptr);
   if (!streamData || streamData.length === 0) return;
 
+  // Some VSD pointer types are raw payload streams rather than nested chunk
+  // containers. NAME / NAME2 are the important ones for metadata wiring: if we
+  // drop them here, later NAMEIDX maps cannot resolve row ids to symbolic
+  // names. libvisio handles these pointer streams directly in handleStream().
+  if (ptr.type === VSD.NAME || ptr.type === VSD.NAME2) {
+    allChunks.push({
+      chunkType: ptr.type,
+      id: ptrIdx,
+      list: 0,
+      dataLength: streamData.length,
+      level: depth,
+      data: new BinaryReader(streamData),
+      ptrIdx,
+      _stencilPage: ctx.stencilPage
+    });
+    return;
+  }
+
   const compressed = (ptr.format & 2) === 2;
   const shift = compressed ? 4 : 0;
   const formatType = (ptr.format >> 4) & 0xF;
@@ -1569,6 +1779,50 @@ function handleStream(mainContent, ptr, allChunks, depth, ptrIdx = 0, ctx = { st
     for (const c of chunks) { c.ptrIdx = ptrIdx; c._stencilPage = childCtx.stencilPage; }
     allChunks.push(...chunks);
   }
+}
+
+export function debugParseVsdChunks(arrayBuffer) {
+  const u8 = new Uint8Array(arrayBuffer);
+  const cfb = CFB.read(u8, { type: 'array' });
+  const visioEntry = CFB.find(cfb, 'VisioDocument');
+  if (!visioEntry || !visioEntry.content) {
+    throw new Error('Not a valid VSD file: VisioDocument stream not found');
+  }
+
+  const content = visioEntry.content;
+  const mainContent = content instanceof Uint8Array ? content : new Uint8Array(content);
+
+  const reader = new BinaryReader(mainContent);
+  reader.pos = 0x24;
+  const trailerPtr = readPointer(reader);
+  if (trailerPtr.type !== VSD.TRAILER_STREAM) {
+    throw new Error('Invalid VSD file: trailer pointer type mismatch');
+  }
+  const trailerData = getStreamData(mainContent, trailerPtr);
+  if (!trailerData || trailerData.length === 0) {
+    throw new Error('Failed to read trailer stream');
+  }
+
+  const compressed = (trailerPtr.format & 2) === 2;
+  const shift = compressed ? 4 : 0;
+  const { pointers, order } = readPointersFromStream(trailerData, shift);
+  const allChunks = [];
+  if (order.length > 0) {
+    for (const oi of order) {
+      if (pointers[oi]) handleStream(mainContent, pointers[oi], allChunks, 0, oi);
+    }
+    const seen = new Set(order);
+    for (let i = 0; i < pointers.length; i++) {
+      if (!seen.has(i) && pointers[i].type !== 0) {
+        handleStream(mainContent, pointers[i], allChunks, 0, i);
+      }
+    }
+  } else {
+    for (let i = 0; i < pointers.length; i++) {
+      handleStream(mainContent, pointers[i], allChunks, 0, i);
+    }
+  }
+  return allChunks;
 }
 
 export async function parseVsd(arrayBuffer) {
