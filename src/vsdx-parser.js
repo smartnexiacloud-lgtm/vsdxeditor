@@ -10,6 +10,57 @@ const VISIO_COLORS = [
   '#000080', '#FF00FF'
 ];
 
+const QUICKSTYLE_COLOR_MAP = {
+  0: 'dk1',
+  1: 'lt1',
+  2: 'dk2',
+  3: 'lt2',
+  4: 'accent1',
+  5: 'accent2',
+  6: 'accent3',
+  7: 'accent4',
+  8: 'accent5',
+  9: 'accent6',
+  100: 'dk1',
+  101: 'lt1',
+  102: 'dk2',
+  103: 'accent1',
+  104: 'accent2',
+  105: 'accent3',
+  106: 'accent4',
+  107: 'accent5',
+  108: 'accent6'
+};
+
+const IMAGE_MIME_TYPES = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.bmp': 'image/bmp',
+  '.svg': 'image/svg+xml',
+  '.tif': 'image/tiff',
+  '.tiff': 'image/tiff'
+};
+
+function bytesToBase64(bytes) {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  if (typeof btoa === 'function') return btoa(binary);
+  if (typeof Buffer !== 'undefined') return Buffer.from(bytes).toString('base64');
+  throw new Error('No base64 encoder available');
+}
+
+function imageToDataUri(bytes, filename) {
+  const dot = filename.lastIndexOf('.');
+  const ext = dot >= 0 ? filename.slice(dot).toLowerCase() : '';
+  const mime = IMAGE_MIME_TYPES[ext] || 'image/png';
+  return `data:${mime};base64,${bytesToBase64(bytes)}`;
+}
+
 function parseColor(value) {
   if (!value && value !== 0) return null;
   const s = String(value).trim();
@@ -24,6 +75,104 @@ function parseColor(value) {
   const idx = parseInt(s, 10);
   if (!isNaN(idx) && idx >= 0 && idx < VISIO_COLORS.length) return VISIO_COLORS[idx];
   return null;
+}
+
+function isBlack(color) {
+  return !!color && color.toUpperCase() === '#000000';
+}
+
+function isLightColor(color) {
+  if (!color || !/^#[0-9A-F]{6}$/i.test(color)) return false;
+  const r = parseInt(color.slice(1, 3), 16);
+  const g = parseInt(color.slice(3, 5), 16);
+  const b = parseInt(color.slice(5, 7), 16);
+  const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  return luminance >= 0.7;
+}
+
+function getCellFormula(el, name) {
+  const cell = getCell(el, name);
+  if (!cell) return null;
+  const f = cell.getAttribute('F');
+  return f !== null && f !== '' ? f : null;
+}
+
+function getCellData(el, name) {
+  const cell = getCell(el, name);
+  if (!cell) return null;
+  return {
+    value: getCellValue(el, name),
+    formula: getCellFormula(el, name)
+  };
+}
+
+function resolveQuickStyleColor(value, themeColors) {
+  if (!themeColors || !value && value !== 0) return null;
+  const n = parseInt(String(value), 10);
+  if (isNaN(n)) return null;
+  const name = QUICKSTYLE_COLOR_MAP[n];
+  return name ? (themeColors[name] || null) : null;
+}
+
+function extractThemeToken(formula) {
+  if (!formula) return null;
+  const match = formula.match(/THEMEVAL\s*\(\s*"?([A-Za-z0-9_]+)"?/i);
+  if (match) return match[1];
+  const numeric = formula.match(/THEMEVAL\s*\(\s*(\d+)/i);
+  return numeric ? numeric[1] : null;
+}
+
+function resolveThemedColor(cellData, inheritedCellData, themeColors, options = {}) {
+  const value = parseColor(cellData?.value);
+  const inheritedValue = parseColor(inheritedCellData?.value);
+  const formula = cellData?.formula || inheritedCellData?.formula || '';
+  const token = extractThemeToken(formula);
+  const quickStyleColor = resolveQuickStyleColor(options.quickStyle, themeColors);
+
+  if (token && themeColors) {
+    if (token === 'FillColor' || token === 'FillColor2' || token === 'LineColor') {
+      if (quickStyleColor) return quickStyleColor;
+      if (token === 'LineColor') return themeColors.dk1 || value || inheritedValue || '#000000';
+      return themeColors.accent1 || value || inheritedValue || null;
+    }
+    if (themeColors[token]) return themeColors[token];
+  }
+
+  if ((formula === 'Inh' || /THEME/i.test(formula)) && themeColors) {
+    if (options.role === 'line') return themeColors.dk1 || value || inheritedValue || '#000000';
+    if (options.role === 'font') return value || inheritedValue || themeColors.dk1 || '#000000';
+    if (quickStyleColor) return quickStyleColor;
+  }
+
+  if (value) return value;
+  if (quickStyleColor) return quickStyleColor;
+  if (inheritedValue) return inheritedValue;
+  return null;
+}
+
+function parseThemeColors(themeDoc) {
+  const themeColors = {};
+  const clrScheme = byTag(themeDoc, 'clrScheme')[0];
+  if (!clrScheme) return themeColors;
+  const names = ['dk1', 'lt1', 'dk2', 'lt2', 'accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6', 'hlink', 'folHlink'];
+  for (const name of names) {
+    const el = getDirectChildren(clrScheme, name)[0];
+    if (!el) continue;
+    const srgb = getDirectChildren(el, 'srgbClr')[0];
+    const sysClr = getDirectChildren(el, 'sysClr')[0];
+    if (srgb) {
+      const val = srgb.getAttribute('val');
+      if (val) themeColors[name] = `#${val}`;
+    } else if (sysClr) {
+      const val = sysClr.getAttribute('lastClr') || sysClr.getAttribute('val');
+      if (val && val.length === 6) themeColors[name] = `#${val}`;
+    }
+  }
+  const indexMap = ['dk1', 'lt1', 'dk2', 'lt2', 'accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6', 'hlink', 'folHlink'];
+  indexMap.forEach((name, index) => {
+    if (themeColors[name]) themeColors[String(index)] = themeColors[name];
+  });
+  return themeColors;
 }
 
 function parseXml(text) {
@@ -81,44 +230,59 @@ function getDirectChildren(el, tagName) {
 }
 
 // Serialize a <Text> element's children into a string with U+FFFC placeholders
-// at every <fld>/<cp>/<pp>/<tp> position. The resulting string can be fed to
-// resolveFields() which substitutes each placeholder with the resolved field
-// value. We use U+FFFC uniformly so both the .vsd and .vsdx sides share the
-// same splicer. Fields are returned in document order so ctx.fields[i] aligns
-// with the i-th placeholder.
+// at every <fld> position. Character/paragraph markers are preserved separately
+// as text run metadata so the renderer can emit rich-text <tspan> elements.
+// Fields are returned in document order so ctx.fields[i] aligns with the i-th
+// placeholder.
 function serializeTextWithFields(textEl) {
   let out = '';
   const fields = [];
+  const runs = [];
+  let currentCp = '0';
+  let currentPp = '0';
+  function appendRun(text) {
+    if (!text) return;
+    out += text;
+    runs.push({ text, cp: currentCp, pp: currentPp });
+  }
   function walk(node) {
     for (let i = 0; i < node.childNodes.length; i++) {
       const n = node.childNodes[i];
       if (n.nodeType === 3) {
-        out += n.nodeValue;
+        appendRun(n.nodeValue);
       } else if (n.nodeType === 1) {
         const name = n.localName;
         if (name === 'fld') {
           // <fld IX='N'/> — IX references a Field section row on this shape.
           const ix = n.getAttribute('IX');
           fields.push({ ix: ix != null ? parseInt(ix, 10) : null, _el: n });
-          out += '\uFFFC';
-        } else if (name === 'cp' || name === 'pp' || name === 'tp') {
-          // Character / paragraph / tab properties index — purely formatting,
-          // no runtime value. Skip silently.
+          appendRun('\uFFFC');
+        } else if (name === 'cp') {
+          currentCp = n.getAttribute('IX') || '0';
+        } else if (name === 'pp') {
+          currentPp = n.getAttribute('IX') || '0';
+        } else if (name === 'tp') {
+          // Tab properties are formatting-only for now.
         } else {
           walk(n);
         }
+        if (n.tail) appendRun(n.tail);
       }
     }
   }
   walk(textEl);
-  return { text: out, fields };
+  return { text: out, fields, runs };
 }
 
 function getTextContent(shapeEl) {
   const textEls = getDirectChildren(shapeEl, 'Text');
-  if (textEls.length === 0) return { text: '', fields: [] };
-  const { text, fields } = serializeTextWithFields(textEls[0]);
-  return { text: text.replace(/\n$/, ''), fields };
+  if (textEls.length === 0) return { text: '', fields: [], runs: [] };
+  const { text, fields, runs } = serializeTextWithFields(textEls[0]);
+  return {
+    text: text.replace(/\n$/, ''),
+    fields,
+    runs: runs.map(run => ({ ...run, text: run.text.replace(/\n$/, '') })).filter(run => run.text)
+  };
 }
 
 // Parse a shape's <Section N='Property'> into a name->value map. Names come
@@ -177,6 +341,90 @@ function parseFieldSection(shapeEl) {
     }
   }
   return fields;
+}
+
+function parseFillGradientStops(shapeEl, themeColors) {
+  const sections = getDirectChildren(shapeEl, 'Section')
+    .filter(s => s.getAttribute('N') === 'FillGradientDef');
+  if (sections.length === 0) return [];
+
+  const stops = [];
+  for (const sec of sections) {
+    for (const row of getDirectChildren(sec, 'Row')) {
+      const position = getCellFloat(row, 'GradientStopPosition');
+      const color = resolveThemedColor(getCellData(row, 'GradientStopColor'), null, themeColors, {
+        role: 'fill'
+      }) || parseColor(getCellValue(row, 'GradientStopColor'));
+      const transparency = getCellFloat(row, 'GradientStopTransparency') ?? 0;
+      if (!color) continue;
+      stops.push({
+        offset: Math.max(0, Math.min(100, (position ?? 0) * 100)),
+        color,
+        opacity: Math.max(0, Math.min(1, 1 - transparency))
+      });
+    }
+  }
+  return stops.sort((a, b) => a.offset - b.offset);
+}
+
+function parseCharacterFormats(shapeEl, themeColors, quickStyleFontColor) {
+  const formats = {};
+  const charSections = getDirectChildren(shapeEl, 'Section').filter(s => s.getAttribute('N') === 'Character');
+  for (const section of charSections) {
+    for (const row of getDirectChildren(section, 'Row')) {
+      const ix = row.getAttribute('IX') || '0';
+      const fontSize = getCellFloat(row, 'Size');
+      const fontColor = resolveThemedColor(getCellData(row, 'Color'), null, themeColors, {
+        role: 'font',
+        quickStyle: quickStyleFontColor
+      });
+      const fontFamily = getCellValue(row, 'Font');
+      const style = getCellValue(row, 'Style');
+      const styleNum = style ? parseInt(style, 10) : 0;
+      formats[ix] = {
+        fontSize,
+        fontColor,
+        fontFamily,
+        bold: (styleNum & 1) !== 0,
+        italic: (styleNum & 2) !== 0,
+        underline: (styleNum & 4) !== 0
+      };
+    }
+  }
+  return formats;
+}
+
+function parseForeignData(shapeEl) {
+  const foreignDataEls = getDirectChildren(shapeEl, 'ForeignData');
+  if (foreignDataEls.length === 0) return null;
+  const foreignData = foreignDataEls[0];
+  const relEl = getDirectChildren(foreignData, 'Rel')[0];
+  let relId = null;
+  if (relEl) {
+    relId = relEl.getAttribute('r:id')
+      || relEl.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id')
+      || relEl.getAttribute('id');
+  }
+  return {
+    foreignType: foreignData.getAttribute('ForeignType') || '',
+    compressionType: foreignData.getAttribute('CompressionType') || '',
+    relId
+  };
+}
+
+function resolveImageData(foreignData, pageRels, media) {
+  if (!foreignData?.relId || !pageRels || !media) return null;
+  const target = pageRels[foreignData.relId];
+  if (!target) return null;
+  const filename = target.split('/').pop();
+  if (!filename) return null;
+  const mediaEntry = media.get(filename);
+  if (!mediaEntry) return null;
+  return {
+    href: mediaEntry.dataUri,
+    filename,
+    foreignType: foreignData.foreignType
+  };
 }
 
 function parseRowData(row) {
@@ -252,7 +500,7 @@ function parseGeometryRaw(shapeEl) {
 }
 
 // Merge master geometry with shape geometry (shape overrides master by IX)
-function mergeGeometry(masterEl, shapeEl) {
+function mergeGeometry(masterEl, shapeEl, is1D) {
   const masterGeo = masterEl ? parseGeometryRaw(masterEl) : [];
   const shapeGeo = parseGeometryRaw(shapeEl);
 
@@ -266,11 +514,20 @@ function mergeGeometry(masterEl, shapeEl) {
       noLine: sec.noLine
     }));
   }
+  if (is1D) {
+    return shapeGeo.filter(s => !s.noShow).map(sec => ({
+      rows: [...sec.rowMap.values()].filter(r => !r.del).sort((a, b) => parseInt(a.ix) - parseInt(b.ix)),
+      noFill: sec.noFill,
+      noLine: sec.noLine,
+      noShow: sec.noShow
+    }));
+  }
   if (masterGeo.length === 0) {
     return shapeGeo.filter(s => !s.noShow).map(sec => ({
       rows: [...sec.rowMap.values()].filter(r => !r.del).sort((a, b) => parseInt(a.ix) - parseInt(b.ix)),
       noFill: sec.noFill,
-      noLine: sec.noLine
+      noLine: sec.noLine,
+      noShow: sec.noShow
     }));
   }
 
@@ -299,7 +556,8 @@ function mergeGeometry(masterEl, shapeEl) {
     merged.push({
       rows: [...mergedRowMap.values()].filter(r => !r.del).sort((a, b) => parseInt(a.ix) - parseInt(b.ix)),
       noFill: shapeSec.noFill || (masterSec?.noFill ?? false),
-      noLine: shapeSec.noLine || (masterSec?.noLine ?? false)
+      noLine: shapeSec.noLine || (masterSec?.noLine ?? false),
+      noShow: false
     });
   }
   // Add master sections not present in shape
@@ -308,7 +566,8 @@ function mergeGeometry(masterEl, shapeEl) {
       merged.push({
         rows: [...masterSec.rowMap.values()].filter(r => !r.del).sort((a, b) => parseInt(a.ix) - parseInt(b.ix)),
         noFill: masterSec.noFill,
-        noLine: masterSec.noLine
+        noLine: masterSec.noLine,
+        noShow: false
       });
     }
   }
@@ -316,7 +575,7 @@ function mergeGeometry(masterEl, shapeEl) {
   return merged;
 }
 
-function parseShape(shapeEl, masters, parentMaster) {
+function parseShape(shapeEl, masters, parentMaster, themeColors, context = {}) {
   const id = shapeEl.getAttribute('ID');
   const masterId = shapeEl.getAttribute('Master');
   const masterShapeId = shapeEl.getAttribute('MasterShape');
@@ -350,32 +609,74 @@ function parseShape(shapeEl, masters, parentMaster) {
   const height = getCellFloat(shapeEl, 'Height') ?? (masterShape ? getCellFloat(masterShape.el, 'Height') : null) ?? 0;
   const locPinX = getCellFloat(shapeEl, 'LocPinX') ?? (masterShape ? getCellFloat(masterShape.el, 'LocPinX') : null) ?? width / 2;
   const locPinY = getCellFloat(shapeEl, 'LocPinY') ?? (masterShape ? getCellFloat(masterShape.el, 'LocPinY') : null) ?? height / 2;
+  const txtPinX = getCellFloat(shapeEl, 'TxtPinX') ?? (masterShape ? getCellFloat(masterShape.el, 'TxtPinX') : null) ?? width / 2;
+  const txtPinY = getCellFloat(shapeEl, 'TxtPinY') ?? (masterShape ? getCellFloat(masterShape.el, 'TxtPinY') : null) ?? height / 2;
+  const txtWidth = getCellFloat(shapeEl, 'TxtWidth') ?? (masterShape ? getCellFloat(masterShape.el, 'TxtWidth') : null) ?? width;
+  const txtHeight = getCellFloat(shapeEl, 'TxtHeight') ?? (masterShape ? getCellFloat(masterShape.el, 'TxtHeight') : null) ?? height;
   const angle = getCellFloat(shapeEl, 'Angle') ?? (masterShape ? getCellFloat(masterShape.el, 'Angle') : null) ?? 0;
   const flipX = getCellValue(shapeEl, 'FlipX') ?? (masterShape ? getCellValue(masterShape.el, 'FlipX') : null);
   const flipY = getCellValue(shapeEl, 'FlipY') ?? (masterShape ? getCellValue(masterShape.el, 'FlipY') : null);
+  const beginX = getCellFloat(shapeEl, 'BeginX') ?? (masterShape ? getCellFloat(masterShape.el, 'BeginX') : null);
+  const beginY = getCellFloat(shapeEl, 'BeginY') ?? (masterShape ? getCellFloat(masterShape.el, 'BeginY') : null);
+  const endX = getCellFloat(shapeEl, 'EndX') ?? (masterShape ? getCellFloat(masterShape.el, 'EndX') : null);
+  const endY = getCellFloat(shapeEl, 'EndY') ?? (masterShape ? getCellFloat(masterShape.el, 'EndY') : null);
+  const objType = getCellValue(shapeEl, 'ObjType') ?? (masterShape ? getCellValue(masterShape.el, 'ObjType') : null);
+  const quickStyleLineColor = getCellValue(shapeEl, 'QuickStyleLineColor') ?? (masterShape ? getCellValue(masterShape.el, 'QuickStyleLineColor') : null);
+  const quickStyleFillColor = getCellValue(shapeEl, 'QuickStyleFillColor') ?? (masterShape ? getCellValue(masterShape.el, 'QuickStyleFillColor') : null);
+  const quickStyleFontColor = getCellValue(shapeEl, 'QuickStyleFontColor') ?? (masterShape ? getCellValue(masterShape.el, 'QuickStyleFontColor') : null);
+  const is1D = (beginX !== null && endX !== null) || objType === '2';
 
   // Style cells
-  const lineColor = parseColor(getCellValue(shapeEl, 'LineColor')) ?? (masterShape ? parseColor(getCellValue(masterShape.el, 'LineColor')) : null) ?? '#000000';
+  const lineColorData = getCellData(shapeEl, 'LineColor');
+  const masterLineColorData = masterShape ? getCellData(masterShape.el, 'LineColor') : null;
+  const lineColor = resolveThemedColor(lineColorData, masterLineColorData, themeColors, {
+    role: 'line',
+    quickStyle: quickStyleLineColor
+  }) ?? '#000000';
   const lineWeight = getCellFloat(shapeEl, 'LineWeight') ?? (masterShape ? getCellFloat(masterShape.el, 'LineWeight') : null) ?? 0.01;
   const linePattern = getCellFloat(shapeEl, 'LinePattern') ?? (masterShape ? getCellFloat(masterShape.el, 'LinePattern') : null) ?? 1;
-  const fillForeground = parseColor(getCellValue(shapeEl, 'FillForegnd')) ?? (masterShape ? parseColor(getCellValue(masterShape.el, 'FillForegnd')) : null);
-  const fillBackground = parseColor(getCellValue(shapeEl, 'FillBkgnd')) ?? (masterShape ? parseColor(getCellValue(masterShape.el, 'FillBkgnd')) : null);
+  const fillForegroundData = getCellData(shapeEl, 'FillForegnd');
+  const masterFillForegroundData = masterShape ? getCellData(masterShape.el, 'FillForegnd') : null;
+  let fillForeground = resolveThemedColor(fillForegroundData, masterFillForegroundData, themeColors, {
+    role: 'fill',
+    quickStyle: quickStyleFillColor
+  });
+  const fillBackgroundData = getCellData(shapeEl, 'FillBkgnd');
+  const masterFillBackgroundData = masterShape ? getCellData(masterShape.el, 'FillBkgnd') : null;
+  const fillBackground = resolveThemedColor(fillBackgroundData, masterFillBackgroundData, themeColors, {
+    role: 'fill',
+    quickStyle: quickStyleFillColor
+  });
   const fillPattern = getCellFloat(shapeEl, 'FillPattern') ?? (masterShape ? getCellFloat(masterShape.el, 'FillPattern') : null) ?? 1;
+  const fillGradientDir = getCellFloat(shapeEl, 'FillGradientDir') ?? (masterShape ? getCellFloat(masterShape.el, 'FillGradientDir') : null);
+  const shapeGradientStops = parseFillGradientStops(shapeEl, themeColors);
+  const masterGradientStops = masterShape ? parseFillGradientStops(masterShape.el, themeColors) : [];
+  const fillGradientStops = shapeGradientStops.length > 0 ? shapeGradientStops : masterGradientStops;
   const rounding = getCellFloat(shapeEl, 'Rounding') ?? (masterShape ? getCellFloat(masterShape.el, 'Rounding') : null) ?? 0;
   const beginArrow = getCellFloat(shapeEl, 'BeginArrow') ?? (masterShape ? getCellFloat(masterShape.el, 'BeginArrow') : null) ?? 0;
   const endArrow = getCellFloat(shapeEl, 'EndArrow') ?? (masterShape ? getCellFloat(masterShape.el, 'EndArrow') : null) ?? 0;
+  const imgOffsetX = getCellFloat(shapeEl, 'ImgOffsetX') ?? (masterShape ? getCellFloat(masterShape.el, 'ImgOffsetX') : null) ?? 0;
+  const imgOffsetY = getCellFloat(shapeEl, 'ImgOffsetY') ?? (masterShape ? getCellFloat(masterShape.el, 'ImgOffsetY') : null) ?? 0;
+  const imgWidth = getCellFloat(shapeEl, 'ImgWidth') ?? (masterShape ? getCellFloat(masterShape.el, 'ImgWidth') : null) ?? width;
+  const imgHeight = getCellFloat(shapeEl, 'ImgHeight') ?? (masterShape ? getCellFloat(masterShape.el, 'ImgHeight') : null) ?? height;
 
   // Text style
   const charSections = getDirectChildren(shapeEl, 'Section').filter(s => s.getAttribute('N') === 'Character');
+  const charFormats = parseCharacterFormats(shapeEl, themeColors, quickStyleFontColor);
   let fontSize = null;
   let fontColor = null;
+  let fontFamily = null;
   let bold = false;
   let italic = false;
   if (charSections.length > 0) {
     const charRows = getDirectChildren(charSections[0], 'Row');
     if (charRows.length > 0) {
       fontSize = getCellFloat(charRows[0], 'Size');
-      fontColor = parseColor(getCellValue(charRows[0], 'Color'));
+      fontFamily = getCellValue(charRows[0], 'Font');
+      fontColor = resolveThemedColor(getCellData(charRows[0], 'Color'), null, themeColors, {
+        role: 'font',
+        quickStyle: quickStyleFontColor
+      });
       const style = getCellValue(charRows[0], 'Style');
       if (style) {
         const styleNum = parseInt(style, 10);
@@ -391,8 +692,22 @@ function parseShape(shapeEl, masters, parentMaster) {
       const mCharRows = getDirectChildren(mCharSections[0], 'Row');
       if (mCharRows.length > 0) {
         fontSize = fontSize ?? getCellFloat(mCharRows[0], 'Size');
-        fontColor = fontColor ?? parseColor(getCellValue(mCharRows[0], 'Color'));
+        fontFamily = fontFamily ?? getCellValue(mCharRows[0], 'Font');
+        fontColor = fontColor ?? resolveThemedColor(getCellData(mCharRows[0], 'Color'), null, themeColors, {
+          role: 'font',
+          quickStyle: quickStyleFontColor
+        });
       }
+    }
+  }
+
+  if (!fillForeground && fillPattern !== 0) {
+    if (fillBackground && fontColor && isLightColor(fontColor)) {
+      fillForeground = fillBackground;
+    } else if (themeColors.lt1 && fontColor && !isLightColor(fontColor)) {
+      fillForeground = themeColors.lt1;
+    } else if (fillBackground) {
+      fillForeground = fillBackground;
     }
   }
 
@@ -403,7 +718,7 @@ function parseShape(shapeEl, masters, parentMaster) {
     : [];
 
   // Geometry - merge shape geometry with master geometry
-  const geometry = mergeGeometry(masterShape?.el ?? null, shapeEl);
+  const geometry = mergeGeometry(masterShape?.el ?? null, shapeEl, is1D);
 
   // Sub-shapes (groups). Propagate the current shape's master so that nested
   // children with only a `MasterShape` attribute can resolve the sibling
@@ -413,11 +728,11 @@ function parseShape(shapeEl, masters, parentMaster) {
   if (shapesContainer.length > 0) {
     const childShapeEls = getDirectChildren(shapesContainer[0], 'Shape');
     for (const childEl of childShapeEls) {
-      subShapes.push(parseShape(childEl, masters, master));
+      subShapes.push(parseShape(childEl, masters, master, themeColors, context));
     }
   }
 
-  const { text: rawText, fields: inlineFields } = getTextContent(shapeEl);
+  const { text: rawText, fields: inlineFields, runs: rawTextRuns } = getTextContent(shapeEl);
 
   // Field section rows (indexed by IX). Prefer shape's own Field section,
   // then fall back to the master's.
@@ -435,6 +750,14 @@ function parseShape(shapeEl, masters, parentMaster) {
   // Custom-property and user-defined maps. Shape overrides master.
   const propMap = { ...(masterShape ? parsePropSection(masterShape.el) : {}), ...parsePropSection(shapeEl) };
   const userMap = { ...(masterShape ? parseUserSection(masterShape.el) : {}), ...parseUserSection(shapeEl) };
+  const foreignData = parseForeignData(shapeEl) || (masterShape ? parseForeignData(masterShape.el) : null);
+  const image = resolveImageData(foreignData, context.pageRels, context.media);
+  if (image) {
+    image.x = imgOffsetX;
+    image.y = imgOffsetY;
+    image.width = imgWidth;
+    image.height = imgHeight;
+  }
 
   const shape = {
     id,
@@ -443,6 +766,8 @@ function parseShape(shapeEl, masters, parentMaster) {
     pinX, pinY,
     width, height,
     locPinX, locPinY,
+    txtPinX, txtPinY,
+    txtWidth, txtHeight,
     angle,
     flipX: flipX === '1',
     flipY: flipY === '1',
@@ -452,19 +777,42 @@ function parseShape(shapeEl, masters, parentMaster) {
     fillForeground,
     fillBackground,
     fillPattern,
+    fillGradientDir,
+    fillGradientStops,
+    image,
     rounding,
     beginArrow,
     endArrow,
+    beginX,
+    beginY,
+    endX,
+    endY,
+    objType,
+    is1D,
     fontSize,
+    fontFamily,
     fontColor,
     bold,
     italic,
+    charFormats,
+    textRuns: rawTextRuns.map(run => ({
+      ...run,
+      ...(charFormats[run.cp] || charFormats['0'] || {})
+    })),
     geometry,
     subShapes,
     text: rawText,
     layerMembers,
     propMap,
     userMap,
+    styleMeta: {
+      lineColorFormula: lineColorData?.formula || masterLineColorData?.formula || null,
+      fillForegroundFormula: fillForegroundData?.formula || masterFillForegroundData?.formula || null,
+      fillBackgroundFormula: fillBackgroundData?.formula || masterFillBackgroundData?.formula || null,
+      quickStyleLineColor,
+      quickStyleFillColor,
+      quickStyleFontColor
+    },
     _fields: orderedFields
   };
 
@@ -475,7 +823,7 @@ function parseShape(shapeEl, masters, parentMaster) {
     const masterText = serializeTextWithFields(masterShape.el);
     const masterInherit = {
       text: masterText.text.replace(/\n$/, ''),
-      fontSize: null, fontColor: null, bold: null, italic: null,
+      fontSize: null, fontFamily: null, fontColor: null, bold: null, italic: null,
       _fields: masterText.fields.map(f => f.ix != null && masterFields[f.ix] ? masterFields[f.ix] : f),
       propMap: {}, userMap: {}
     };
@@ -485,7 +833,11 @@ function parseShape(shapeEl, masters, parentMaster) {
       const mCharRows = getDirectChildren(mCharSections[0], 'Row');
       if (mCharRows.length > 0) {
         masterInherit.fontSize = getCellFloat(mCharRows[0], 'Size');
-        masterInherit.fontColor = parseColor(getCellValue(mCharRows[0], 'Color'));
+        masterInherit.fontFamily = getCellValue(mCharRows[0], 'Font');
+        masterInherit.fontColor = resolveThemedColor(getCellData(mCharRows[0], 'Color'), null, themeColors, {
+          role: 'font',
+          quickStyle: quickStyleFontColor
+        });
         const style = getCellValue(mCharRows[0], 'Style');
         if (style) {
           const sNum = parseInt(style, 10);
@@ -534,6 +886,23 @@ export async function parseVsdx(arrayBuffer) {
     return await file.async('string');
   }
 
+  const media = new Map();
+  const mediaPromises = [];
+  zip.forEach((relativePath, entry) => {
+    if (!entry.dir && relativePath.toLowerCase().startsWith('visio/media/')) {
+      mediaPromises.push(entry.async('uint8array').then(bytes => {
+        const filename = relativePath.split('/').pop();
+        if (filename) {
+          media.set(filename, {
+            bytes,
+            dataUri: imageToDataUri(bytes, filename)
+          });
+        }
+      }));
+    }
+  });
+  await Promise.all(mediaPromises);
+
   // Parse relationships to find page and master files
   async function parseRels(basePath) {
     const relsPath = basePath.replace(/([^/]*)$/, '_rels/$1.rels');
@@ -548,6 +917,12 @@ export async function parseVsdx(arrayBuffer) {
       rels[id] = target;
     }
     return rels;
+  }
+
+  let themeColors = {};
+  const themeXml = await readFile('visio/theme/theme1.xml') || await readFile('visio/theme/theme2.xml');
+  if (themeXml) {
+    themeColors = parseThemeColors(parseXml(themeXml));
   }
 
   // Parse masters
@@ -647,6 +1022,7 @@ export async function parseVsdx(arrayBuffer) {
       const pageContent = await readFile(pagePath);
       if (pageContent) {
         const pageDoc = parseXml(pageContent);
+        const pageRels = await parseRels(pagePath);
 
         // Parse connects
         const connectsEls = byTag(pageDoc, 'Connect');
@@ -663,7 +1039,7 @@ export async function parseVsdx(arrayBuffer) {
         if (pageShapes.length > 0) {
           const shapeEls = getDirectChildren(pageShapes[0], 'Shape');
           for (const shapeEl of shapeEls) {
-            shapes.push(parseShape(shapeEl, masters));
+            shapes.push(parseShape(shapeEl, masters, null, themeColors, { pageRels, media }));
           }
         }
       }
@@ -697,9 +1073,10 @@ export async function parseVsdx(arrayBuffer) {
       backPage,
       layers,
       shapes,
-      connects
+      connects,
+      themeColors
     });
   }
 
-  return { pages, masters };
+  return { pages, masters, themeColors };
 }

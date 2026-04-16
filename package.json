@@ -6,7 +6,12 @@
   "scripts": {
     "build": "esbuild src/main.js --bundle --outfile=dist/main.js --format=iife --minify",
     "postbuild": "cp src/index.html dist/index.html",
-    "dev": "esbuild src/main.js --bundle --outfile=dist/main.js --format=iife --servedir=dist --serve=8080"
+    "dev": "esbuild src/main.js --bundle --outfile=dist/main.js --format=iife --servedir=dist --serve=8080",
+    "test:oreilly-fixtures": "node scripts/test-oreilly-fixtures.mjs",
+    "test:render-regressions": "node scripts/test-render-regressions.mjs",
+    "test:libvisio-port": "node --test tests/libvisio-ng-port.test.mjs",
+    "export:our-svg": "node scripts/export-our-svg.mjs",
+    "compare:renderers": "node scripts/compare-renderers.mjs"
   },
   "keywords": [],
   "author": "",

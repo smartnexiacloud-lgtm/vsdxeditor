@@ -10,7 +10,7 @@
 
 // Character-style fields that we try to inherit from a master shape when the
 // child shape does not specify them explicitly.
-const CHAR_FIELDS = ['fontSize', 'fontColor', 'bold', 'italic'];
+const CHAR_FIELDS = ['fontSize', 'fontFamily', 'fontColor', 'bold', 'italic'];
 
 // Is `v` an "empty" value for inheritance purposes?
 function isEmpty(v) {
