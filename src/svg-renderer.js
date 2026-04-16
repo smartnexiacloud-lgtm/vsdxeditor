@@ -673,7 +673,8 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
   const g = document.createElementNS(svgNS, 'g');
   if (shape.id) {
     const safeId = String(shape.id).replace(/[^A-Za-z0-9_-]/g, '_');
-    g.setAttribute('id', `shape${safeId}`);
+    const idPrefix = shape.type === 'Group' ? 'group' : 'shape';
+    g.setAttribute('id', `${idPrefix}${safeId}`);
     g.setAttribute('data-shape-id', String(shape.id));
   }
   setVisioAttr(g, 'mID', shape.id);
@@ -818,13 +819,17 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
       : shape.geometry;
 
     for (const geo of geometryToRender) {
-      const pathData = geometryToPath(geo.rows, shape.width, shape.height, {
+      const strokePathData = geometryToPath(geo.rows, shape.width, shape.height, {
         connectInternalMoves: false
       });
-      if (!pathData) continue;
 
       const noEffectiveLine = geo.noLine || shape.linePattern === 0;
       const hasPaintedFill = !geo.noFill && shape.fillPattern !== 0 && getFillPaint(shape, svgNS, defs, themeColors);
+      const fillPathData = hasPaintedFill
+        ? geometryToPath(geo.rows, shape.width, shape.height, { connectInternalMoves: true })
+        : strokePathData;
+      if (!strokePathData && !fillPathData) continue;
+
       const canCompound =
         !shape.beginArrow &&
         !shape.endArrow &&
@@ -838,16 +843,16 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
           flushCompoundRun();
           compoundRun = { noLine: geo.noLine, noShow: geo.noShow, paths: [] };
         }
-        compoundRun.paths.push(pathData);
+        compoundRun.paths.push(strokePathData);
       } else {
         flushCompoundRun();
         if (hasPaintedFill && !noEffectiveLine && !shape.beginArrow && !shape.endArrow) {
-          appendPath(pathData, geo, { paintStroke: false });
-          strokeQueue.push({ pathData, geo });
+          appendPath(fillPathData, geo, { paintStroke: false });
+          if (strokePathData) strokeQueue.push({ pathData: strokePathData, geo });
         } else if (!noEffectiveLine) {
-          strokeQueue.push({ pathData, geo });
+          if (strokePathData) strokeQueue.push({ pathData: strokePathData, geo });
         } else {
-          appendPath(pathData, geo);
+          appendPath(hasPaintedFill ? fillPathData : strokePathData, geo);
         }
       }
     }
