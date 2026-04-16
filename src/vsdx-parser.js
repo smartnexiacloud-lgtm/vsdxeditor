@@ -1311,3 +1311,69 @@ export async function parseVsdx(arrayBuffer) {
 
   return { pages, masters, themeColors, colorPalette, styleSheets };
 }
+
+function getOrCreateCell(doc, row, name) {
+  let cell = getCell(row, name);
+  if (cell) return cell;
+
+  cell = doc.createElementNS(row.namespaceURI || 'http://schemas.microsoft.com/office/visio/2012/main', 'Cell');
+  cell.setAttribute('N', name);
+  row.appendChild(cell);
+  return cell;
+}
+
+function setCellValue(doc, row, name, value) {
+  const cell = getOrCreateCell(doc, row, name);
+  cell.setAttribute('V', value);
+  cell.removeAttribute('F');
+}
+
+function boolToCellValue(value, defaultValue) {
+  return (value ?? defaultValue) ? '1' : '0';
+}
+
+export async function saveVsdxLayerPermissions(arrayBuffer, pages) {
+  const zip = await JSZip.loadAsync(arrayBuffer);
+  const pagesFile = zip.file('visio/pages/pages.xml');
+  if (!pagesFile) throw new Error('VSDX package is missing visio/pages/pages.xml');
+
+  const pagesXml = await pagesFile.async('string');
+  const doc = parseXml(pagesXml);
+  const pageEls = byTag(doc, 'Page');
+  const pageById = new Map((pages || []).map(page => [String(page.id), page]));
+
+  for (let i = 0; i < pageEls.length; i++) {
+    const pageEl = pageEls[i];
+    const page = pageById.get(String(pageEl.getAttribute('ID'))) || pages[i];
+    if (!page?.layers?.length) continue;
+
+    const layersByIndex = new Map(page.layers.map(layer => [String(layer.index), layer]));
+    const pageSheet = getDirectChildren(pageEl, 'PageSheet')[0];
+    if (!pageSheet) continue;
+
+    const layerSection = getDirectChildren(pageSheet, 'Section').find(section => section.getAttribute('N') === 'Layer');
+    if (!layerSection) continue;
+
+    for (const row of getDirectChildren(layerSection, 'Row')) {
+      const layer = layersByIndex.get(String(row.getAttribute('IX')));
+      if (!layer) continue;
+
+      setCellValue(doc, row, 'Visible', boolToCellValue(layer.visible, true));
+      setCellValue(doc, row, 'Print', boolToCellValue(layer.print, true));
+      setCellValue(doc, row, 'Active', boolToCellValue(layer.active, false));
+      setCellValue(doc, row, 'Lock', boolToCellValue(layer.lock, false));
+      setCellValue(doc, row, 'Snap', boolToCellValue(layer.snap, true));
+      setCellValue(doc, row, 'Glue', boolToCellValue(layer.glue, true));
+      if (layer.color !== null && layer.color !== undefined && layer.color !== '') {
+        setCellValue(doc, row, 'Color', String(layer.color));
+      }
+      if (layer.colorTrans !== null && layer.colorTrans !== undefined && layer.colorTrans !== '') {
+        setCellValue(doc, row, 'ColorTrans', String(layer.colorTrans));
+      }
+    }
+  }
+
+  const xml = new XMLSerializer().serializeToString(doc);
+  zip.file('visio/pages/pages.xml', xml);
+  return zip.generateAsync({ type: 'arraybuffer' });
+}

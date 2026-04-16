@@ -1,4 +1,4 @@
-import { parseVsdx } from './vsdx-parser.js';
+import { parseVsdx, saveVsdxLayerPermissions } from './vsdx-parser.js';
 import { parseVsd } from './vsd-parser.js';
 import { renderPage } from './svg-renderer.js';
 
@@ -22,6 +22,7 @@ const layersDeselectFiltered = document.getElementById('layers-deselect-filtered
 const layerMatrixModal = document.getElementById('layer-matrix-modal');
 const layerMatrixBody = document.getElementById('layer-matrix-body');
 const layerMatrixClose = document.getElementById('layer-matrix-close');
+const saveVsdxButton = document.getElementById('btn-save-vsdx');
 
 let currentPages = [];
 let currentPageIndex = 0;
@@ -31,6 +32,8 @@ let isPanning = false;
 let panStartX, panStartY;
 let hiddenLayers = new Set();
 let focusedLayerIndex = null;
+let currentFileBuffer = null;
+let currentFileType = null;
 
 function getInitialHiddenLayers(page = currentPages[currentPageIndex]) {
   return new Set((page?.layers || [])
@@ -162,6 +165,10 @@ function getCurrentLayers() {
   return currentPages[currentPageIndex]?.layers || [];
 }
 
+function getCurrentLayer(layerIndex) {
+  return getCurrentLayers().find(layer => String(layer.index) === String(layerIndex));
+}
+
 function layerMatchesFilter(layer) {
   const needle = normalizeLayerText(layerFilterText.value);
   if (!needle) return true;
@@ -200,6 +207,9 @@ function updateLayerBulkButtons(visibleCount) {
 }
 
 function setLayerSelected(layerIndex, selected) {
+  const layer = getCurrentLayer(layerIndex);
+  if (layer) layer.visible = selected;
+
   if (selected) {
     hiddenLayers.delete(layerIndex);
   } else {
@@ -223,6 +233,7 @@ function toggleLayer(layerIndex) {
 
 function setLayerSelection(layers, selected) {
   for (const layer of layers) {
+    layer.visible = selected;
     if (selected) hiddenLayers.delete(layer.index);
     else hiddenLayers.add(layer.index);
   }
@@ -318,6 +329,22 @@ function createBoolCell(value, defaultValue = null) {
   return cell;
 }
 
+function createEditableBoolCell(page, layer, prop, defaultValue, onChange = null) {
+  const cell = document.createElement('td');
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.checked = layer[prop] ?? defaultValue;
+  input.setAttribute('aria-label', `${layer.name} ${prop}`);
+  input.addEventListener('change', () => {
+    layer[prop] = input.checked;
+    layer.cells = layer.cells || {};
+    layer.cells[prop[0].toUpperCase() + prop.slice(1)] = input.checked ? '1' : '0';
+    if (onChange) onChange(input.checked);
+  });
+  cell.appendChild(input);
+  return cell;
+}
+
 function buildLayerMatrix() {
   layerMatrixBody.innerHTML = '';
   const pages = currentPages.filter(page => !page.isBackground);
@@ -362,13 +389,21 @@ function buildLayerMatrix() {
       row.appendChild(createTextCell(page.name || 'Page'));
       row.appendChild(createTextCell(layer.name || `Layer ${layer.index}`, 'matrix-layer-name'));
       row.appendChild(createTextCell(String(layer.index)));
-      row.appendChild(createBoolCell(layer.visible, true));
+      row.appendChild(createEditableBoolCell(page, layer, 'visible', true, (selected) => {
+        if (isCurrentPage) {
+          if (selected) hiddenLayers.delete(layer.index);
+          else hiddenLayers.add(layer.index);
+          buildLayersSidebar();
+          applyLayerVisibility();
+        }
+        buildLayerMatrix();
+      }));
       row.appendChild(createBoolCell(displayedNow, true));
-      row.appendChild(createBoolCell(layer.print, true));
-      row.appendChild(createBoolCell(layer.active, false));
-      row.appendChild(createBoolCell(layer.lock, false));
-      row.appendChild(createBoolCell(layer.snap, true));
-      row.appendChild(createBoolCell(layer.glue, true));
+      row.appendChild(createEditableBoolCell(page, layer, 'print', true));
+      row.appendChild(createEditableBoolCell(page, layer, 'active', false));
+      row.appendChild(createEditableBoolCell(page, layer, 'lock', false));
+      row.appendChild(createEditableBoolCell(page, layer, 'snap', true));
+      row.appendChild(createEditableBoolCell(page, layer, 'glue', true));
       row.appendChild(createTextCell(layer.color || '-', layer.color ? '' : 'matrix-muted'));
       row.appendChild(createTextCell(layer.colorTrans || '-', layer.colorTrans ? '' : 'matrix-muted'));
       body.appendChild(row);
@@ -421,8 +456,11 @@ async function loadFile(file) {
   try {
     fileName.textContent = file.name;
     const buffer = await file.arrayBuffer();
-    const result = name.endsWith('.vsd') ? await parseVsd(buffer) : await parseVsdx(buffer);
+    currentFileBuffer = buffer;
+    currentFileType = name.endsWith('.vsdx') ? 'vsdx' : 'vsd';
+    const result = currentFileType === 'vsd' ? await parseVsd(buffer) : await parseVsdx(buffer);
     currentPages = result.pages;
+    saveVsdxButton.disabled = currentFileType !== 'vsdx';
     // Default to first foreground page
     const firstFg = currentPages.findIndex(p => !p.isBackground);
     currentPageIndex = firstFg >= 0 ? firstFg : 0;
@@ -523,6 +561,26 @@ document.getElementById('btn-layers').addEventListener('click', () => {
   btn.classList.toggle('active');
 });
 document.getElementById('btn-layer-matrix').addEventListener('click', showLayerMatrix);
+saveVsdxButton.addEventListener('click', async () => {
+  if (currentFileType !== 'vsdx' || !currentFileBuffer) {
+    showError('Save VSDX is only available for .vsdx files');
+    return;
+  }
+
+  try {
+    const output = await saveVsdxLayerPermissions(currentFileBuffer, currentPages);
+    const blob = new Blob([output], { type: 'application/vnd.ms-visio.drawing.main+xml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = (fileName.textContent || 'diagram.vsdx').replace(/\.vsdx$/i, '') + '-layers.vsdx';
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    console.error(e);
+    showError('Failed to save VSDX: ' + e.message);
+  }
+});
 layerMatrixClose.addEventListener('click', hideLayerMatrix);
 layerMatrixModal.addEventListener('click', (e) => {
   if (e.target === layerMatrixModal) hideLayerMatrix();

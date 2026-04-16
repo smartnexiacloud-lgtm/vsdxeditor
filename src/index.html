@@ -75,6 +75,13 @@
     .toolbar button:hover {
       background: #533483;
     }
+    .toolbar button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    .toolbar button:disabled:hover {
+      background: #0f3460;
+    }
     #file-name {
       font-size: 14px;
       font-weight: 600;
@@ -345,6 +352,12 @@
     .matrix-muted {
       color: #8888aa;
     }
+    .layer-matrix input[type="checkbox"] {
+      accent-color: #e94560;
+      width: 15px;
+      height: 15px;
+      cursor: pointer;
+    }
 
     /* Viewport */
     #viewport {
@@ -403,6 +416,7 @@
       <button id="btn-zoom-fit">Fit</button>
       <button id="btn-layers">Layers</button>
       <button id="btn-layer-matrix">Layer Matrix</button>
+      <button id="btn-save-vsdx" disabled>Save VSDX</button>
       <button id="btn-export">Export SVG</button>
       <span id="zoom-info">100%</span>
     </div>
