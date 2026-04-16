@@ -1,4 +1,6 @@
 const DPI = 96; // Visio inches to pixels
+const VISIO_NS = 'http://schemas.microsoft.com/visio/2003/SVGExtensions/';
+const XMLNS_NS = 'http://www.w3.org/2000/xmlns/';
 
 function inToPx(inches) {
   return inches * DPI;
@@ -22,6 +24,24 @@ function xmlSafe(s) {
   if (s == null) return s;
   // eslint-disable-next-line no-control-regex
   return String(s).replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\uFFFE\uFFFF]/g, '');
+}
+
+function hasMultipleSubpaths(pathData) {
+  return (pathData.match(/[Mm]/g) || []).length > 1;
+}
+
+function setVisioAttr(el, name, value) {
+  if (value === null || value === undefined || value === '') return;
+  el.setAttributeNS(VISIO_NS, `v:${name}`, xmlSafe(value));
+}
+
+function createVisioElement(localName) {
+  return document.createElementNS(VISIO_NS, `v:${localName}`);
+}
+
+function addClass(el, className) {
+  const existing = el.getAttribute('class');
+  el.setAttribute('class', existing ? `${existing} ${className}` : className);
 }
 
 function parseNurbsControlPoints(formula, width, height) {
@@ -611,20 +631,40 @@ function appendImageNode(target, shape, svgNS) {
 }
 
 function appendShapeMetadata(target, shape, svgNS) {
-  const titleText = shape.name || shape.nameU;
+  const titleText = shape.title || shape.name || shape.nameU;
   if (titleText) {
     const title = document.createElementNS(svgNS, 'title');
-    title.textContent = titleText;
+    title.textContent = xmlSafe(titleText);
     target.appendChild(title);
   }
 
-  if ((shape.propMap && Object.keys(shape.propMap).length > 0) || (shape.userMap && Object.keys(shape.userMap).length > 0)) {
-    const metadata = document.createElementNS(svgNS, 'metadata');
-    metadata.textContent = JSON.stringify({
-      properties: shape.propMap || {},
-      user: shape.userMap || {}
-    });
-    target.appendChild(metadata);
+  if (shape.customProps && shape.customProps.length > 0) {
+    const custProps = createVisioElement('custProps');
+    for (const prop of shape.customProps) {
+      const cp = createVisioElement('cp');
+      setVisioAttr(cp, 'nameU', prop.nameU);
+      setVisioAttr(cp, 'lbl', prop.label);
+      setVisioAttr(cp, 'prompt', prop.prompt);
+      setVisioAttr(cp, 'type', prop.type);
+      setVisioAttr(cp, 'format', prop.format);
+      setVisioAttr(cp, 'invis', prop.invisible === '1' ? 'true' : prop.invisible === '0' ? 'false' : prop.invisible);
+      setVisioAttr(cp, 'langID', prop.langID);
+      setVisioAttr(cp, 'val', prop.value);
+      custProps.appendChild(cp);
+    }
+    target.appendChild(custProps);
+  }
+
+  if (shape.userDefs && shape.userDefs.length > 0) {
+    const userDefs = createVisioElement('userDefs');
+    for (const def of shape.userDefs) {
+      const ud = createVisioElement('ud');
+      setVisioAttr(ud, 'nameU', def.nameU);
+      setVisioAttr(ud, 'prompt', def.prompt);
+      setVisioAttr(ud, 'val', def.value);
+      userDefs.appendChild(ud);
+    }
+    target.appendChild(userDefs);
   }
 }
 
@@ -636,10 +676,13 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
     g.setAttribute('id', `shape${safeId}`);
     g.setAttribute('data-shape-id', String(shape.id));
   }
+  setVisioAttr(g, 'mID', shape.id);
+  setVisioAttr(g, 'groupContext', shape.type === 'Group' ? 'group' : 'shape');
 
   // Tag with layer membership for visibility toggling
   if (shape.layerMembers && shape.layerMembers.length > 0) {
     g.setAttribute('data-layers', xmlSafe(shape.layerMembers.join(',')));
+    setVisioAttr(g, 'layerMember', shape.layerMembers.join(','));
   }
   appendShapeMetadata(g, shape, svgNS);
 
@@ -696,27 +739,30 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
 
   // Render geometry
   if (shape.geometry.length > 0) {
-    for (const geo of shape.geometry) {
-      const pathData = geometryToPath(geo.rows, shape.width, shape.height, {
-        connectInternalMoves: !geo.noFill
-      });
-      if (!pathData) continue;
+    const appendPath = (pathData, geo, options = {}) => {
+      if (!pathData) return;
+      const paintFill = options.paintFill !== false;
+      const paintStroke = options.paintStroke !== false;
       const path = document.createElementNS(svgNS, 'path');
       path.setAttribute('d', pathData);
 
       // Fill
       const fillColor = getFillPaint(shape, svgNS, defs, themeColors);
-      if (geo.noFill || !fillColor || shape.fillPattern === 0) {
+      if (!paintFill || geo.noFill || !fillColor || shape.fillPattern === 0) {
         path.setAttribute('fill', 'none');
       } else {
         path.setAttribute('fill', fillColor);
+        if (hasMultipleSubpaths(pathData)) {
+          path.setAttribute('fill-rule', 'evenodd');
+          path.setAttribute('clip-rule', 'evenodd');
+        }
       }
 
       // Stroke. lineWeight is always stored in inches, but the coordinate
       // space we emit is in the drawing's native unit (mm/inches/...) scaled
       // up by 96. `strokeScale` converts inch-valued line weights into that
       // coordinate space so strokes stay visually proportional to the drawing.
-      if (geo.noLine || shape.linePattern === 0) {
+      if (!paintStroke || geo.noLine || shape.linePattern === 0) {
         path.setAttribute('stroke', 'none');
       } else {
         path.setAttribute('stroke', shape.lineColor || themeColors.dk1 || '#000000');
@@ -729,18 +775,16 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
       }
 
       path.setAttribute('stroke-linejoin', 'round');
-      if (geo.noShow) {
-        path.setAttribute('visibility', 'hidden');
-      }
+      if (geo.noShow) addClass(path, 'vsdx-hidden');
 
       // Arrow markers
-      if (shape.beginArrow && shape.beginArrow > 0) {
+      if (paintStroke && shape.beginArrow && shape.beginArrow > 0) {
         const markerId = `arrow-begin-${arrowCounter.value++}`;
         const marker = createArrowMarker(svgNS, markerId, shape.lineColor || themeColors.dk1 || '#000000', true);
         defs.appendChild(marker);
         path.setAttribute('marker-start', `url(#${markerId})`);
       }
-      if (shape.endArrow && shape.endArrow > 0) {
+      if (paintStroke && shape.endArrow && shape.endArrow > 0) {
         const markerId = `arrow-end-${arrowCounter.value++}`;
         const marker = createArrowMarker(svgNS, markerId, shape.lineColor || themeColors.dk1 || '#000000', false);
         defs.appendChild(marker);
@@ -748,8 +792,68 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
       }
 
       g.appendChild(path);
+    };
+
+    let compoundRun = null;
+    const strokeQueue = [];
+    const flushCompoundRun = () => {
+      if (!compoundRun) return;
+      appendPath(compoundRun.paths.join(' '), {
+        noFill: false,
+        noLine: compoundRun.noLine,
+        noShow: compoundRun.noShow
+      });
+      compoundRun = null;
+    };
+    const flushStrokeQueue = () => {
+      for (const item of strokeQueue) {
+        appendPath(item.pathData, item.geo, { paintFill: false });
+      }
+      strokeQueue.length = 0;
+    };
+
+    const hasVisibleGeometry = shape.geometry.some(geo => !geo.noShow);
+    const geometryToRender = hasVisibleGeometry
+      ? shape.geometry.filter(geo => !geo.noShow)
+      : shape.geometry;
+
+    for (const geo of geometryToRender) {
+      const pathData = geometryToPath(geo.rows, shape.width, shape.height, {
+        connectInternalMoves: false
+      });
+      if (!pathData) continue;
+
+      const noEffectiveLine = geo.noLine || shape.linePattern === 0;
+      const hasPaintedFill = !geo.noFill && shape.fillPattern !== 0 && getFillPaint(shape, svgNS, defs, themeColors);
+      const canCompound =
+        !shape.beginArrow &&
+        !shape.endArrow &&
+        noEffectiveLine &&
+        !geo.noFill &&
+        shape.fillPattern !== 0 &&
+        hasPaintedFill;
+
+      if (canCompound) {
+        if (!compoundRun || compoundRun.noLine !== geo.noLine || compoundRun.noShow !== geo.noShow) {
+          flushCompoundRun();
+          compoundRun = { noLine: geo.noLine, noShow: geo.noShow, paths: [] };
+        }
+        compoundRun.paths.push(pathData);
+      } else {
+        flushCompoundRun();
+        if (hasPaintedFill && !noEffectiveLine && !shape.beginArrow && !shape.endArrow) {
+          appendPath(pathData, geo, { paintStroke: false });
+          strokeQueue.push({ pathData, geo });
+        } else if (!noEffectiveLine) {
+          strokeQueue.push({ pathData, geo });
+        } else {
+          appendPath(pathData, geo);
+        }
+      }
     }
-  } else if (shape.subShapes.length === 0 && shape.width > 0 && shape.height > 0) {
+    flushCompoundRun();
+    flushStrokeQueue();
+  } else if (!shape.hasGeometry && shape.subShapes.length === 0 && shape.width > 0 && shape.height > 0) {
     // No geometry and no sub-shapes - draw a rectangle as fallback
     const rect = document.createElementNS(svgNS, 'rect');
     rect.setAttribute('x', '0');
@@ -809,14 +913,22 @@ function createArrowMarker(svgNS, id, color, isStart) {
 export function renderPage(page, container) {
   const svgNS = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(svgNS, 'svg');
+  svg.setAttributeNS(XMLNS_NS, 'xmlns:v', VISIO_NS);
   svg.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
   const w = inToPx(page.width);
   const h = inToPx(page.height);
   svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
   svg.setAttribute('width', '100%');
   svg.setAttribute('height', '100%');
+  svg.setAttribute('fill-rule', 'evenodd');
+  svg.setAttribute('clip-rule', 'evenodd');
   svg.style.maxWidth = w + 'px';
   svg.style.background = 'white';
+
+  const style = document.createElementNS(svgNS, 'style');
+  style.setAttribute('type', 'text/css');
+  style.textContent = '.vsdx-hidden{visibility:hidden}';
+  svg.appendChild(style);
 
   const defs = document.createElementNS(svgNS, 'defs');
   svg.appendChild(defs);

@@ -269,6 +269,13 @@ function getCellValue(el, name) {
   return null;
 }
 
+function getCellAttr(el, name, attr) {
+  const cell = getCell(el, name);
+  if (!cell) return null;
+  const value = cell.getAttribute(attr);
+  return value !== null && value !== '' ? value : null;
+}
+
 function getCellFloat(el, name) {
   const v = getCellValue(el, name);
   if (v === null || v === undefined) return null;
@@ -344,6 +351,17 @@ function getTextContent(shapeEl) {
   };
 }
 
+function valueForVisioMetadata(row, name = 'Value') {
+  const v = getCellAttr(row, name, 'V');
+  if (v === null || v === undefined) return null;
+
+  const u = getCellAttr(row, name, 'U');
+  if (u === 'STR') return `VT4(${v})`;
+  if (u) return `VT0(${v}):${u}`;
+  if (/^-?(?:\d+|\d*\.\d+)(?:e[+-]?\d+)?$/i.test(String(v))) return `VT0(${v}):26`;
+  return `VT4(${v})`;
+}
+
 // Parse a shape's <Section N='Property'> into a name->value map. Names come
 // from the row's `N` attribute (e.g. "ShapeClass", "NetworkName") or fall
 // back to its IX. Values come from the row's Value cell.
@@ -363,6 +381,30 @@ function parsePropSection(shapeEl) {
   return map;
 }
 
+function parseCustomProps(shapeEl) {
+  const props = [];
+  const sections = getDirectChildren(shapeEl, 'Section')
+    .filter(s => s.getAttribute('N') === 'Property');
+  for (const sec of sections) {
+    const rows = getDirectChildren(sec, 'Row');
+    for (const row of rows) {
+      const nameU = row.getAttribute('N') || row.getAttribute('IX');
+      if (!nameU) continue;
+      props.push({
+        nameU,
+        label: getCellValue(row, 'Label'),
+        prompt: getCellValue(row, 'Prompt'),
+        type: getCellValue(row, 'Type'),
+        format: getCellValue(row, 'Format'),
+        invisible: getCellValue(row, 'Invisible'),
+        langID: getCellValue(row, 'LangID'),
+        value: valueForVisioMetadata(row)
+      });
+    }
+  }
+  return props;
+}
+
 function parseUserSection(shapeEl) {
   const map = {};
   const sections = getDirectChildren(shapeEl, 'Section')
@@ -377,6 +419,32 @@ function parseUserSection(shapeEl) {
     }
   }
   return map;
+}
+
+function parseUserDefs(shapeEl) {
+  const defs = [];
+  const sections = getDirectChildren(shapeEl, 'Section')
+    .filter(s => s.getAttribute('N') === 'User');
+  for (const sec of sections) {
+    const rows = getDirectChildren(sec, 'Row');
+    for (const row of rows) {
+      const nameU = row.getAttribute('N') || row.getAttribute('IX');
+      if (!nameU) continue;
+      defs.push({
+        nameU,
+        prompt: getCellValue(row, 'Prompt'),
+        value: valueForVisioMetadata(row)
+      });
+    }
+  }
+  return defs;
+}
+
+function mergeMetadataRows(masterRows, shapeRows) {
+  const merged = new Map();
+  for (const row of masterRows || []) merged.set(row.nameU, row);
+  for (const row of shapeRows || []) merged.set(row.nameU, { ...(merged.get(row.nameU) || {}), ...row });
+  return [...merged.values()];
 }
 
 // Parse a shape's <Section N='Field'> rows. Each row has Value / Format / Type
@@ -584,6 +652,11 @@ function parseGeometryRaw(shapeEl) {
     });
   }
   return sections;
+}
+
+function hasGeometrySections(shapeEl) {
+  if (!shapeEl) return false;
+  return getDirectChildren(shapeEl, 'Section').some(sec => sec.getAttribute('N') === 'Geometry');
 }
 
 // Merge master geometry with shape geometry (shape overrides master by IX)
@@ -824,6 +897,7 @@ function parseShape(shapeEl, masters, parentMaster, themeColors, context = {}) {
 
   // Geometry - merge shape geometry with master geometry
   const geometry = mergeGeometry(masterShape?.el ?? null, shapeEl, is1D);
+  const hasGeometry = hasGeometrySections(shapeEl) || hasGeometrySections(masterShape?.el ?? null);
 
   // Sub-shapes (groups). Propagate the current shape's master so that nested
   // children with only a `MasterShape` attribute can resolve the sibling
@@ -855,6 +929,9 @@ function parseShape(shapeEl, masters, parentMaster, themeColors, context = {}) {
   // Custom-property and user-defined maps. Shape overrides master.
   const propMap = { ...(masterShape ? parsePropSection(masterShape.el) : {}), ...parsePropSection(shapeEl) };
   const userMap = { ...(masterShape ? parseUserSection(masterShape.el) : {}), ...parseUserSection(shapeEl) };
+  const customProps = mergeMetadataRows(masterShape ? parseCustomProps(masterShape.el) : [], parseCustomProps(shapeEl));
+  const userDefs = [...(masterShape ? parseUserDefs(masterShape.el) : []), ...parseUserDefs(shapeEl)];
+  const title = name || nameU || (master?.name && id ? `${master.name}.${id}` : null) || (id ? `${type || 'Shape'}.${id}` : null);
   const foreignData = parseForeignData(shapeEl) || (masterShape ? parseForeignData(masterShape.el) : null);
   const image = resolveImageData(foreignData, context.pageRels, context.media);
   if (image) {
@@ -868,6 +945,7 @@ function parseShape(shapeEl, masters, parentMaster, themeColors, context = {}) {
     id,
     name,
     nameU,
+    title,
     masterId,
     type,
     pinX, pinY,
@@ -907,11 +985,14 @@ function parseShape(shapeEl, masters, parentMaster, themeColors, context = {}) {
       ...(charFormats[run.cp] || charFormats['0'] || {})
     })),
     geometry,
+    hasGeometry,
     subShapes,
     text: rawText,
     layerMembers,
     propMap,
     userMap,
+    customProps,
+    userDefs,
     styleMeta: {
       lineColorFormula: lineColorData?.formula || masterLineColorData?.formula || null,
       fillForegroundFormula: fillForegroundData?.formula || masterFillForegroundData?.formula || null,
