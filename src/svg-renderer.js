@@ -4,6 +4,8 @@ function inToPx(inches) {
   return inches * DPI;
 }
 
+export { geometryToPath };
+
 function isLightColor(color) {
   if (!color || !/^#[0-9A-F]{6}$/i.test(color)) return false;
   const r = parseInt(color.slice(1, 3), 16);
@@ -22,6 +24,73 @@ function xmlSafe(s) {
   return String(s).replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\uFFFE\uFFFF]/g, '');
 }
 
+function parseNurbsControlPoints(formula, width, height) {
+  if (!formula) return null;
+  const match = String(formula).match(/NURBS\(([^)]*)\)/i);
+  if (!match) return null;
+
+  const values = match[1].split(',').map((part) => Number.parseFloat(part.trim()));
+  if (values.some((value) => Number.isNaN(value)) || values.length < 8) return null;
+
+  const [, degree, xType, yType, ...pointValues] = values;
+  const points = [];
+  for (let i = 0; i + 3 < pointValues.length; i += 4) {
+    const rawX = pointValues[i];
+    const rawY = pointValues[i + 1];
+
+    points.push({
+      x: xType === 0 ? rawX * width : rawX,
+      y: yType === 0 ? rawY * height : rawY
+    });
+  }
+
+  return { degree, points };
+}
+
+function ellipticalArcCommand(row, startX, startY, endX, endY, width, height, relative = false) {
+  if (row.a === null || row.b === null) return `L ${endX} ${endY} `;
+
+  const cpX = inToPx(relative ? row.a * width : row.a);
+  const cpY = inToPx(relative ? (1 - row.b) * height : height - row.b);
+  const dx = Math.abs(endX - startX);
+  const dy = Math.abs(endY - startY);
+  let rx = Math.max(dx, Math.abs(cpX - startX), Math.abs(endX - cpX));
+  let ry = Math.max(dy, Math.abs(cpY - startY), Math.abs(endY - cpY));
+
+  const aspect = row.d && Math.abs(row.d) > 0.001 ? Math.abs(row.d) : null;
+  if (aspect) {
+    if (rx >= ry) ry = rx / aspect;
+    else rx = ry * aspect;
+  }
+
+  if (rx < 0.001 || ry < 0.001) return `L ${endX} ${endY} `;
+
+  const rotation = row.c !== null ? -row.c * (180 / Math.PI) : 0;
+  const v1x = cpX - startX;
+  const v1y = cpY - startY;
+  const v2x = endX - cpX;
+  const v2y = endY - cpY;
+  const sweep = (v1x * v2y - v1y * v2x) >= 0 ? 1 : 0;
+  return `A ${rx} ${ry} ${rotation} 0 ${sweep} ${endX} ${endY} `;
+}
+
+function catmullRomToBezier(points) {
+  if (points.length < 2) return '';
+  let d = '';
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[Math.max(0, i - 1)];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[Math.min(points.length - 1, i + 2)];
+    const cp1x = p1.x + (p2.x - p0.x) / 6;
+    const cp1y = p1.y + (p2.y - p0.y) / 6;
+    const cp2x = p2.x - (p3.x - p1.x) / 6;
+    const cp2y = p2.y - (p3.y - p1.y) / 6;
+    d += `C ${cp1x} ${cp1y} ${cp2x} ${cp2y} ${p2.x} ${p2.y} `;
+  }
+  return d;
+}
+
 // Convert geometry rows to SVG path data
 // Coordinates are in shape-local space (0,0 to width,height) with Y-up
 function geometryToPath(rows, width, height) {
@@ -34,7 +103,8 @@ function geometryToPath(rows, width, height) {
     d += `M 0 ${inToPx(height)} `;
   }
 
-  for (const row of rows) {
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+    const row = rows[rowIndex];
     const x = row.x !== null ? inToPx(row.x) : curX;
     // Flip Y: Visio Y-up → SVG Y-down within shape local coords
     const y = row.y !== null ? inToPx(height - row.y) : curY;
@@ -93,22 +163,25 @@ function geometryToPath(rows, width, height) {
       }
 
       case 'EllipticalArcTo': {
-        // Control point (A,B), aspect ratio C, angle D
-        if (row.a !== null && row.b !== null) {
-          const cpX = inToPx(row.a);
-          const cpY = inToPx(height - row.b);
-          // Approximate with quadratic bezier through control point
-          d += `Q ${cpX} ${cpY} ${x} ${y} `;
-        } else {
-          d += `L ${x} ${y} `;
-        }
+        d += ellipticalArcCommand(row, curX, curY, x, y, width, height);
         curX = x; curY = y;
         break;
       }
 
       case 'NURBSTo': {
-        // Approximate NURBS with line to endpoint
-        d += `L ${x} ${y} `;
+        const nurbs = parseNurbsControlPoints(row.e, width, height);
+        if (nurbs?.degree === 3 && nurbs.points.length >= 2) {
+          const cp1 = nurbs.points[0];
+          const cp2 = nurbs.points[1];
+          d += `C ${inToPx(cp1.x)} ${inToPx(height - cp1.y)} ${inToPx(cp2.x)} ${inToPx(height - cp2.y)} ${x} ${y} `;
+        } else if (nurbs?.points.length) {
+          for (const point of nurbs.points) {
+            d += `L ${inToPx(point.x)} ${inToPx(height - point.y)} `;
+          }
+          d += `L ${x} ${y} `;
+        } else {
+          d += `L ${x} ${y} `;
+        }
         curX = x; curY = y;
         break;
       }
@@ -132,9 +205,23 @@ function geometryToPath(rows, width, height) {
         break;
       }
 
-      case 'SplineStart':
+      case 'SplineStart': {
+        const points = [{ x: curX, y: curY }, { x, y }];
+        while (rowIndex + 1 < rows.length && rows[rowIndex + 1].type === 'SplineKnot') {
+          rowIndex++;
+          const knot = rows[rowIndex];
+          points.push({
+            x: knot.x !== null ? inToPx(knot.x) : points[points.length - 1].x,
+            y: knot.y !== null ? inToPx(height - knot.y) : points[points.length - 1].y
+          });
+        }
+        d += catmullRomToBezier(points);
+        const last = points[points.length - 1];
+        curX = last.x; curY = last.y;
+        break;
+      }
+
       case 'SplineKnot': {
-        // Approximate spline with line
         d += `L ${x} ${y} `;
         curX = x; curY = y;
         break;
@@ -192,13 +279,7 @@ function geometryToPath(rows, width, height) {
         // Relative elliptical arc
         const ex = inToPx(row.x * width);
         const ey = inToPx((1 - row.y) * height);
-        if (row.a !== null && row.b !== null) {
-          const cpX = inToPx(row.a * width);
-          const cpY = inToPx((1 - row.b) * height);
-          d += `Q ${cpX} ${cpY} ${ex} ${ey} `;
-        } else {
-          d += `L ${ex} ${ey} `;
-        }
+        d += ellipticalArcCommand(row, curX, curY, ex, ey, width, height, true);
         curX = ex; curY = ey;
         break;
       }
@@ -528,6 +609,11 @@ function appendImageNode(target, shape, svgNS) {
 function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, fontScale, themeColors = {}) {
   if (fontScale === undefined) fontScale = strokeScale;
   const g = document.createElementNS(svgNS, 'g');
+  if (shape.id) {
+    const safeId = String(shape.id).replace(/[^A-Za-z0-9_-]/g, '_');
+    g.setAttribute('id', `shape${safeId}`);
+    g.setAttribute('data-shape-id', String(shape.id));
+  }
 
   // Tag with layer membership for visibility toggling
   if (shape.layerMembers && shape.layerMembers.length > 0) {
@@ -537,7 +623,7 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
   // Dedicated 1D connector rendering uses page-coordinate geometry instead of
   // shape-local transforms. This avoids collapsing routed connectors and keeps
   // BeginX/EndX fallbacks consistent with Visio.
-  if (shape.is1D) {
+  if (shape.is1D && shape.subShapes.length === 0) {
     const pathData = buildConnectorPath(shape, pageHeight);
     if (pathData) {
       const path = document.createElementNS(svgNS, 'path');
@@ -713,7 +799,7 @@ export function renderPage(page, container) {
   // coordinate space. When drawingUnitInInches < 1 (e.g. MM), inches need to
   // scale up; default is 1 for inch-native files so existing tests are
   // unaffected.
-  const strokeScale = page.drawingUnitInInches ? (1 / page.drawingUnitInInches) : 1;
+  const strokeScale = page.drawingScale || (page.drawingUnitInInches ? (1 / page.drawingUnitInInches) : 1);
   const fontScale = strokeScale;
   const themeColors = page.themeColors || {};
 
