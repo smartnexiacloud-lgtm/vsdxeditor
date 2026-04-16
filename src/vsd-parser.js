@@ -702,6 +702,16 @@ function inferTitleBase(shape) {
   return null;
 }
 
+function synthesizeUserDefsFromCustomProps(customProps) {
+  return (customProps || [])
+    .filter(prop => prop?.nameU)
+    .map(prop => ({
+      nameU: prop.nameU,
+      prompt: prop.label && prop.label !== prop.nameU ? prop.label : prop.prompt,
+      value: prop.value ?? null
+    }));
+}
+
 function assignShapeMetadata(shape) {
   if (!shape) return;
   const masterShape = shape._masterShape || null;
@@ -718,6 +728,22 @@ function assignShapeMetadata(shape) {
   for (const prop of shape.customProps || []) {
     const rawValue = rawMetadataValue(prop.value);
     if (prop.nameU && rawValue !== null && rawValue !== '') shape.propMap[prop.nameU] = rawValue;
+  }
+
+  // Binary VSD files in the current corpus do not expose native 0xB4
+  // USER_DEFINED_CELLS rows, but Visio stores many of the same shape-level
+  // values as custom properties. Promote those rows into userDefs/userMap only
+  // when the shape otherwise has no user metadata so VSD and VSDX exports stay
+  // materially closer.
+  if ((!shape.userDefs || shape.userDefs.length === 0) && shape.customProps?.length) {
+    shape.userDefs = synthesizeUserDefsFromCustomProps(shape.customProps);
+  }
+  if ((!shape.userMap || Object.keys(shape.userMap).length === 0) && shape.userDefs?.length) {
+    shape.userMap = {};
+    for (const def of shape.userDefs) {
+      const rawValue = rawMetadataValue(def.value);
+      if (def.nameU && rawValue !== null && rawValue !== '') shape.userMap[def.nameU] = rawValue;
+    }
   }
 
   const base = shape.name || shape.nameU || inferTitleBase(shape) ||
