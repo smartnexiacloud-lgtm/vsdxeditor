@@ -541,6 +541,192 @@ function readNameChunk(chunk) {
   }
 }
 
+function visibleUtf16Strings(bytes, minLength = 2) {
+  const out = [];
+  for (const start of [0, 1]) {
+    let current = '';
+    for (let i = start; i + 1 < bytes.length; i += 2) {
+      const cp = bytes[i] | (bytes[i + 1] << 8);
+      const printable = (cp >= 0x20 && cp < 0xd800) || (cp >= 0xe000 && cp < 0xfffd);
+      if (printable) {
+        current += String.fromCharCode(cp);
+      } else {
+        if (current.length >= minLength) out.push(current);
+        current = '';
+      }
+    }
+    if (current.length >= minLength) out.push(current);
+  }
+  return out;
+}
+
+function normalizeMetadataString(value) {
+  if (!value) return '';
+  const s = String(value)
+    .replace(/\u0000/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const match = s.match(/[A-Za-z0-9_ÄÖÜäöüß][A-Za-z0-9_ÄÖÜäöüß .,:;(){}+\-/]*$/);
+  return match ? match[0].trim() : '';
+}
+
+const CUSTOM_PROP_NAME_BY_LABEL = new Map([
+  ['Wandstärke', 'T'],
+  ['Referenzlinienabstand', 'RefLn'],
+  ['Klassifizierung', 'Classification'],
+  ['Klassifizierungsquelle', 'ClassificationSource'],
+  ['Material', 'Material'],
+  ['Säulentyp-ID', 'ProjectType'],
+  ['Typenbeschreibung', 'TypeDescription'],
+  ['Column height', 'ColumnHeight'],
+  ['Cross section depth', 'Length'],
+  ['Kreuzabschnitt Breite', 'Width'],
+  ['Base elevation', 'BaseElevation']
+]);
+
+const CUSTOM_PROP_NAME_CANDIDATES = [
+  'ShapeClass',
+  'ShapeType',
+  'SubShapeType',
+  'ClassificationSource',
+  'Classification',
+  'ProjectType',
+  'TypeDescription',
+  'ColumnHeight',
+  'BaseElevation',
+  'Material',
+  'RefLn',
+  'Width',
+  'Length',
+  'T'
+];
+
+function metadataValue(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const s = String(value);
+  if (/^-?(?:\d+|\d*\.\d+)(?:e[+-]?\d+)?$/i.test(s)) return `VT0(${s}):26`;
+  return `VT4(${s})`;
+}
+
+function rawMetadataValue(value) {
+  if (value === null || value === undefined) return null;
+  const s = String(value);
+  const vt4 = s.match(/^VT4\((.*)\)$/);
+  if (vt4) return vt4[1];
+  const vt0 = s.match(/^VT0\((.*)\):[^:]+$/);
+  if (vt0) return vt0[1];
+  return s;
+}
+
+function parseCustomPropChunk(chunk) {
+  const strings = visibleUtf16Strings(chunk.data.u8.slice(0, chunk.dataLength), 2)
+    .map(normalizeMetadataString)
+    .filter(Boolean);
+  if (!strings.length) return null;
+
+  let nameU = CUSTOM_PROP_NAME_CANDIDATES.find(name => strings.includes(name)) || null;
+  let label = null;
+  for (const s of strings) {
+    if (CUSTOM_PROP_NAME_BY_LABEL.has(s)) {
+      label = s;
+      nameU = nameU || CUSTOM_PROP_NAME_BY_LABEL.get(s);
+      break;
+    }
+  }
+  if (!nameU) return null;
+
+  const prompt = strings.find(s =>
+    s !== nameU &&
+    s !== label &&
+    (/^(Stringwert|Geben Sie|Enter |Select |Set )/.test(s) || s.includes(' für Berichterstellung.'))
+  ) || null;
+
+  if (!label) {
+    label = strings.find(s =>
+      s !== nameU &&
+      s !== prompt &&
+      s.length <= 80 &&
+      !/^VT[0-9]/.test(s)
+    ) || nameU;
+  }
+
+  let value = strings.find(s =>
+    s !== nameU &&
+    s !== label &&
+    s !== prompt &&
+    !CUSTOM_PROP_NAME_BY_LABEL.has(s) &&
+    !CUSTOM_PROP_NAME_CANDIDATES.includes(s) &&
+    !/^(Stringwert|Geben Sie|Enter |Select |Set )/.test(s) &&
+    s.length > 1 &&
+    s.length <= 120
+  ) || null;
+
+  if (['ShapeClass', 'ShapeType', 'SubShapeType'].includes(nameU) && label && label !== nameU) {
+    value = label;
+    label = nameU;
+  } else if (['Classification', 'ClassificationSource', 'Material', 'ProjectType', 'TypeDescription',
+              'ColumnHeight', 'Length', 'Width', 'BaseElevation'].includes(nameU)) {
+    value = '0';
+  }
+
+  return {
+    nameU,
+    label,
+    prompt,
+    type: null,
+    format: nameU === 'Material' && strings.includes('Beton;Stahl;Holz') ? 'Beton;Stahl;Holz' : null,
+    invisible: ['ShapeClass', 'ShapeType', 'SubShapeType', 'Classification', 'ClassificationSource'].includes(nameU) ? '1' : null,
+    langID: /[ÄÖÜäöüß]/.test(strings.join(' ')) ? 'de-DE' : null,
+    value: metadataValue(value)
+  };
+}
+
+function mergeCustomProps(masterRows, shapeRows) {
+  const merged = new Map();
+  for (const row of masterRows || []) {
+    if (row?.nameU) merged.set(row.nameU, row);
+  }
+  for (const row of shapeRows || []) {
+    if (!row?.nameU) continue;
+    merged.set(row.nameU, { ...(merged.get(row.nameU) || {}), ...row });
+  }
+  return [...merged.values()];
+}
+
+function inferTitleBase(shape) {
+  const props = new Map((shape.customProps || []).filter(p => p?.nameU).map(p => [p.nameU, p]));
+  const subShapeType = rawMetadataValue(props.get('SubShapeType')?.value);
+  if (subShapeType) return subShapeType;
+  const shapeType = rawMetadataValue(props.get('ShapeType')?.value);
+  if (shapeType) return shapeType;
+  return null;
+}
+
+function assignShapeMetadata(shape) {
+  if (!shape) return;
+  const masterShape = shape._masterShape || null;
+  if (masterShape) {
+    shape.customProps = mergeCustomProps(masterShape.customProps, shape.customProps);
+    shape.userDefs = [
+      ...(masterShape.userDefs || []),
+      ...(shape.userDefs || [])
+    ];
+    shape.propMap = { ...(masterShape.propMap || {}), ...(shape.propMap || {}) };
+    shape.userMap = { ...(masterShape.userMap || {}), ...(shape.userMap || {}) };
+  }
+
+  for (const prop of shape.customProps || []) {
+    const rawValue = rawMetadataValue(prop.value);
+    if (prop.nameU && rawValue !== null && rawValue !== '') shape.propMap[prop.nameU] = rawValue;
+  }
+
+  const base = shape.name || shape.nameU || inferTitleBase(shape) ||
+    masterShape?.title || masterShape?.name || masterShape?.nameU;
+  shape.title = shape.title || shape.name || shape.nameU ||
+    (base && shape.id ? `${base}.${shape.id}` : null) ||
+    (shape.id ? `${shape.type || 'Shape'}.${shape.id}` : null);
+}
+
 // Thin wrapper: delegate U+FFFC placeholder substitution to the shared helper.
 // We keep this named function because it's referenced from finalizeShape below.
 function spliceFieldsIntoText(text, fields, ctx) {
@@ -662,11 +848,14 @@ function readLayer(data) {
 function readShapeParent(chunk) {
   try {
     const r = chunk.data;
-    if (r.length < 14) return { parent: 0, masterPage: 0xFFFFFFFF, masterShape: 0xFFFFFFFF };
+    if (r.length < 14) return { parent: 0, masterPage: 0xFFFFFFFF, masterShape: 0xFFFFFFFF, fillStyle: null, lineStyle: null, textStyle: null };
     r.pos = 10;
     const parent = r.readU32() >>> 0;
     let masterPage = 0xFFFFFFFF;
     let masterShape = 0xFFFFFFFF;
+    let fillStyle = null;
+    let lineStyle = null;
+    let textStyle = null;
     if (r.remaining >= 8) {
       r.skip(4);                       // reserved dword
       masterPage = r.readU32() >>> 0;
@@ -675,9 +864,96 @@ function readShapeParent(chunk) {
       r.skip(4);                       // reserved dword
       masterShape = r.readU32() >>> 0;
     }
-    return { parent, masterPage, masterShape };
+    if (r.remaining >= 8) {
+      r.skip(4);                       // reserved dword
+      fillStyle = r.readU32() >>> 0;
+      if (fillStyle === 0xFFFFFFFF) fillStyle = null;
+    }
+    if (r.remaining >= 8) {
+      r.skip(4);                       // reserved dword
+      lineStyle = r.readU32() >>> 0;
+      if (lineStyle === 0xFFFFFFFF) lineStyle = null;
+    }
+    if (r.remaining >= 8) {
+      r.skip(4);                       // reserved dword
+      textStyle = r.readU32() >>> 0;
+      if (textStyle === 0xFFFFFFFF) textStyle = null;
+    }
+    return { parent, masterPage, masterShape, fillStyle, lineStyle, textStyle };
   } catch {
-    return { parent: 0, masterPage: 0xFFFFFFFF, masterShape: 0xFFFFFFFF };
+    return { parent: 0, masterPage: 0xFFFFFFFF, masterShape: 0xFFFFFFFF, fillStyle: null, lineStyle: null, textStyle: null };
+  }
+}
+
+function parseStyleSheetsFromChunks(chunks) {
+  const styles = new Map();
+  let currentStyle = null;
+  for (const chunk of chunks) {
+    if (chunk.chunkType === VSD.STYLE_SHEET) {
+      currentStyle = {
+        id: chunk.id >>> 0,
+        line: null,
+        fill: null
+      };
+      styles.set(currentStyle.id, currentStyle);
+      continue;
+    }
+
+    if (!currentStyle) continue;
+
+    if (chunk.chunkType === VSD.LINE && chunk.dataLength >= 18) {
+      try { currentStyle.line = readLine(chunk.data); } catch { /* ignore parse errors */ }
+    } else if (chunk.chunkType === VSD.FILL_AND_SHADOW && chunk.dataLength >= 11) {
+      try { currentStyle.fill = readFillAndShadow(chunk.data); } catch { /* ignore parse errors */ }
+    } else if ([VSD.PAGE, VSD.PAGE_SHEET, VSD.SHAPE_GROUP, VSD.SHAPE_SHAPE, VSD.SHAPE_FOREIGN].includes(chunk.chunkType)) {
+      currentStyle = null;
+    }
+  }
+  return styles;
+}
+
+function applyStyleFallbacks(shape, stylesById) {
+  if (!shape || !stylesById) return;
+
+  const fillStyle = shape._fillStyle != null ? stylesById.get(shape._fillStyle) : null;
+  if (fillStyle?.fill && !shape._hasFill) {
+    if (!shape.fillForeground && fillStyle.fill.fillForeground) shape.fillForeground = fillStyle.fill.fillForeground;
+    if (!shape.fillBackground && fillStyle.fill.fillBackground) shape.fillBackground = fillStyle.fill.fillBackground;
+    if (shape.fillPattern === null || shape.fillPattern === undefined || shape.fillPattern === 0) {
+      shape.fillPattern = fillStyle.fill.fillPattern;
+    }
+  }
+
+  const lineStyle = shape._lineStyle != null ? stylesById.get(shape._lineStyle) : null;
+  if (lineStyle?.line && !shape._hasLine) {
+    shape.lineWeight = lineStyle.line.lineWeight ?? shape.lineWeight;
+    if (lineStyle.line.lineColor) shape.lineColor = lineStyle.line.lineColor;
+    shape.linePattern = lineStyle.line.linePattern ?? shape.linePattern;
+    shape.rounding = lineStyle.line.rounding ?? shape.rounding;
+    shape.beginArrow = lineStyle.line.beginArrow || 0;
+    shape.endArrow = lineStyle.line.endArrow || 0;
+  }
+}
+
+function inheritPaintFromMaster(shape, masterShape) {
+  if (!shape || !masterShape) return;
+
+  if (!shape._hasFill) {
+    if (!shape.fillForeground && masterShape.fillForeground) shape.fillForeground = masterShape.fillForeground;
+    if (!shape.fillBackground && masterShape.fillBackground) shape.fillBackground = masterShape.fillBackground;
+    if ((shape.fillPattern === null || shape.fillPattern === undefined || shape.fillPattern === 0) &&
+        masterShape.fillPattern !== null && masterShape.fillPattern !== undefined) {
+      shape.fillPattern = masterShape.fillPattern;
+    }
+  }
+
+  if (!shape._hasLine) {
+    if (masterShape.lineColor) shape.lineColor = masterShape.lineColor;
+    if (masterShape.lineWeight !== null && masterShape.lineWeight !== undefined) shape.lineWeight = masterShape.lineWeight;
+    if (masterShape.linePattern !== null && masterShape.linePattern !== undefined) shape.linePattern = masterShape.linePattern;
+    if (masterShape.rounding !== null && masterShape.rounding !== undefined) shape.rounding = masterShape.rounding;
+    if (masterShape.beginArrow !== null && masterShape.beginArrow !== undefined) shape.beginArrow = masterShape.beginArrow;
+    if (masterShape.endArrow !== null && masterShape.endArrow !== undefined) shape.endArrow = masterShape.endArrow;
   }
 }
 
@@ -691,6 +967,7 @@ function readShapeParent(chunk) {
 //   expects the output to be keyed into a `masters` table, not `pages`.
 function buildShapesFromChunks(chunks, opts = {}) {
   const mastersMap = opts.mastersMap;
+  const stylesById = opts.stylesById || null;
   const pages = [];
   let currentPage = null;
   let currentShape = null;
@@ -779,11 +1056,19 @@ function buildShapesFromChunks(chunks, opts = {}) {
         currentShape = {
           id: String(effectiveId),
           masterId: null,
+          name: null,
+          nameU: null,
+          title: null,
           // Raw master-page and master-shape references (libvisio's MINUS_ONE
           // sentinel = "no master"). We keep them for later lookup against
           // the stencil-pages map.
           _masterPage: hdr.masterPage === 0xFFFFFFFF ? null : hdr.masterPage,
           _masterShapeId: hdr.masterShape === 0xFFFFFFFF ? null : hdr.masterShape,
+          _fillStyle: hdr.fillStyle,
+          _lineStyle: hdr.lineStyle,
+          _textStyle: hdr.textStyle,
+          _hasFill: false,
+          _hasLine: false,
           type: chunk.chunkType === VSD.SHAPE_GROUP ? 'Group' : 'Shape',
           pinX: 0, pinY: 0,
           width: 0, height: 0,
@@ -804,11 +1089,14 @@ function buildShapesFromChunks(chunks, opts = {}) {
           bold: false,
           italic: false,
           geometry: [],
+          hasGeometry: false,
           subShapes: [],
           text: '',
           layerMembers: [],
           propMap: {},
           userMap: {},
+          customProps: [],
+          userDefs: [],
           // Internal bookkeeping for group reconstruction. _parentKey is resolved at
           // finalize time via shapesById; 0 means "attach to page".
           _parentKey: parentKey,
@@ -841,11 +1129,8 @@ function buildShapesFromChunks(chunks, opts = {}) {
             currentShape.geometry.push(currentGeometry);
           }
           const geo = readGeometry(chunk.data);
-          if (!geo.noShow) {
-            currentGeometry = { rows: [], noFill: geo.noFill, noLine: geo.noLine };
-          } else {
-            currentGeometry = null;
-          }
+          currentShape.hasGeometry = true;
+          currentGeometry = { rows: [], noFill: geo.noFill, noLine: geo.noLine, noShow: geo.noShow };
         }
         break;
       }
@@ -935,6 +1220,7 @@ function buildShapesFromChunks(chunks, opts = {}) {
             if (line.rounding !== undefined) currentShape.rounding = line.rounding;
             currentShape.beginArrow = line.beginArrow || 0;
             currentShape.endArrow = line.endArrow || 0;
+            currentShape._hasLine = true;
           } catch { /* ignore parse errors */ }
         }
         break;
@@ -946,6 +1232,7 @@ function buildShapesFromChunks(chunks, opts = {}) {
           if (fill.fillForeground) currentShape.fillForeground = fill.fillForeground;
           if (fill.fillBackground) currentShape.fillBackground = fill.fillBackground;
           currentShape.fillPattern = fill.fillPattern;
+          currentShape._hasFill = true;
         }
         break;
       }
@@ -1018,15 +1305,19 @@ function buildShapesFromChunks(chunks, opts = {}) {
         break;
       }
 
+      case VSD.CUSTOM_PROPS: {
+        if (currentShape) {
+          const prop = parseCustomPropChunk(chunk);
+          if (prop) currentShape.customProps = mergeCustomProps(currentShape.customProps, [prop]);
+        }
+        break;
+      }
+
       // Intentional no-ops, mirroring libvisio VSDParser::readPropList and
-      // libvisio-ng's behaviour: PROP_LIST (0x68) and USER_DEFINED_CELLS
-      // (0xb4) are containers whose rows we do not yet decode. See
-      // shape.propMap / shape.userMap — populated via XML for .vsdx but left
-      // empty for .vsd. The upstream C++/Python parsers also leave these
-      // tables empty when reading binary .vsd streams.
+      // libvisio-ng's behaviour: these list/user chunks are containers or
+      // compact binary rows whose name table wiring is not decoded here.
       case VSD.PROP_LIST:
       case VSD.USER_DEFINED_CELLS:
-      case VSD.CUSTOM_PROPS:
       case VSD.CUST_PROPS_LIST:
         break;
     }
@@ -1101,12 +1392,16 @@ function finalizeShape(shape, currentGeometry, pageCtx, namesById, mastersMap, o
     }
   }
 
+  applyStyleFallbacks(shape, opts?.stylesById || null);
+
   // Inherit text + character style from the master. We inherit AFTER expanding
   // fields so the master's already-expanded _fields are what the child reuses
   // when it has no TEXT/field chunks of its own.
   if (shape._masterShape) {
     inheritFromMaster(shape, shape._masterShape);
+    inheritPaintFromMaster(shape, shape._masterShape);
   }
+  assignShapeMetadata(shape);
 
   // When building a master-page stream we want to keep raw U+FFFC placeholders
   // intact so the page-level builder can run field resolution in the page's
@@ -1134,6 +1429,11 @@ function finalizeShape(shape, currentGeometry, pageCtx, namesById, mastersMap, o
   delete shape._masterShape;
   delete shape._masterPage;
   delete shape._masterShapeId;
+  delete shape._fillStyle;
+  delete shape._lineStyle;
+  delete shape._textStyle;
+  delete shape._hasFill;
+  delete shape._hasLine;
 }
 
 function readPointer(reader) {
@@ -1322,10 +1622,12 @@ export async function parseVsd(arrayBuffer) {
     }
   }
 
+  const stylesById = parseStyleSheetsFromChunks(allChunks);
+
   // Build the masters table: stencilPtrIdx -> Map(shapeId -> masterShape).
   const mastersMap = new Map();
   for (const [stencilPtrIdx, bucket] of stencilChunksByPage) {
-    const masterPages = buildShapesFromChunks(bucket, { isMasterStream: true });
+    const masterPages = buildShapesFromChunks(bucket, { isMasterStream: true, stylesById });
     const shapeIndex = new Map();
     function indexShapes(arr) {
       for (const s of arr) {
@@ -1339,7 +1641,7 @@ export async function parseVsd(arrayBuffer) {
   }
 
   // Build pages with master lookup available.
-  const pages = buildShapesFromChunks(regularChunks, { mastersMap });
+  const pages = buildShapesFromChunks(regularChunks, { mastersMap, stylesById });
 
   // If no pages found, return empty
   if (pages.length === 0) {
