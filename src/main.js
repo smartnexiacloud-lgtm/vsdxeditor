@@ -1,4 +1,4 @@
-import { parseVsdx, saveVsdxLayerPermissions } from './vsdx-parser.js';
+import { parseVsdx, saveVsdxLayerPermissions, saveVsdxWithoutNonSelectedLayers } from './vsdx-parser.js';
 import { parseVsd } from './vsd-parser.js';
 import { renderPage } from './svg-renderer.js';
 
@@ -23,6 +23,7 @@ const layerMatrixModal = document.getElementById('layer-matrix-modal');
 const layerMatrixBody = document.getElementById('layer-matrix-body');
 const layerMatrixClose = document.getElementById('layer-matrix-close');
 const saveVsdxButton = document.getElementById('btn-save-vsdx');
+const removeNonSelectedButton = document.getElementById('btn-remove-non-selected');
 
 let currentPages = [];
 let currentPageIndex = 0;
@@ -461,6 +462,7 @@ async function loadFile(file) {
     const result = currentFileType === 'vsd' ? await parseVsd(buffer) : await parseVsdx(buffer);
     currentPages = result.pages;
     saveVsdxButton.disabled = currentFileType !== 'vsdx';
+    removeNonSelectedButton.disabled = currentFileType !== 'vsdx';
     // Default to first foreground page
     const firstFg = currentPages.findIndex(p => !p.isBackground);
     currentPageIndex = firstFg >= 0 ? firstFg : 0;
@@ -579,6 +581,50 @@ saveVsdxButton.addEventListener('click', async () => {
   } catch (e) {
     console.error(e);
     showError('Failed to save VSDX: ' + e.message);
+  }
+});
+removeNonSelectedButton.addEventListener('click', async () => {
+  if (currentFileType !== 'vsdx' || !currentFileBuffer) {
+    showError('Remove non-selected is only available for .vsdx files');
+    return;
+  }
+
+  const page = currentPages[currentPageIndex];
+  const selectedLayerIndexes = new Set(getCurrentLayers()
+    .filter(layer => !hiddenLayers.has(layer.index))
+    .map(layer => String(layer.index)));
+
+  if (!selectedLayerIndexes.size) {
+    showError('Select at least one layer before removing non-selected shapes');
+    return;
+  }
+  if (selectedLayerIndexes.size === getCurrentLayers().length) {
+    showError('Deselect at least one layer before removing non-selected shapes');
+    return;
+  }
+
+  try {
+    const { buffer, removedCount } = await saveVsdxWithoutNonSelectedLayers(
+      currentFileBuffer,
+      currentPages,
+      page.id,
+      selectedLayerIndexes
+    );
+    if (removedCount === 0) {
+      showError('No shapes matched the non-selected layers on this page');
+      return;
+    }
+
+    const blob = new Blob([buffer], { type: 'application/vnd.ms-visio.drawing.main+xml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = (fileName.textContent || 'diagram.vsdx').replace(/\.vsdx$/i, '') + '-selected.vsdx';
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    console.error(e);
+    showError('Failed to remove non-selected layers: ' + e.message);
   }
 });
 layerMatrixClose.addEventListener('click', hideLayerMatrix);

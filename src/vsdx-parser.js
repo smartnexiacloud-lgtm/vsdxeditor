@@ -1332,11 +1332,46 @@ function boolToCellValue(value, defaultValue) {
   return (value ?? defaultValue) ? '1' : '0';
 }
 
-export async function saveVsdxLayerPermissions(arrayBuffer, pages) {
-  const zip = await JSZip.loadAsync(arrayBuffer);
+async function readZipText(zip, path) {
+  let file = zip.file(path) || zip.file(path.replace(/^\//, ''));
+  if (!file) {
+    const lowerPath = path.toLowerCase().replace(/^\//, '');
+    zip.forEach((relativePath, entry) => {
+      if (relativePath.toLowerCase() === lowerPath) file = entry;
+    });
+  }
+  return file ? file.async('string') : null;
+}
+
+async function parseZipRels(zip, basePath) {
+  const relsPath = basePath.replace(/([^/]*)$/, '_rels/$1.rels');
+  const content = await readZipText(zip, relsPath);
+  if (!content) return {};
+  const doc = parseXml(content);
+  const rels = {};
+  for (const relEl of byTag(doc, 'Relationship')) {
+    rels[relEl.getAttribute('Id')] = relEl.getAttribute('Target');
+  }
+  return rels;
+}
+
+function resolveZipTarget(basePath, target) {
+  if (!target) return null;
+  if (target.startsWith('/')) return target.slice(1);
+
+  const parts = basePath.split('/');
+  parts.pop();
+  for (const part of target.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') parts.pop();
+    else parts.push(part);
+  }
+  return parts.join('/');
+}
+
+async function patchVsdxLayerPermissions(zip, pages) {
   const pagesFile = zip.file('visio/pages/pages.xml');
   if (!pagesFile) throw new Error('VSDX package is missing visio/pages/pages.xml');
-
   const pagesXml = await pagesFile.async('string');
   const doc = parseXml(pagesXml);
   const pageEls = byTag(doc, 'Page');
@@ -1375,5 +1410,84 @@ export async function saveVsdxLayerPermissions(arrayBuffer, pages) {
 
   const xml = new XMLSerializer().serializeToString(doc);
   zip.file('visio/pages/pages.xml', xml);
+}
+
+export async function saveVsdxLayerPermissions(arrayBuffer, pages) {
+  const zip = await JSZip.loadAsync(arrayBuffer);
+  await patchVsdxLayerPermissions(zip, pages);
   return zip.generateAsync({ type: 'arraybuffer' });
+}
+
+function getShapeLayerMembers(shapeEl) {
+  return (getCellValue(shapeEl, 'LayerMember') || '')
+    .split(/[;,]/)
+    .map(value => value.trim())
+    .filter(Boolean);
+}
+
+function pruneShapeElements(parentEl, selectedLayerIndexes, removedShapeIds) {
+  let removedCount = 0;
+  for (const shapeEl of [...getDirectChildren(parentEl, 'Shape')]) {
+    const layerMembers = getShapeLayerMembers(shapeEl);
+    const removeShape = layerMembers.length > 0 && layerMembers.every(index => !selectedLayerIndexes.has(index));
+
+    if (removeShape) {
+      const id = shapeEl.getAttribute('ID');
+      if (id) removedShapeIds.add(id);
+      shapeEl.parentNode.removeChild(shapeEl);
+      removedCount++;
+      continue;
+    }
+
+    for (const shapesEl of getDirectChildren(shapeEl, 'Shapes')) {
+      removedCount += pruneShapeElements(shapesEl, selectedLayerIndexes, removedShapeIds);
+    }
+  }
+  return removedCount;
+}
+
+function removeDanglingConnects(pageDoc, removedShapeIds) {
+  if (!removedShapeIds.size) return;
+  for (const connectEl of [...byTag(pageDoc, 'Connect')]) {
+    const fromSheet = connectEl.getAttribute('FromSheet');
+    const toSheet = connectEl.getAttribute('ToSheet');
+    if (removedShapeIds.has(fromSheet) || removedShapeIds.has(toSheet)) {
+      connectEl.parentNode.removeChild(connectEl);
+    }
+  }
+}
+
+export async function saveVsdxWithoutNonSelectedLayers(arrayBuffer, pages, pageId, selectedLayerIndexes) {
+  const zip = await JSZip.loadAsync(arrayBuffer);
+  await patchVsdxLayerPermissions(zip, pages);
+
+  const pagesXml = await readZipText(zip, 'visio/pages/pages.xml');
+  if (!pagesXml) throw new Error('VSDX package is missing visio/pages/pages.xml');
+
+  const pagesDoc = parseXml(pagesXml);
+  const pagesRels = await parseZipRels(zip, 'visio/pages/pages.xml');
+  const pageEl = [...byTag(pagesDoc, 'Page')].find(el => String(el.getAttribute('ID')) === String(pageId));
+  if (!pageEl) throw new Error('Could not find the current page in the VSDX package');
+
+  const relEl = byTag(pageEl, 'Rel')[0];
+  const rId = relEl ? (relEl.getAttribute('r:id') || relEl.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id')) : null;
+  const pagePath = resolveZipTarget('visio/pages/pages.xml', rId ? pagesRels[rId] : null);
+  if (!pagePath) throw new Error('Could not resolve the current page drawing part');
+
+  const pageXml = await readZipText(zip, pagePath);
+  if (!pageXml) throw new Error(`VSDX package is missing ${pagePath}`);
+
+  const pageDoc = parseXml(pageXml);
+  const removedShapeIds = new Set();
+  let removedCount = 0;
+  for (const shapesEl of getDirectChildren(pageDoc.documentElement, 'Shapes')) {
+    removedCount += pruneShapeElements(shapesEl, selectedLayerIndexes, removedShapeIds);
+  }
+  removeDanglingConnects(pageDoc, removedShapeIds);
+
+  zip.file(pagePath, new XMLSerializer().serializeToString(pageDoc));
+  return {
+    buffer: await zip.generateAsync({ type: 'arraybuffer' }),
+    removedCount
+  };
 }
