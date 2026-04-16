@@ -12,6 +12,16 @@ const fileName = document.getElementById('file-name');
 const errorBox = document.getElementById('error-box');
 const layersSidebar = document.getElementById('layers-sidebar');
 const layersList = document.getElementById('layers-list');
+const layerFilterMode = document.getElementById('layer-filter-mode');
+const layerFilterText = document.getElementById('layer-filter-text');
+const layersCount = document.getElementById('layers-count');
+const layersSelectAll = document.getElementById('layers-select-all');
+const layersDeselectAll = document.getElementById('layers-deselect-all');
+const layersSelectFiltered = document.getElementById('layers-select-filtered');
+const layersDeselectFiltered = document.getElementById('layers-deselect-filtered');
+const layerMatrixModal = document.getElementById('layer-matrix-modal');
+const layerMatrixBody = document.getElementById('layer-matrix-body');
+const layerMatrixClose = document.getElementById('layer-matrix-close');
 
 let currentPages = [];
 let currentPageIndex = 0;
@@ -20,6 +30,13 @@ let panX = 0, panY = 0;
 let isPanning = false;
 let panStartX, panStartY;
 let hiddenLayers = new Set();
+let focusedLayerIndex = null;
+
+function getInitialHiddenLayers(page = currentPages[currentPageIndex]) {
+  return new Set((page?.layers || [])
+    .filter(layer => layer.visible === false)
+    .map(layer => layer.index));
+}
 
 function showError(msg) {
   errorBox.textContent = msg;
@@ -40,19 +57,20 @@ function updateTransform() {
 function renderCurrentPage() {
   if (!currentPages.length) return;
   const page = currentPages[currentPageIndex];
+  let renderedPage = page;
 
   // Render background page first if referenced
   if (page.backPage) {
     const bgPage = currentPages.find(p => p.id === page.backPage);
     if (bgPage) {
       // Merge background shapes into current page for rendering
-      const merged = { ...page, shapes: [...bgPage.shapes, ...page.shapes] };
-      renderPage(merged, svgContainer);
-      return;
+      renderedPage = { ...page, shapes: [...bgPage.shapes, ...page.shapes] };
     }
   }
 
-  renderPage(page, svgContainer);
+  renderPage(renderedPage, svgContainer);
+  applyLayerVisibility();
+  attachSvgLayerFocusHandlers();
 }
 
 function buildPageTabs() {
@@ -65,7 +83,8 @@ function buildPageTabs() {
     btn.addEventListener('click', () => {
       currentPageIndex = currentPages.indexOf(page);
       buildPageTabs();
-      hiddenLayers = new Set();
+      hiddenLayers = getInitialHiddenLayers();
+      focusedLayerIndex = null;
       buildLayersSidebar();
       resetView();
       renderCurrentPage();
@@ -88,43 +107,290 @@ function buildLayersSidebar() {
     return;
   }
 
-  for (const layer of layers) {
+  const visibleLayers = getFilteredLayers();
+  if (!visibleLayers.some(layer => layer.index === focusedLayerIndex)) {
+    focusedLayerIndex = visibleLayers[0]?.index ?? null;
+  }
+
+  for (const layer of visibleLayers) {
     const item = document.createElement('div');
     item.className = 'layer-item';
+    item.dataset.layerIndex = layer.index;
+    item.tabIndex = layer.index === focusedLayerIndex ? 0 : -1;
+    item.setAttribute('role', 'option');
+    item.setAttribute('aria-selected', layer.index === focusedLayerIndex ? 'true' : 'false');
     if (hiddenLayers.has(layer.index)) item.classList.add('disabled');
+    if (layer.index === focusedLayerIndex) item.classList.add('focused');
 
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.checked = !hiddenLayers.has(layer.index);
     checkbox.id = `layer-cb-${layer.index}`;
+    checkbox.tabIndex = -1;
+    checkbox.setAttribute('aria-label', layer.name);
 
-    const label = document.createElement('label');
-    label.textContent = layer.name;
-    label.setAttribute('for', checkbox.id);
-    label.title = layer.name;
+    const name = document.createElement('span');
+    name.className = 'layer-name';
+    name.textContent = layer.name;
+    name.title = layer.name;
 
     checkbox.addEventListener('change', () => {
-      if (checkbox.checked) {
-        hiddenLayers.delete(layer.index);
-        item.classList.remove('disabled');
-      } else {
-        hiddenLayers.add(layer.index);
-        item.classList.add('disabled');
-      }
-      applyLayerVisibility();
+      setLayerSelected(layer.index, checkbox.checked);
     });
 
     item.addEventListener('click', (e) => {
-      if (e.target !== checkbox) {
-        checkbox.checked = !checkbox.checked;
-        checkbox.dispatchEvent(new Event('change'));
-      }
+      focusLayerRow(layer.index, false);
+      if (e.target !== checkbox) toggleLayer(layer.index);
     });
 
+    item.addEventListener('focus', () => focusLayerRow(layer.index, false));
+
     item.appendChild(checkbox);
-    item.appendChild(label);
+    item.appendChild(name);
     layersList.appendChild(item);
   }
+
+  updateLayersCount(layers.length, visibleLayers.length);
+  updateLayerBulkButtons(visibleLayers.length);
+}
+
+function normalizeLayerText(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function getCurrentLayers() {
+  return currentPages[currentPageIndex]?.layers || [];
+}
+
+function layerMatchesFilter(layer) {
+  const needle = normalizeLayerText(layerFilterText.value);
+  if (!needle) return true;
+
+  const haystack = normalizeLayerText(layer.name);
+  switch (layerFilterMode.value) {
+    case 'starts':
+      return haystack.startsWith(needle);
+    case 'ends':
+      return haystack.endsWith(needle);
+    case 'equals':
+      return haystack === needle;
+    case 'notContains':
+      return !haystack.includes(needle);
+    case 'contains':
+    default:
+      return haystack.includes(needle);
+  }
+}
+
+function getFilteredLayers() {
+  return getCurrentLayers().filter(layerMatchesFilter);
+}
+
+function updateLayersCount(total, visible) {
+  const selected = getCurrentLayers().filter(layer => !hiddenLayers.has(layer.index)).length;
+  layersCount.textContent = `${visible} of ${total} shown, ${selected} selected`;
+}
+
+function updateLayerBulkButtons(visibleCount) {
+  const disabled = getCurrentLayers().length === 0;
+  layersSelectAll.disabled = disabled;
+  layersDeselectAll.disabled = disabled;
+  layersSelectFiltered.disabled = disabled || visibleCount === 0;
+  layersDeselectFiltered.disabled = disabled || visibleCount === 0;
+}
+
+function setLayerSelected(layerIndex, selected) {
+  if (selected) {
+    hiddenLayers.delete(layerIndex);
+  } else {
+    hiddenLayers.add(layerIndex);
+  }
+
+  const item = layersList.querySelector(`[data-layer-index="${CSS.escape(String(layerIndex))}"]`);
+  if (item) {
+    item.classList.toggle('disabled', !selected);
+    const checkbox = item.querySelector('input[type="checkbox"]');
+    if (checkbox) checkbox.checked = selected;
+  }
+
+  updateLayersCount(getCurrentLayers().length, getFilteredLayers().length);
+  applyLayerVisibility();
+}
+
+function toggleLayer(layerIndex) {
+  setLayerSelected(layerIndex, hiddenLayers.has(layerIndex));
+}
+
+function setLayerSelection(layers, selected) {
+  for (const layer of layers) {
+    if (selected) hiddenLayers.delete(layer.index);
+    else hiddenLayers.add(layer.index);
+  }
+  buildLayersSidebar();
+  applyLayerVisibility();
+}
+
+function focusLayerRow(layerIndex, scrollIntoView = true) {
+  focusedLayerIndex = layerIndex;
+  const items = [...layersList.querySelectorAll('.layer-item')];
+  for (const item of items) {
+    const isFocused = item.dataset.layerIndex === String(layerIndex);
+    item.classList.toggle('focused', isFocused);
+    item.tabIndex = isFocused ? 0 : -1;
+    item.setAttribute('aria-selected', isFocused ? 'true' : 'false');
+    if (isFocused) {
+      item.focus({ preventScroll: true });
+      if (scrollIntoView) item.scrollIntoView({ block: 'nearest' });
+    }
+  }
+}
+
+function moveLayerFocus(delta) {
+  const items = [...layersList.querySelectorAll('.layer-item')];
+  if (!items.length) return;
+  const focusedItem = document.activeElement?.closest?.('.layer-item');
+  const current = focusedItem
+    ? items.indexOf(focusedItem)
+    : items.findIndex(item => item.dataset.layerIndex === String(focusedLayerIndex));
+  const startingBeforeList = !focusedItem && document.activeElement === layersList;
+  const nextBase = startingBeforeList ? -1 : (current >= 0 ? current : 0);
+  const next = Math.max(0, Math.min(items.length - 1, nextBase + delta));
+  focusLayerRow(items[next].dataset.layerIndex);
+}
+
+function focusFirstOrLastLayer(first) {
+  const items = [...layersList.querySelectorAll('.layer-item')];
+  if (!items.length) return;
+  focusLayerRow(items[first ? 0 : items.length - 1].dataset.layerIndex);
+}
+
+function focusLayerFromSvgElement(target) {
+  const group = target.closest?.('g[data-layers]');
+  if (!group) return;
+
+  const layerIndexes = group.getAttribute('data-layers').split(',').filter(Boolean);
+  const visibleLayerIndexes = new Set(getFilteredLayers().map(layer => String(layer.index)));
+  const layerIndex = layerIndexes.find(index => visibleLayerIndexes.has(index)) || layerIndexes[0];
+  if (!layerIndex) return;
+
+  layersSidebar.classList.add('visible');
+  document.getElementById('btn-layers').classList.add('active');
+
+  if (!visibleLayerIndexes.has(layerIndex)) {
+    layerFilterText.value = '';
+    buildLayersSidebar();
+  }
+  focusLayerRow(layerIndex);
+}
+
+function attachSvgLayerFocusHandlers() {
+  const svg = svgContainer.querySelector('svg');
+  if (!svg) return;
+  svg.addEventListener('click', (e) => focusLayerFromSvgElement(e.target));
+}
+
+function formatLayerBool(value, defaultValue = null) {
+  const resolved = value ?? defaultValue;
+  if (resolved === null || resolved === undefined) {
+    const span = document.createElement('span');
+    span.className = 'matrix-muted';
+    span.textContent = '-';
+    return span;
+  }
+
+  const span = document.createElement('span');
+  span.className = resolved ? 'matrix-yes' : 'matrix-no';
+  span.textContent = resolved ? 'Yes' : 'No';
+  return span;
+}
+
+function createTextCell(text, className = '') {
+  const cell = document.createElement('td');
+  if (className) cell.className = className;
+  cell.textContent = text;
+  cell.title = text;
+  return cell;
+}
+
+function createBoolCell(value, defaultValue = null) {
+  const cell = document.createElement('td');
+  cell.appendChild(formatLayerBool(value, defaultValue));
+  return cell;
+}
+
+function buildLayerMatrix() {
+  layerMatrixBody.innerHTML = '';
+  const pages = currentPages.filter(page => !page.isBackground);
+
+  if (!pages.length) {
+    layerMatrixBody.textContent = 'No foreground pages loaded.';
+    return;
+  }
+
+  const table = document.createElement('table');
+  table.className = 'layer-matrix';
+
+  const head = document.createElement('thead');
+  const headerRow = document.createElement('tr');
+  ['Page', 'Layer', 'Index', 'File Visible', 'Displayed Now', 'Print', 'Active', 'Lock', 'Snap', 'Glue', 'Color', 'Transparency'].forEach(label => {
+    const th = document.createElement('th');
+    th.textContent = label;
+    headerRow.appendChild(th);
+  });
+  head.appendChild(headerRow);
+  table.appendChild(head);
+
+  const body = document.createElement('tbody');
+  let rowCount = 0;
+
+  for (const page of pages) {
+    const layers = page.layers || [];
+    if (!layers.length) {
+      const row = document.createElement('tr');
+      row.appendChild(createTextCell(page.name || 'Page'));
+      const emptyCell = createTextCell('No layers', 'matrix-muted');
+      emptyCell.colSpan = 11;
+      row.appendChild(emptyCell);
+      body.appendChild(row);
+      continue;
+    }
+
+    for (const layer of layers) {
+      const isCurrentPage = currentPages.indexOf(page) === currentPageIndex;
+      const displayedNow = isCurrentPage ? !hiddenLayers.has(layer.index) : layer.visible !== false;
+      const row = document.createElement('tr');
+      row.appendChild(createTextCell(page.name || 'Page'));
+      row.appendChild(createTextCell(layer.name || `Layer ${layer.index}`, 'matrix-layer-name'));
+      row.appendChild(createTextCell(String(layer.index)));
+      row.appendChild(createBoolCell(layer.visible, true));
+      row.appendChild(createBoolCell(displayedNow, true));
+      row.appendChild(createBoolCell(layer.print, true));
+      row.appendChild(createBoolCell(layer.active, false));
+      row.appendChild(createBoolCell(layer.lock, false));
+      row.appendChild(createBoolCell(layer.snap, true));
+      row.appendChild(createBoolCell(layer.glue, true));
+      row.appendChild(createTextCell(layer.color || '-', layer.color ? '' : 'matrix-muted'));
+      row.appendChild(createTextCell(layer.colorTrans || '-', layer.colorTrans ? '' : 'matrix-muted'));
+      body.appendChild(row);
+      rowCount++;
+    }
+  }
+
+  table.appendChild(body);
+  layerMatrixBody.appendChild(table);
+
+  if (rowCount === 0) {
+    layerMatrixBody.textContent = 'No layer matrix data found in this file.';
+  }
+}
+
+function showLayerMatrix() {
+  buildLayerMatrix();
+  layerMatrixModal.classList.add('visible');
+}
+
+function hideLayerMatrix() {
+  layerMatrixModal.classList.remove('visible');
 }
 
 function applyLayerVisibility() {
@@ -162,7 +428,9 @@ async function loadFile(file) {
     currentPageIndex = firstFg >= 0 ? firstFg : 0;
     showViewer();
     buildPageTabs();
-    hiddenLayers = new Set();
+    hiddenLayers = getInitialHiddenLayers();
+    focusedLayerIndex = null;
+    layerFilterText.value = '';
     buildLayersSidebar();
     resetView();
     renderCurrentPage();
@@ -253,6 +521,56 @@ document.getElementById('btn-layers').addEventListener('click', () => {
   const btn = document.getElementById('btn-layers');
   layersSidebar.classList.toggle('visible');
   btn.classList.toggle('active');
+});
+document.getElementById('btn-layer-matrix').addEventListener('click', showLayerMatrix);
+layerMatrixClose.addEventListener('click', hideLayerMatrix);
+layerMatrixModal.addEventListener('click', (e) => {
+  if (e.target === layerMatrixModal) hideLayerMatrix();
+});
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && layerMatrixModal.classList.contains('visible')) hideLayerMatrix();
+});
+
+layerFilterMode.addEventListener('change', () => {
+  focusedLayerIndex = null;
+  buildLayersSidebar();
+});
+
+layerFilterText.addEventListener('input', () => {
+  focusedLayerIndex = null;
+  buildLayersSidebar();
+});
+
+layersSelectAll.addEventListener('click', () => setLayerSelection(getCurrentLayers(), true));
+layersDeselectAll.addEventListener('click', () => setLayerSelection(getCurrentLayers(), false));
+layersSelectFiltered.addEventListener('click', () => setLayerSelection(getFilteredLayers(), true));
+layersDeselectFiltered.addEventListener('click', () => setLayerSelection(getFilteredLayers(), false));
+
+layersList.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    moveLayerFocus(1);
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    moveLayerFocus(-1);
+  } else if (e.key === 'Home') {
+    e.preventDefault();
+    focusFirstOrLastLayer(true);
+  } else if (e.key === 'End') {
+    e.preventDefault();
+    focusFirstOrLastLayer(false);
+  } else if (e.key === 'PageDown') {
+    e.preventDefault();
+    moveLayerFocus(10);
+  } else if (e.key === 'PageUp') {
+    e.preventDefault();
+    moveLayerFocus(-10);
+  } else if (e.key === ' ' || e.key === 'Enter') {
+    e.preventDefault();
+    const item = document.activeElement?.closest?.('.layer-item');
+    const layerIndex = item?.dataset.layerIndex ?? focusedLayerIndex;
+    if (layerIndex !== null) toggleLayer(layerIndex);
+  }
 });
 
 // Export SVG

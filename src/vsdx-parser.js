@@ -1207,10 +1207,33 @@ export async function parseVsdx(arrayBuffer) {
           const ix = row.getAttribute('IX');
           const name = getCellValue(row, 'Name') || getCellValue(row, 'NameUniv') || `Layer ${ix}`;
           const visible = getCellValue(row, 'Visible');
+          const print = getCellValue(row, 'Print');
+          const active = getCellValue(row, 'Active');
+          const lock = getCellValue(row, 'Lock');
+          const snap = getCellValue(row, 'Snap');
+          const glue = getCellValue(row, 'Glue');
           layers.push({
             index: ix,
             name,
-            visible: visible !== '0'
+            nameUniv: getCellValue(row, 'NameUniv') || null,
+            visible: visible !== '0',
+            print: print !== '0',
+            active: active === '1',
+            lock: lock === '1',
+            snap: snap !== '0',
+            glue: glue !== '0',
+            color: getCellValue(row, 'Color') || null,
+            colorTrans: getCellValue(row, 'ColorTrans') || null,
+            cells: {
+              Visible: visible ?? null,
+              Print: print ?? null,
+              Active: active ?? null,
+              Lock: lock ?? null,
+              Snap: snap ?? null,
+              Glue: glue ?? null,
+              Color: getCellValue(row, 'Color') ?? null,
+              ColorTrans: getCellValue(row, 'ColorTrans') ?? null
+            }
           });
         }
       }
