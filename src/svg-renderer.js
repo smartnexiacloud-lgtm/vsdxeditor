@@ -93,7 +93,7 @@ function catmullRomToBezier(points) {
 
 // Convert geometry rows to SVG path data
 // Coordinates are in shape-local space (0,0 to width,height) with Y-up
-function geometryToPath(rows, width, height) {
+function geometryToPath(rows, width, height, options = {}) {
   let d = '';
   let curX = 0, curY = 0;
   let startX = 0, startY = 0;
@@ -117,7 +117,11 @@ function geometryToPath(rows, width, height) {
           mx = inToPx(row.x * width);
           my = inToPx((1 - row.y) * height);
         }
-        d += `M ${mx} ${my} `;
+        if (options.connectInternalMoves && d) {
+          d += `L ${mx} ${my} `;
+        } else {
+          d += `M ${mx} ${my} `;
+        }
         curX = mx; curY = my;
         startX = mx; startY = my;
         break;
@@ -606,6 +610,24 @@ function appendImageNode(target, shape, svgNS) {
   target.appendChild(image);
 }
 
+function appendShapeMetadata(target, shape, svgNS) {
+  const titleText = shape.name || shape.nameU;
+  if (titleText) {
+    const title = document.createElementNS(svgNS, 'title');
+    title.textContent = titleText;
+    target.appendChild(title);
+  }
+
+  if ((shape.propMap && Object.keys(shape.propMap).length > 0) || (shape.userMap && Object.keys(shape.userMap).length > 0)) {
+    const metadata = document.createElementNS(svgNS, 'metadata');
+    metadata.textContent = JSON.stringify({
+      properties: shape.propMap || {},
+      user: shape.userMap || {}
+    });
+    target.appendChild(metadata);
+  }
+}
+
 function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, fontScale, themeColors = {}) {
   if (fontScale === undefined) fontScale = strokeScale;
   const g = document.createElementNS(svgNS, 'g');
@@ -619,6 +641,7 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
   if (shape.layerMembers && shape.layerMembers.length > 0) {
     g.setAttribute('data-layers', xmlSafe(shape.layerMembers.join(',')));
   }
+  appendShapeMetadata(g, shape, svgNS);
 
   // Dedicated 1D connector rendering uses page-coordinate geometry instead of
   // shape-local transforms. This avoids collapsing routed connectors and keeps
@@ -674,7 +697,9 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
   // Render geometry
   if (shape.geometry.length > 0) {
     for (const geo of shape.geometry) {
-      const pathData = geometryToPath(geo.rows, shape.width, shape.height);
+      const pathData = geometryToPath(geo.rows, shape.width, shape.height, {
+        connectInternalMoves: !geo.noFill
+      });
       if (!pathData) continue;
       const path = document.createElementNS(svgNS, 'path');
       path.setAttribute('d', pathData);
@@ -704,6 +729,9 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
       }
 
       path.setAttribute('stroke-linejoin', 'round');
+      if (geo.noShow) {
+        path.setAttribute('visibility', 'hidden');
+      }
 
       // Arrow markers
       if (shape.beginArrow && shape.beginArrow > 0) {

@@ -195,6 +195,45 @@ function parseDocumentColors(documentDoc) {
   return colors;
 }
 
+function parseStyleSheets(documentDoc) {
+  const styles = new Map();
+  for (const styleEl of byTag(documentDoc, 'StyleSheet')) {
+    const id = styleEl.getAttribute('ID');
+    if (!id) continue;
+    styles.set(id, {
+      id,
+      lineStyle: styleEl.getAttribute('LineStyle'),
+      fillStyle: styleEl.getAttribute('FillStyle'),
+      textStyle: styleEl.getAttribute('TextStyle'),
+      el: styleEl
+    });
+  }
+  return styles;
+}
+
+function resolveStyleCellData(styles, styleId, cellName, styleKind, seen = new Set()) {
+  if (!styles || !styleId || seen.has(styleId)) return null;
+  seen.add(styleId);
+
+  const style = styles.get(String(styleId));
+  if (!style) return null;
+
+  const data = getCellData(style.el, cellName);
+  if (data && data.formula !== 'Inh') return data;
+
+  const parentId = styleKind === 'line' ? style.lineStyle
+    : styleKind === 'fill' ? style.fillStyle
+      : style.textStyle;
+  return resolveStyleCellData(styles, parentId, cellName, styleKind, seen);
+}
+
+function styleCellFloat(styles, styleId, cellName, styleKind) {
+  const data = resolveStyleCellData(styles, styleId, cellName, styleKind);
+  if (!data || data.value === null || data.value === undefined) return null;
+  const n = parseFloat(data.value);
+  return Number.isNaN(n) ? null : n;
+}
+
 function parseXml(text) {
   const parser = new DOMParser();
   return parser.parseFromString(text, 'application/xml');
@@ -500,6 +539,26 @@ function parseRowData(row) {
   return rowData;
 }
 
+function mergeRowData(masterRow, shapeRow) {
+  if (!masterRow) return shapeRow;
+  if (!shapeRow) return masterRow;
+
+  const merged = { ...masterRow };
+  for (const [key, value] of Object.entries(shapeRow)) {
+    if (value !== null && value !== undefined) {
+      merged[key] = value;
+    }
+  }
+  merged.del = shapeRow.del;
+  return merged;
+}
+
+function parseSectionFlag(value) {
+  if (value === '1') return true;
+  if (value === '0') return false;
+  return null;
+}
+
 // Parse raw geometry sections from a shape element (returns row elements indexed by IX)
 function parseGeometryRaw(shapeEl) {
   const sections = [];
@@ -516,7 +575,13 @@ function parseGeometryRaw(shapeEl) {
       const rowData = parseRowData(row);
       if (rowData.ix) rowMap.set(rowData.ix, rowData);
     }
-    sections.push({ ix, rowMap, noFill: noFill === '1', noLine: noLine === '1', noShow: noShow === '1' });
+    sections.push({
+      ix,
+      rowMap,
+      noFill: parseSectionFlag(noFill),
+      noLine: parseSectionFlag(noLine),
+      noShow: parseSectionFlag(noShow)
+    });
   }
   return sections;
 }
@@ -530,26 +595,27 @@ function mergeGeometry(masterEl, shapeEl, is1D) {
   if (shapeGeo.length === 0 && masterGeo.length === 0) return [];
   if (shapeGeo.length === 0) {
     // Use master geometry as-is
-    return masterGeo.filter(s => !s.noShow).map(sec => ({
+    return masterGeo.map(sec => ({
       rows: [...sec.rowMap.values()].filter(r => !r.del).sort((a, b) => parseInt(a.ix) - parseInt(b.ix)),
-      noFill: sec.noFill,
-      noLine: sec.noLine
+      noFill: sec.noFill ?? false,
+      noLine: sec.noLine ?? false,
+      noShow: sec.noShow ?? false
     }));
   }
   if (is1D) {
-    return shapeGeo.filter(s => !s.noShow).map(sec => ({
+    return shapeGeo.map(sec => ({
       rows: [...sec.rowMap.values()].filter(r => !r.del).sort((a, b) => parseInt(a.ix) - parseInt(b.ix)),
-      noFill: sec.noFill,
-      noLine: sec.noLine,
-      noShow: sec.noShow
+      noFill: sec.noFill ?? false,
+      noLine: sec.noLine ?? false,
+      noShow: sec.noShow ?? false
     }));
   }
   if (masterGeo.length === 0) {
-    return shapeGeo.filter(s => !s.noShow).map(sec => ({
+    return shapeGeo.map(sec => ({
       rows: [...sec.rowMap.values()].filter(r => !r.del).sort((a, b) => parseInt(a.ix) - parseInt(b.ix)),
-      noFill: sec.noFill,
-      noLine: sec.noLine,
-      noShow: sec.noShow
+      noFill: sec.noFill ?? false,
+      noLine: sec.noLine ?? false,
+      noShow: sec.noShow ?? false
     }));
   }
 
@@ -569,27 +635,30 @@ function mergeGeometry(masterEl, shapeEl, is1D) {
     if (masterSec) {
       for (const [ix, row] of masterSec.rowMap) mergedRowMap.set(ix, row);
     }
-    // Override with shape rows
-    for (const [ix, row] of shapeSec.rowMap) mergedRowMap.set(ix, row);
+    // Override at cell granularity. Shape rows commonly contain only the cells
+    // that differ from the master; replacing the whole row drops inherited X/Y
+    // cells and can collapse rectangles into triangles.
+    for (const [ix, row] of shapeSec.rowMap) {
+      mergedRowMap.set(ix, mergeRowData(mergedRowMap.get(ix), row));
+    }
 
-    const noShow = shapeSec.noShow || (masterSec?.noShow && !shapeGeo.find(s => s.ix === shapeSec.ix));
-    if (noShow) continue;
+    const noShow = shapeSec.noShow ?? masterSec?.noShow ?? false;
 
     merged.push({
       rows: [...mergedRowMap.values()].filter(r => !r.del).sort((a, b) => parseInt(a.ix) - parseInt(b.ix)),
-      noFill: shapeSec.noFill || (masterSec?.noFill ?? false),
-      noLine: shapeSec.noLine || (masterSec?.noLine ?? false),
-      noShow: false
+      noFill: shapeSec.noFill ?? masterSec?.noFill ?? false,
+      noLine: shapeSec.noLine ?? masterSec?.noLine ?? false,
+      noShow
     });
   }
   // Add master sections not present in shape
   for (const masterSec of masterGeo) {
-    if (!seenIx.has(masterSec.ix) && !masterSec.noShow) {
+    if (!seenIx.has(masterSec.ix)) {
       merged.push({
         rows: [...masterSec.rowMap.values()].filter(r => !r.del).sort((a, b) => parseInt(a.ix) - parseInt(b.ix)),
-        noFill: masterSec.noFill,
-        noLine: masterSec.noLine,
-        noShow: false
+        noFill: masterSec.noFill ?? false,
+        noLine: masterSec.noLine ?? false,
+        noShow: masterSec.noShow ?? false
       });
     }
   }
@@ -599,7 +668,10 @@ function mergeGeometry(masterEl, shapeEl, is1D) {
 
 function parseShape(shapeEl, masters, parentMaster, themeColors, context = {}) {
   const colorPalette = context.colorPalette || null;
+  const styleSheets = context.styleSheets || null;
   const id = shapeEl.getAttribute('ID');
+  const name = shapeEl.getAttribute('Name');
+  const nameU = shapeEl.getAttribute('NameU');
   const masterId = shapeEl.getAttribute('Master');
   const masterShapeId = shapeEl.getAttribute('MasterShape');
   const type = shapeEl.getAttribute('Type');
@@ -650,30 +722,35 @@ function parseShape(shapeEl, masters, parentMaster, themeColors, context = {}) {
   const is1D = (beginX !== null && endX !== null) || objType === '2';
 
   // Style cells
+  const lineStyleId = shapeEl.getAttribute('LineStyle') ?? (masterShape ? masterShape.el.getAttribute('LineStyle') : null);
+  const fillStyleId = shapeEl.getAttribute('FillStyle') ?? (masterShape ? masterShape.el.getAttribute('FillStyle') : null);
   const lineColorData = getCellData(shapeEl, 'LineColor');
   const masterLineColorData = masterShape ? getCellData(masterShape.el, 'LineColor') : null;
-  const lineColor = resolveThemedColor(lineColorData, masterLineColorData, themeColors, {
+  const styleLineColorData = resolveStyleCellData(styleSheets, lineStyleId, 'LineColor', 'line');
+  const lineColor = resolveThemedColor(lineColorData, masterLineColorData || styleLineColorData, themeColors, {
     role: 'line',
     quickStyle: quickStyleLineColor,
     colorPalette
   }) ?? '#000000';
-  const lineWeight = getCellFloat(shapeEl, 'LineWeight') ?? (masterShape ? getCellFloat(masterShape.el, 'LineWeight') : null) ?? 0.01;
-  const linePattern = getCellFloat(shapeEl, 'LinePattern') ?? (masterShape ? getCellFloat(masterShape.el, 'LinePattern') : null) ?? 1;
+  const lineWeight = getCellFloat(shapeEl, 'LineWeight') ?? (masterShape ? getCellFloat(masterShape.el, 'LineWeight') : null) ?? styleCellFloat(styleSheets, lineStyleId, 'LineWeight', 'line') ?? 0.01;
+  const linePattern = getCellFloat(shapeEl, 'LinePattern') ?? (masterShape ? getCellFloat(masterShape.el, 'LinePattern') : null) ?? styleCellFloat(styleSheets, lineStyleId, 'LinePattern', 'line') ?? 1;
   const fillForegroundData = getCellData(shapeEl, 'FillForegnd');
   const masterFillForegroundData = masterShape ? getCellData(masterShape.el, 'FillForegnd') : null;
-  let fillForeground = resolveThemedColor(fillForegroundData, masterFillForegroundData, themeColors, {
+  const styleFillForegroundData = resolveStyleCellData(styleSheets, fillStyleId, 'FillForegnd', 'fill');
+  let fillForeground = resolveThemedColor(fillForegroundData, masterFillForegroundData || styleFillForegroundData, themeColors, {
     role: 'fill',
     quickStyle: quickStyleFillColor,
     colorPalette
   });
   const fillBackgroundData = getCellData(shapeEl, 'FillBkgnd');
   const masterFillBackgroundData = masterShape ? getCellData(masterShape.el, 'FillBkgnd') : null;
-  const fillBackground = resolveThemedColor(fillBackgroundData, masterFillBackgroundData, themeColors, {
+  const styleFillBackgroundData = resolveStyleCellData(styleSheets, fillStyleId, 'FillBkgnd', 'fill');
+  const fillBackground = resolveThemedColor(fillBackgroundData, masterFillBackgroundData || styleFillBackgroundData, themeColors, {
     role: 'fill',
     quickStyle: quickStyleFillColor,
     colorPalette
   });
-  const fillPattern = getCellFloat(shapeEl, 'FillPattern') ?? (masterShape ? getCellFloat(masterShape.el, 'FillPattern') : null) ?? 1;
+  const fillPattern = getCellFloat(shapeEl, 'FillPattern') ?? (masterShape ? getCellFloat(masterShape.el, 'FillPattern') : null) ?? styleCellFloat(styleSheets, fillStyleId, 'FillPattern', 'fill') ?? 1;
   const fillGradientDir = getCellFloat(shapeEl, 'FillGradientDir') ?? (masterShape ? getCellFloat(masterShape.el, 'FillGradientDir') : null);
   const shapeGradientStops = parseFillGradientStops(shapeEl, themeColors, colorPalette);
   const masterGradientStops = masterShape ? parseFillGradientStops(masterShape.el, themeColors, colorPalette) : [];
@@ -789,6 +866,8 @@ function parseShape(shapeEl, masters, parentMaster, themeColors, context = {}) {
 
   const shape = {
     id,
+    name,
+    nameU,
     masterId,
     type,
     pinX, pinY,
@@ -950,9 +1029,12 @@ export async function parseVsdx(arrayBuffer) {
 
   let themeColors = {};
   let colorPalette = new Map(VISIO_COLORS.map((color, index) => [index, color]));
+  let styleSheets = new Map();
   const documentXml = await readFile('visio/document.xml');
   if (documentXml) {
-    colorPalette = parseDocumentColors(parseXml(documentXml));
+    const documentDoc = parseXml(documentXml);
+    colorPalette = parseDocumentColors(documentDoc);
+    styleSheets = parseStyleSheets(documentDoc);
   }
 
   const themeXml = await readFile('visio/theme/theme1.xml') || await readFile('visio/theme/theme2.xml');
@@ -1081,7 +1163,7 @@ export async function parseVsdx(arrayBuffer) {
         if (pageShapes.length > 0) {
           const shapeEls = getDirectChildren(pageShapes[0], 'Shape');
           for (const shapeEl of shapeEls) {
-            shapes.push(parseShape(shapeEl, masters, null, themeColors, { pageRels, media, colorPalette }));
+            shapes.push(parseShape(shapeEl, masters, null, themeColors, { pageRels, media, colorPalette, styleSheets }));
           }
         }
       }
@@ -1118,9 +1200,10 @@ export async function parseVsdx(arrayBuffer) {
       shapes,
       connects,
       themeColors,
-      colorPalette
+      colorPalette,
+      styleSheets
     });
   }
 
-  return { pages, masters, themeColors, colorPalette };
+  return { pages, masters, themeColors, colorPalette, styleSheets };
 }
