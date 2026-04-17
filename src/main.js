@@ -473,7 +473,7 @@ function createEditableBoolCell(page, layer, prop, defaultValue, matrixRow = nul
   return cell;
 }
 
-function createEditableTextCell(page, layer, prop, fallbackValue = '', onChange = null) {
+function createEditableTextCell(page, layer, prop, fallbackValue = '', matrixRow = null, matrixCol = null, onChange = null) {
   const cell = document.createElement('td');
   cell.className = 'matrix-layer-name';
   const input = document.createElement('input');
@@ -482,6 +482,10 @@ function createEditableTextCell(page, layer, prop, fallbackValue = '', onChange 
   input.value = layer[prop] ?? fallbackValue;
   input.placeholder = fallbackValue;
   input.setAttribute('aria-label', `${page.name || 'Page'} ${prop}`);
+  if (matrixRow !== null && matrixCol !== null) {
+    input.dataset.matrixRow = String(matrixRow);
+    input.dataset.matrixCol = String(matrixCol);
+  }
   input.addEventListener('change', () => {
     const nextValue = input.value.trim() || fallbackValue;
     layer[prop] = nextValue;
@@ -569,12 +573,12 @@ function buildLayerMatrix() {
       const row = document.createElement('tr');
       const matrixRow = editableRowCount++;
       row.appendChild(createTextCell(page.name || 'Page'));
-      row.appendChild(createEditableTextCell(page, layer, 'name', `Layer ${layer.index}`, () => {
+      row.appendChild(createEditableTextCell(page, layer, 'name', `Layer ${layer.index}`, matrixRow, 0, () => {
         if (isCurrentPage) buildLayersSidebar();
         buildLayerMatrix();
       }));
       row.appendChild(createTextCell(String(layer.index)));
-      row.appendChild(createEditableBoolCell(page, layer, 'visible', true, matrixRow, 0, (selected) => {
+      row.appendChild(createEditableBoolCell(page, layer, 'visible', true, matrixRow, 1, (selected) => {
         if (isCurrentPage) {
           if (selected) hiddenLayers.delete(layer.index);
           else hiddenLayers.add(layer.index);
@@ -584,11 +588,11 @@ function buildLayerMatrix() {
         buildLayerMatrix();
       }));
       row.appendChild(createBoolCell(displayedNow, true));
-      row.appendChild(createEditableBoolCell(page, layer, 'print', true, matrixRow, 1));
-      row.appendChild(createEditableBoolCell(page, layer, 'active', false, matrixRow, 2));
-      row.appendChild(createEditableBoolCell(page, layer, 'lock', false, matrixRow, 3));
-      row.appendChild(createEditableBoolCell(page, layer, 'snap', true, matrixRow, 4));
-      row.appendChild(createEditableBoolCell(page, layer, 'glue', true, matrixRow, 5));
+      row.appendChild(createEditableBoolCell(page, layer, 'print', true, matrixRow, 2));
+      row.appendChild(createEditableBoolCell(page, layer, 'active', false, matrixRow, 3));
+      row.appendChild(createEditableBoolCell(page, layer, 'lock', false, matrixRow, 4));
+      row.appendChild(createEditableBoolCell(page, layer, 'snap', true, matrixRow, 5));
+      row.appendChild(createEditableBoolCell(page, layer, 'glue', true, matrixRow, 6));
       row.appendChild(createTextCell(layer.color || '-', layer.color ? '' : 'matrix-muted'));
       row.appendChild(createTextCell(layer.colorTrans || '-', layer.colorTrans ? '' : 'matrix-muted'));
       body.appendChild(row);
@@ -858,8 +862,13 @@ layerMatrixBody.addEventListener('keydown', (e) => {
   let nextCol = col;
   if (e.key === 'ArrowUp') nextRow -= 1;
   else if (e.key === 'ArrowDown') nextRow += 1;
-  else if (e.key === 'ArrowLeft') nextCol -= 1;
-  else if (e.key === 'ArrowRight') nextCol += 1;
+  else if (e.key === 'ArrowLeft') {
+    if (input.type === 'text' && (input.selectionStart !== 0 || input.selectionEnd !== 0)) return;
+    nextCol -= 1;
+  } else if (e.key === 'ArrowRight') {
+    if (input.type === 'text' && (input.selectionStart !== input.value.length || input.selectionEnd !== input.value.length)) return;
+    nextCol += 1;
+  }
   else return;
 
   e.preventDefault();
