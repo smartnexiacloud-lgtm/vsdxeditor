@@ -1425,6 +1425,13 @@ function getShapeLayerMembers(shapeEl) {
     .filter(Boolean);
 }
 
+function shapeHasContent(shapeEl) {
+  if (getDirectChildren(shapeEl, 'Text').length > 0) return true;
+  if (getDirectChildren(shapeEl, 'ForeignData').length > 0) return true;
+  if (getDirectChildren(shapeEl, 'Section').some((section) => section.getAttribute('N') === 'Geometry')) return true;
+  return false;
+}
+
 function pruneShapeElements(parentEl, selectedLayerIndexes, removedShapeIds) {
   let removedCount = 0;
   for (const shapeEl of [...getDirectChildren(parentEl, 'Shape')]) {
@@ -1442,6 +1449,16 @@ function pruneShapeElements(parentEl, selectedLayerIndexes, removedShapeIds) {
     for (const shapesEl of getDirectChildren(shapeEl, 'Shapes')) {
       removedCount += pruneShapeElements(shapesEl, selectedLayerIndexes, removedShapeIds);
     }
+
+    const remainingChildren = getDirectChildren(shapeEl, 'Shapes')
+      .flatMap((shapesEl) => getDirectChildren(shapesEl, 'Shape'));
+    const shouldRemoveEmptyGroup = remainingChildren.length === 0 && !shapeHasContent(shapeEl) && layerMembers.length === 0;
+    if (shouldRemoveEmptyGroup) {
+      const id = shapeEl.getAttribute('ID');
+      if (id) removedShapeIds.add(id);
+      shapeEl.parentNode.removeChild(shapeEl);
+      removedCount++;
+    }
   }
   return removedCount;
 }
@@ -1455,6 +1472,25 @@ function removeDanglingConnects(pageDoc, removedShapeIds) {
       connectEl.parentNode.removeChild(connectEl);
     }
   }
+}
+
+function prunePageLayerRows(pageEl, selectedLayerIndexes) {
+  const pageSheet = getDirectChildren(pageEl, 'PageSheet')[0];
+  if (!pageSheet) return 0;
+
+  const layerSection = getDirectChildren(pageSheet, 'Section')
+    .find((section) => section.getAttribute('N') === 'Layer');
+  if (!layerSection) return 0;
+
+  let removedCount = 0;
+  for (const row of [...getDirectChildren(layerSection, 'Row')]) {
+    const index = String(row.getAttribute('IX') || '');
+    if (!selectedLayerIndexes.has(index)) {
+      row.parentNode.removeChild(row);
+      removedCount++;
+    }
+  }
+  return removedCount;
 }
 
 export async function saveVsdxWithoutNonSelectedLayers(arrayBuffer, pages, pageId, selectedLayerIndexes) {
@@ -1486,8 +1522,21 @@ export async function saveVsdxWithoutNonSelectedLayers(arrayBuffer, pages, pageI
   removeDanglingConnects(pageDoc, removedShapeIds);
 
   zip.file(pagePath, new XMLSerializer().serializeToString(pageDoc));
+  const removedLayerRows = prunePageLayerRows(pageEl, selectedLayerIndexes);
+  zip.file('visio/pages/pages.xml', new XMLSerializer().serializeToString(pagesDoc));
   return {
     buffer: await zip.generateAsync({ type: 'arraybuffer' }),
-    removedCount
+    removedCount: removedCount + removedLayerRows
   };
+}
+
+export async function saveVsdxWithoutHiddenLayers(arrayBuffer, pages, pageId, hiddenLayerIndexes) {
+  const page = (pages || []).find(candidate => String(candidate.id) === String(pageId));
+  if (!page) throw new Error('Could not find the current page in the parsed model');
+
+  const selectedLayerIndexes = new Set((page.layers || [])
+    .map(layer => String(layer.index))
+    .filter(index => !hiddenLayerIndexes.has(index)));
+
+  return saveVsdxWithoutNonSelectedLayers(arrayBuffer, pages, pageId, selectedLayerIndexes);
 }

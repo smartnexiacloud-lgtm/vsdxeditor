@@ -1,4 +1,4 @@
-import { parseVsdx, saveVsdxLayerPermissions, saveVsdxWithoutNonSelectedLayers } from './vsdx-parser.js';
+import { parseVsdx, saveVsdxLayerPermissions, saveVsdxWithoutHiddenLayers, saveVsdxWithoutNonSelectedLayers } from './vsdx-parser.js';
 import { parseVsd } from './vsd-parser.js';
 import { renderPage } from './svg-renderer.js';
 
@@ -22,8 +22,10 @@ const layersDeselectFiltered = document.getElementById('layers-deselect-filtered
 const layerMatrixModal = document.getElementById('layer-matrix-modal');
 const layerMatrixBody = document.getElementById('layer-matrix-body');
 const layerMatrixClose = document.getElementById('layer-matrix-close');
+const layerMatrixSearch = document.getElementById('layer-matrix-search');
 const saveVsdxButton = document.getElementById('btn-save-vsdx');
 const removeNonSelectedButton = document.getElementById('btn-remove-non-selected');
+const removeNonVisibleButton = document.getElementById('btn-remove-non-visible');
 
 let currentPages = [];
 let currentPageIndex = 0;
@@ -35,6 +37,26 @@ let hiddenLayers = new Set();
 let focusedLayerIndex = null;
 let currentFileBuffer = null;
 let currentFileType = null;
+
+async function applyUpdatedVsdxBuffer(buffer, pageId = null) {
+  const result = await parseVsdx(buffer);
+  currentFileBuffer = buffer;
+  currentPages = result.pages;
+
+  if (pageId !== null && pageId !== undefined) {
+    const nextIndex = currentPages.findIndex(page => String(page.id) === String(pageId));
+    currentPageIndex = nextIndex >= 0 ? nextIndex : 0;
+  } else {
+    const firstFg = currentPages.findIndex(p => !p.isBackground);
+    currentPageIndex = firstFg >= 0 ? firstFg : 0;
+  }
+
+  hiddenLayers = getInitialHiddenLayers();
+  focusedLayerIndex = null;
+  buildPageTabs();
+  buildLayersSidebar();
+  renderCurrentPage();
+}
 
 function getInitialHiddenLayers(page = currentPages[currentPageIndex]) {
   return new Set((page?.layers || [])
@@ -330,12 +352,16 @@ function createBoolCell(value, defaultValue = null) {
   return cell;
 }
 
-function createEditableBoolCell(page, layer, prop, defaultValue, onChange = null) {
+function createEditableBoolCell(page, layer, prop, defaultValue, matrixRow = null, matrixCol = null, onChange = null) {
   const cell = document.createElement('td');
   const input = document.createElement('input');
   input.type = 'checkbox';
   input.checked = layer[prop] ?? defaultValue;
   input.setAttribute('aria-label', `${layer.name} ${prop}`);
+  if (matrixRow !== null && matrixCol !== null) {
+    input.dataset.matrixRow = String(matrixRow);
+    input.dataset.matrixCol = String(matrixCol);
+  }
   input.addEventListener('change', () => {
     layer[prop] = input.checked;
     layer.cells = layer.cells || {};
@@ -344,6 +370,35 @@ function createEditableBoolCell(page, layer, prop, defaultValue, onChange = null
   });
   cell.appendChild(input);
   return cell;
+}
+
+function normalizeMatrixText(value) {
+  return String(value || '').toLowerCase();
+}
+
+function layerMatchesMatrixFilter(page, layer) {
+  const needle = normalizeMatrixText(layerMatrixSearch?.value);
+  if (!needle) return true;
+
+  const haystack = [
+    page.name || 'Page',
+    layer.name || `Layer ${layer.index}`,
+    layer.nameUniv || '',
+    layer.index,
+    layer.color || '',
+    layer.colorTrans || ''
+  ].map(normalizeMatrixText).join(' ');
+
+  return haystack.includes(needle);
+}
+
+function focusMatrixInput(row, col) {
+  const target = layerMatrixBody.querySelector(
+    `input[data-matrix-row="${CSS.escape(String(row))}"][data-matrix-col="${CSS.escape(String(col))}"]`
+  );
+  if (!target) return false;
+  target.focus();
+  return true;
 }
 
 function buildLayerMatrix() {
@@ -370,13 +425,14 @@ function buildLayerMatrix() {
 
   const body = document.createElement('tbody');
   let rowCount = 0;
+  let editableRowCount = 0;
 
   for (const page of pages) {
-    const layers = page.layers || [];
+    const layers = (page.layers || []).filter(layer => layerMatchesMatrixFilter(page, layer));
     if (!layers.length) {
       const row = document.createElement('tr');
       row.appendChild(createTextCell(page.name || 'Page'));
-      const emptyCell = createTextCell('No layers', 'matrix-muted');
+      const emptyCell = createTextCell(layerMatrixSearch?.value ? 'No matching layers' : 'No layers', 'matrix-muted');
       emptyCell.colSpan = 11;
       row.appendChild(emptyCell);
       body.appendChild(row);
@@ -387,10 +443,11 @@ function buildLayerMatrix() {
       const isCurrentPage = currentPages.indexOf(page) === currentPageIndex;
       const displayedNow = isCurrentPage ? !hiddenLayers.has(layer.index) : layer.visible !== false;
       const row = document.createElement('tr');
+      const matrixRow = editableRowCount++;
       row.appendChild(createTextCell(page.name || 'Page'));
       row.appendChild(createTextCell(layer.name || `Layer ${layer.index}`, 'matrix-layer-name'));
       row.appendChild(createTextCell(String(layer.index)));
-      row.appendChild(createEditableBoolCell(page, layer, 'visible', true, (selected) => {
+      row.appendChild(createEditableBoolCell(page, layer, 'visible', true, matrixRow, 0, (selected) => {
         if (isCurrentPage) {
           if (selected) hiddenLayers.delete(layer.index);
           else hiddenLayers.add(layer.index);
@@ -400,11 +457,11 @@ function buildLayerMatrix() {
         buildLayerMatrix();
       }));
       row.appendChild(createBoolCell(displayedNow, true));
-      row.appendChild(createEditableBoolCell(page, layer, 'print', true));
-      row.appendChild(createEditableBoolCell(page, layer, 'active', false));
-      row.appendChild(createEditableBoolCell(page, layer, 'lock', false));
-      row.appendChild(createEditableBoolCell(page, layer, 'snap', true));
-      row.appendChild(createEditableBoolCell(page, layer, 'glue', true));
+      row.appendChild(createEditableBoolCell(page, layer, 'print', true, matrixRow, 1));
+      row.appendChild(createEditableBoolCell(page, layer, 'active', false, matrixRow, 2));
+      row.appendChild(createEditableBoolCell(page, layer, 'lock', false, matrixRow, 3));
+      row.appendChild(createEditableBoolCell(page, layer, 'snap', true, matrixRow, 4));
+      row.appendChild(createEditableBoolCell(page, layer, 'glue', true, matrixRow, 5));
       row.appendChild(createTextCell(layer.color || '-', layer.color ? '' : 'matrix-muted'));
       row.appendChild(createTextCell(layer.colorTrans || '-', layer.colorTrans ? '' : 'matrix-muted'));
       body.appendChild(row);
@@ -423,6 +480,8 @@ function buildLayerMatrix() {
 function showLayerMatrix() {
   buildLayerMatrix();
   layerMatrixModal.classList.add('visible');
+  layerMatrixSearch?.focus();
+  layerMatrixSearch?.select();
 }
 
 function hideLayerMatrix() {
@@ -463,6 +522,7 @@ async function loadFile(file) {
     currentPages = result.pages;
     saveVsdxButton.disabled = currentFileType !== 'vsdx';
     removeNonSelectedButton.disabled = currentFileType !== 'vsdx';
+    removeNonVisibleButton.disabled = currentFileType !== 'vsdx';
     // Default to first foreground page
     const firstFg = currentPages.findIndex(p => !p.isBackground);
     currentPageIndex = firstFg >= 0 ? firstFg : 0;
@@ -614,24 +674,76 @@ removeNonSelectedButton.addEventListener('click', async () => {
       showError('No shapes matched the non-selected layers on this page');
       return;
     }
-
-    const blob = new Blob([buffer], { type: 'application/vnd.ms-visio.drawing.main+xml' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = (fileName.textContent || 'diagram.vsdx').replace(/\.vsdx$/i, '') + '-selected.vsdx';
-    a.click();
-    URL.revokeObjectURL(url);
+    await applyUpdatedVsdxBuffer(buffer, page.id);
   } catch (e) {
     console.error(e);
     showError('Failed to remove non-selected layers: ' + e.message);
+  }
+});
+removeNonVisibleButton.addEventListener('click', async () => {
+  if (currentFileType !== 'vsdx' || !currentFileBuffer) {
+    showError('Remove non-visible is only available for .vsdx files');
+    return;
+  }
+
+  const page = currentPages[currentPageIndex];
+  const hiddenLayerIndexes = new Set(getCurrentLayers()
+    .filter(layer => hiddenLayers.has(layer.index))
+    .map(layer => String(layer.index)));
+
+  if (!hiddenLayerIndexes.size) {
+    showError('Hide at least one layer before removing non-visible data');
+    return;
+  }
+
+  try {
+    const { buffer, removedCount } = await saveVsdxWithoutHiddenLayers(
+      currentFileBuffer,
+      currentPages,
+      page.id,
+      hiddenLayerIndexes
+    );
+    if (removedCount === 0) {
+      showError('No hidden-layer data was removed from this page');
+      return;
+    }
+    await applyUpdatedVsdxBuffer(buffer, page.id);
+  } catch (e) {
+    console.error(e);
+    showError('Failed to remove non-visible data: ' + e.message);
   }
 });
 layerMatrixClose.addEventListener('click', hideLayerMatrix);
 layerMatrixModal.addEventListener('click', (e) => {
   if (e.target === layerMatrixModal) hideLayerMatrix();
 });
+layerMatrixSearch.addEventListener('input', buildLayerMatrix);
+layerMatrixBody.addEventListener('keydown', (e) => {
+  const input = e.target?.closest?.('input[data-matrix-row][data-matrix-col]');
+  if (!input) return;
+
+  const row = Number.parseInt(input.dataset.matrixRow, 10);
+  const col = Number.parseInt(input.dataset.matrixCol, 10);
+  if (Number.isNaN(row) || Number.isNaN(col)) return;
+
+  let nextRow = row;
+  let nextCol = col;
+  if (e.key === 'ArrowUp') nextRow -= 1;
+  else if (e.key === 'ArrowDown') nextRow += 1;
+  else if (e.key === 'ArrowLeft') nextCol -= 1;
+  else if (e.key === 'ArrowRight') nextCol += 1;
+  else return;
+
+  e.preventDefault();
+  focusMatrixInput(nextRow, nextCol);
+});
 window.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && layerMatrixModal.classList.contains('visible')) {
+    e.preventDefault();
+    layerMatrixSearch.focus();
+    layerMatrixSearch.select();
+    return;
+  }
   if (e.key === 'Escape' && layerMatrixModal.classList.contains('visible')) hideLayerMatrix();
 });
 
