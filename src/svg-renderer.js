@@ -349,32 +349,21 @@ function getFallbackFill(shape, themeColors) {
 }
 
 function getShapeLayerInfo(shape, pageContext) {
-  if (!pageContext?.layersByIndex || !shape.layerMembers?.length) return { hidden: false, monochromeColor: null };
+  if (!pageContext?.layersByIndex || !shape.layerMembers?.length) return { hidden: false };
 
   const matchedLayers = shape.layerMembers
     .map((index) => pageContext.layersByIndex.get(String(index)))
     .filter(Boolean);
 
-  if (matchedLayers.length === 0) return { hidden: false, monochromeColor: null };
+  if (matchedLayers.length === 0) return { hidden: false };
 
   const visibleLayers = matchedLayers.filter((layer) => layer.visible !== false);
-  if (visibleLayers.length === 0) return { hidden: true, monochromeColor: null };
-
-  const themedAccentStroke = /AccentColor|LineColor/i.test(shape.styleMeta?.lineColorFormula || '');
-  const themedAccentFill = /LineColor|FillColor/i.test(shape.styleMeta?.fillForegroundFormula || '');
-  const monochromeColor = visibleLayers.length === 1
-    && /^#[0-9a-f]{6}$/i.test(visibleLayers[0].color || '')
-    && themedAccentStroke
-    && themedAccentFill
-    ? visibleLayers[0].color
-    : null;
-
-  return { hidden: false, monochromeColor };
+  if (visibleLayers.length === 0) return { hidden: true };
+  return { hidden: false };
 }
 
 function getShapeStrokeColor(shape, themeColors, pageContext) {
-  const { monochromeColor } = getShapeLayerInfo(shape, pageContext);
-  return monochromeColor || shape.lineColor || themeColors.dk1 || '#000000';
+  return shape.lineColor || themeColors.dk1 || '#000000';
 }
 
 function getGradientAngle(shape) {
@@ -441,7 +430,6 @@ function createGradientDef(svgNS, id, shape) {
 }
 
 function getFillPaint(shape, svgNS, defs, themeColors, layerInfo = null) {
-  if (layerInfo?.monochromeColor) return '#FFFFFF';
   const fillColor = getFallbackFill(shape, themeColors);
   if (shape.fillPattern >= 25 && shape.fillPattern <= 40 && shape.fillBackground && fillColor) {
     if (shape.fillBackground.toUpperCase() === fillColor.toUpperCase()) return fillColor;

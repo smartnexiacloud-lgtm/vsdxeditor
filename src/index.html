@@ -539,6 +539,112 @@
       display: block;
       box-shadow: 0 2px 20px rgba(0,0,0,0.4);
     }
+    #shape-tree-sidebar {
+      width: 320px;
+      min-width: 320px;
+      background: #16213e;
+      border-left: 1px solid #0f3460;
+      display: none;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #shape-tree-sidebar.visible {
+      display: flex;
+    }
+    .shape-tree-header {
+      padding: 10px 12px;
+      border-bottom: 1px solid #0f3460;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+    .shape-tree-title {
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #f0f0f5;
+    }
+    .shape-tree-subtitle {
+      font-size: 12px;
+      color: #8f9ac3;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .shape-tree-body {
+      flex: 1;
+      overflow: auto;
+      padding: 8px 0;
+    }
+    .shape-tree-empty {
+      padding: 14px 12px;
+      color: #8f9ac3;
+      font-size: 12px;
+    }
+    .shape-tree-node {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 30px;
+      padding: 0 8px;
+    }
+    .shape-tree-node.selected {
+      background: rgba(233, 69, 96, 0.14);
+    }
+    .shape-tree-node.hidden {
+      opacity: 0.6;
+    }
+    .shape-tree-expander,
+    .shape-tree-delete {
+      width: 22px;
+      height: 22px;
+      border: 1px solid #35518c;
+      border-radius: 4px;
+      background: #24345f;
+      color: #f0f0f5;
+      cursor: pointer;
+      flex-shrink: 0;
+      font-size: 12px;
+      line-height: 1;
+    }
+    .shape-tree-expander:disabled,
+    .shape-tree-delete:disabled {
+      opacity: 0.35;
+      cursor: default;
+    }
+    .shape-tree-checkbox {
+      width: 15px;
+      height: 15px;
+      accent-color: #e94560;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .shape-tree-label {
+      flex: 1;
+      min-width: 0;
+      background: transparent;
+      color: #f0f0f5;
+      border: none;
+      text-align: left;
+      padding: 4px 0;
+      cursor: pointer;
+      font: inherit;
+    }
+    .shape-tree-label:hover,
+    .shape-tree-label:focus {
+      color: #ffffff;
+      outline: none;
+    }
+    .shape-tree-meta {
+      display: block;
+      color: #8f9ac3;
+      font-size: 11px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
 
     /* Error */
     #error-box {
@@ -606,6 +712,15 @@
       </div>
       <div id="viewport">
         <div id="svg-container"></div>
+      </div>
+      <div id="shape-tree-sidebar" aria-live="polite">
+        <div class="shape-tree-header">
+          <div class="shape-tree-title">Shape Tree</div>
+          <div id="shape-tree-subtitle" class="shape-tree-subtitle">Select a shape to inspect its parent group.</div>
+        </div>
+        <div id="shape-tree-body" class="shape-tree-body">
+          <div class="shape-tree-empty">Select a shape to inspect its parent group.</div>
+        </div>
       </div>
     </div>
   </div>

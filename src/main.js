@@ -29,6 +29,9 @@ const layerMatrixReplaceStatus = document.getElementById('layer-matrix-replace-s
 const saveVsdxButton = document.getElementById('btn-save-vsdx');
 const removeNonSelectedButton = document.getElementById('btn-remove-non-selected');
 const removeNonVisibleButton = document.getElementById('btn-remove-non-visible');
+const shapeTreeSidebar = document.getElementById('shape-tree-sidebar');
+const shapeTreeSubtitle = document.getElementById('shape-tree-subtitle');
+const shapeTreeBody = document.getElementById('shape-tree-body');
 const shapeContextMenu = document.getElementById('shape-context-menu');
 const shapeContextSubtitle = document.getElementById('shape-context-subtitle');
 const shapeContextSearch = document.getElementById('shape-context-search');
@@ -45,11 +48,16 @@ let focusedLayerIndex = null;
 let currentFileBuffer = null;
 let currentFileType = null;
 let contextShapeId = null;
+let selectedShapeId = null;
+const hiddenShapeIdsByPage = new Map();
+const collapsedShapeIdsByPage = new Map();
 
 async function applyUpdatedVsdxBuffer(buffer, pageId = null) {
   const result = await parseVsdx(buffer);
   currentFileBuffer = buffer;
   currentPages = result.pages;
+  hiddenShapeIdsByPage.clear();
+  collapsedShapeIdsByPage.clear();
 
   if (pageId !== null && pageId !== undefined) {
     const nextIndex = currentPages.findIndex(page => String(page.id) === String(pageId));
@@ -61,6 +69,7 @@ async function applyUpdatedVsdxBuffer(buffer, pageId = null) {
 
   hiddenLayers = getInitialHiddenLayers();
   focusedLayerIndex = null;
+  selectedShapeId = null;
   buildPageTabs();
   buildLayersSidebar();
   renderCurrentPage();
@@ -104,7 +113,10 @@ function renderCurrentPage() {
 
   renderPage(renderedPage, svgContainer);
   applyLayerVisibility();
+  applyShapeVisibility();
+  syncSelectedShapeHighlight();
   attachSvgLayerFocusHandlers();
+  renderShapeTree();
 }
 
 function buildPageTabs() {
@@ -119,6 +131,7 @@ function buildPageTabs() {
       buildPageTabs();
       hiddenLayers = getInitialHiddenLayers();
       focusedLayerIndex = null;
+      selectedShapeId = null;
       buildLayersSidebar();
       resetView();
       renderCurrentPage();
@@ -334,6 +347,205 @@ function findShapeById(shapes, shapeId) {
   return null;
 }
 
+function findShapePath(shapes, shapeId, path = []) {
+  for (const shape of shapes || []) {
+    const nextPath = [...path, shape];
+    if (String(shape.id) === String(shapeId)) return nextPath;
+    const childPath = findShapePath(shape.subShapes || [], shapeId, nextPath);
+    if (childPath) return childPath;
+  }
+  return null;
+}
+
+function getCurrentPage() {
+  return currentPages[currentPageIndex] || null;
+}
+
+function getCurrentPageKey() {
+  const page = getCurrentPage();
+  return page ? String(page.id) : '';
+}
+
+function getHiddenShapeIds(pageKey = getCurrentPageKey()) {
+  if (!hiddenShapeIdsByPage.has(pageKey)) hiddenShapeIdsByPage.set(pageKey, new Set());
+  return hiddenShapeIdsByPage.get(pageKey);
+}
+
+function getCollapsedShapeIds(pageKey = getCurrentPageKey()) {
+  if (!collapsedShapeIdsByPage.has(pageKey)) collapsedShapeIdsByPage.set(pageKey, new Set());
+  return collapsedShapeIdsByPage.get(pageKey);
+}
+
+function getTreeRootShape(shapeId = selectedShapeId) {
+  if (shapeId === null || shapeId === undefined) return null;
+  const path = findShapePath(getCurrentPage()?.shapes || [], shapeId);
+  if (!path || path.length === 0) return null;
+  return path.length > 1 ? path[path.length - 2] : path[0];
+}
+
+function getShapeLabel(shape) {
+  if (!shape) return '';
+  return shape.title || shape.name || shape.nameU || shape.text || `${shape.type || 'Shape'} ${shape.id}`;
+}
+
+function syncSelectedShapeHighlight() {
+  const groups = svgContainer.querySelectorAll('g[data-shape-id]');
+  for (const group of groups) {
+    const isSelected = selectedShapeId !== null && group.getAttribute('data-shape-id') === String(selectedShapeId);
+    group.style.outline = isSelected ? '2px solid #e94560' : '';
+    group.style.outlineOffset = isSelected ? '2px' : '';
+  }
+}
+
+function applyShapeVisibility() {
+  const svg = svgContainer.querySelector('svg');
+  if (!svg) return;
+  const hiddenShapeIds = getHiddenShapeIds();
+  const groups = svg.querySelectorAll('g[data-shape-id]');
+  for (const group of groups) {
+    if (hiddenShapeIds.has(group.getAttribute('data-shape-id'))) {
+      group.style.display = 'none';
+    }
+  }
+}
+
+function removeShapeById(shapes, shapeId) {
+  for (let i = 0; i < (shapes || []).length; i++) {
+    const shape = shapes[i];
+    if (String(shape.id) === String(shapeId)) {
+      shapes.splice(i, 1);
+      return true;
+    }
+    if (removeShapeById(shape.subShapes || [], shapeId)) return true;
+  }
+  return false;
+}
+
+function setSelectedShape(shapeId) {
+  selectedShapeId = shapeId === null || shapeId === undefined ? null : String(shapeId);
+  renderCurrentPage();
+}
+
+function setShapeVisible(shapeId, visible) {
+  const hiddenShapeIds = getHiddenShapeIds();
+  const key = String(shapeId);
+  if (visible) hiddenShapeIds.delete(key);
+  else hiddenShapeIds.add(key);
+  applyLayerVisibility();
+  applyShapeVisibility();
+  syncSelectedShapeHighlight();
+  renderShapeTree();
+}
+
+function toggleShapeTreeBranch(shapeId) {
+  const collapsedShapeIds = getCollapsedShapeIds();
+  const key = String(shapeId);
+  if (collapsedShapeIds.has(key)) collapsedShapeIds.delete(key);
+  else collapsedShapeIds.add(key);
+  renderShapeTree();
+}
+
+function deleteShapeFromTree(shapeId) {
+  const page = getCurrentPage();
+  const key = String(shapeId);
+  if (!page) return;
+  const root = getTreeRootShape();
+  const path = findShapePath(page.shapes || [], key);
+  if (!path) return;
+
+  removeShapeById(page.shapes || [], key);
+  getHiddenShapeIds().delete(key);
+  getCollapsedShapeIds().delete(key);
+
+  if (selectedShapeId !== null) {
+    const selectedPath = findShapePath([root].filter(Boolean), selectedShapeId) || findShapePath(page.shapes || [], selectedShapeId);
+    if (!selectedPath) selectedShapeId = root && String(root.id) !== key ? String(root.id) : null;
+  }
+
+  renderCurrentPage();
+}
+
+function createShapeTreeNode(shape, depth, rootShapeId) {
+  const hiddenShapeIds = getHiddenShapeIds();
+  const collapsedShapeIds = getCollapsedShapeIds();
+  const hasChildren = (shape.subShapes || []).length > 0;
+  const row = document.createElement('div');
+  row.className = 'shape-tree-node';
+  if (selectedShapeId !== null && String(shape.id) === String(selectedShapeId)) row.classList.add('selected');
+  if (hiddenShapeIds.has(String(shape.id))) row.classList.add('hidden');
+  row.style.paddingLeft = `${8 + depth * 18}px`;
+
+  const expander = document.createElement('button');
+  expander.type = 'button';
+  expander.className = 'shape-tree-expander';
+  expander.textContent = hasChildren && collapsedShapeIds.has(String(shape.id)) ? '+' : '-';
+  expander.disabled = !hasChildren;
+  expander.addEventListener('click', () => {
+    if (hasChildren) toggleShapeTreeBranch(shape.id);
+  });
+
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.className = 'shape-tree-checkbox';
+  checkbox.checked = !hiddenShapeIds.has(String(shape.id));
+  checkbox.setAttribute('aria-label', `Toggle visibility for ${getShapeLabel(shape)}`);
+  checkbox.addEventListener('change', () => setShapeVisible(shape.id, checkbox.checked));
+
+  const label = document.createElement('button');
+  label.type = 'button';
+  label.className = 'shape-tree-label';
+  label.textContent = getShapeLabel(shape);
+  const meta = document.createElement('span');
+  meta.className = 'shape-tree-meta';
+  meta.textContent = `${shape.type || 'Shape'} #${shape.id}`;
+  label.appendChild(meta);
+  label.addEventListener('click', () => setSelectedShape(shape.id));
+
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'shape-tree-delete';
+  remove.textContent = '×';
+  remove.disabled = String(shape.id) === String(rootShapeId);
+  remove.title = remove.disabled ? 'Root shape cannot be deleted from this view' : 'Delete this shape from the current view';
+  remove.addEventListener('click', () => deleteShapeFromTree(shape.id));
+
+  row.appendChild(expander);
+  row.appendChild(checkbox);
+  row.appendChild(label);
+  row.appendChild(remove);
+
+  const fragment = document.createDocumentFragment();
+  fragment.appendChild(row);
+
+  if (hasChildren && !collapsedShapeIds.has(String(shape.id))) {
+    for (const child of shape.subShapes) {
+      fragment.appendChild(createShapeTreeNode(child, depth + 1, rootShapeId));
+    }
+  }
+
+  return fragment;
+}
+
+function renderShapeTree() {
+  const root = getTreeRootShape();
+  shapeTreeBody.innerHTML = '';
+
+  if (!root || !findShapeById(getCurrentPage()?.shapes || [], root.id)) {
+    shapeTreeSidebar.classList.remove('visible');
+    shapeTreeSubtitle.textContent = 'Select a shape to inspect its parent group.';
+    const empty = document.createElement('div');
+    empty.className = 'shape-tree-empty';
+    empty.textContent = 'Select a shape to inspect its parent group.';
+    shapeTreeBody.appendChild(empty);
+    return;
+  }
+
+  shapeTreeSidebar.classList.add('visible');
+  const selected = findShapeById(getCurrentPage()?.shapes || [], selectedShapeId);
+  shapeTreeSubtitle.textContent = `${getShapeLabel(root)} · selected ${getShapeLabel(selected)}`;
+  shapeTreeBody.appendChild(createShapeTreeNode(root, 0, root.id));
+}
+
 function getContextShape() {
   return contextShapeId !== null ? findShapeById(currentPages[currentPageIndex]?.shapes || [], contextShapeId) : null;
 }
@@ -418,7 +630,11 @@ function openShapeContextMenu(shapeId, clientX, clientY) {
 function attachSvgLayerFocusHandlers() {
   const svg = svgContainer.querySelector('svg');
   if (!svg) return;
-  svg.addEventListener('click', (e) => focusLayerFromSvgElement(e.target));
+  svg.addEventListener('click', (e) => {
+    focusLayerFromSvgElement(e.target);
+    const group = e.target.closest?.('g[data-shape-id]');
+    if (group) setSelectedShape(group.getAttribute('data-shape-id'));
+  });
   svg.addEventListener('contextmenu', (e) => {
     const group = e.target.closest?.('g[data-shape-id]');
     if (!group) return;
@@ -709,6 +925,8 @@ async function loadFile(file) {
     currentFileType = name.endsWith('.vsdx') ? 'vsdx' : 'vsd';
     const result = currentFileType === 'vsd' ? await parseVsd(buffer) : await parseVsdx(buffer);
     currentPages = result.pages;
+    hiddenShapeIdsByPage.clear();
+    collapsedShapeIdsByPage.clear();
     saveVsdxButton.disabled = currentFileType !== 'vsdx';
     removeNonSelectedButton.disabled = currentFileType !== 'vsdx';
     removeNonVisibleButton.disabled = currentFileType !== 'vsdx';
@@ -719,6 +937,7 @@ async function loadFile(file) {
     buildPageTabs();
     hiddenLayers = getInitialHiddenLayers();
     focusedLayerIndex = null;
+    selectedShapeId = null;
     layerFilterText.value = '';
     buildLayersSidebar();
     resetView();
