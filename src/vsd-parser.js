@@ -1,6 +1,29 @@
 import CFB from 'cfb';
 import { inheritFromMaster, resolveFields } from './shape-inheritance.js';
 
+// Base Visio palette shared with the VSDX parser. Classic VSD files can store
+// layer/style colors as palette indices; resolve the common built-in table so
+// the VSD and VSDX models stay aligned even when the binary parser does not
+// yet expose custom palette overrides.
+const VISIO_COLORS = [
+  '#000000', '#FFFFFF', '#FF0000', '#00FF00', '#0000FF', '#FFFF00',
+  '#FF00FF', '#00FFFF', '#800000', '#008000', '#000080', '#808000',
+  '#800080', '#008080', '#C0C0C0', '#E6E6E6', '#CDCDCD', '#B3B3B3',
+  '#9A9A9A', '#808080', '#666666', '#4D4D4D', '#333333', '#1A1A1A'
+];
+
+function parseColor(value) {
+  if (!value && value !== 0) return null;
+  const s = String(value).trim();
+  if (!s) return null;
+  if (s.startsWith('#')) return s;
+  const idx = parseInt(s, 10);
+  if (!Number.isNaN(idx) && idx >= 0 && idx < VISIO_COLORS.length) {
+    return VISIO_COLORS[idx];
+  }
+  return s;
+}
+
 // LZ77 decompression for VSD compressed streams (4096-byte sliding window)
 function decompressVsd(input) {
   const output = [];
@@ -1014,14 +1037,46 @@ function readLayer(data) {
   const r = data;
   r.pos = 0;
   try {
-    const bytes = [];
-    while (r.remaining > 0) {
-      bytes.push(r.readU8());
+    const bytes = r.u8;
+    const strings = [];
+
+    // VSD layer rows embed one or more UTF-16LE strings inline after a fixed
+    // binary header. Extract contiguous UTF-16LE runs and ignore the record
+    // markers around them.
+    for (let i = 0; i + 3 < bytes.length; i++) {
+      if (bytes[i + 1] !== 0) continue;
+      const chars = [];
+      let j = i;
+      while (j + 1 < bytes.length) {
+        const lo = bytes[j];
+        const hi = bytes[j + 1];
+        if (hi !== 0 || lo === 0) break;
+        chars.push(lo);
+        j += 2;
+      }
+      if (chars.length >= 2) {
+        strings.push(String.fromCharCode(...chars));
+        i = j - 1;
+      }
     }
-    const text = String.fromCharCode(...bytes.filter(b => b >= 32 && b < 127));
-    return { name: text.trim() || null };
+
+    const cleanStrings = [...new Set(strings.map((s) => s.trim()).filter(Boolean))];
+    const color = bytes.length > 8 ? parseColor(bytes[8]) : null;
+    return {
+      name: cleanStrings[0] || null,
+      nameUniv: cleanStrings[1] || cleanStrings[0] || null,
+      // These four flag bytes line up with the VSDX Layer row for this file:
+      // active, lock, visible, print. Snap/glue follow and default to true.
+      active: !!bytes[12],
+      lock: !!bytes[13],
+      visible: bytes.length > 14 ? bytes[14] !== 0 : true,
+      print: bytes.length > 15 ? bytes[15] !== 0 : true,
+      snap: bytes.length > 18 ? bytes[18] !== 0 : true,
+      glue: bytes.length > 19 ? bytes[19] !== 0 : true,
+      color
+    };
   } catch {
-    return { name: null };
+    return { name: null, nameUniv: null, visible: true, print: true, active: false, lock: false, snap: true, glue: true, color: null };
   }
 }
 
@@ -1485,7 +1540,14 @@ function buildShapesFromChunks(chunks, opts = {}) {
           currentPage.layers.push({
             index: String(currentPage.layers.length),
             name: layerData.name || `Layer ${currentPage.layers.length}`,
-            visible: true
+            nameUniv: layerData.nameUniv || null,
+            visible: layerData.visible !== false,
+            print: layerData.print !== false,
+            active: layerData.active === true,
+            lock: layerData.lock === true,
+            snap: layerData.snap !== false,
+            glue: layerData.glue !== false,
+            color: layerData.color || null
           });
         }
         break;

@@ -1222,7 +1222,7 @@ export async function parseVsdx(arrayBuffer) {
             lock: lock === '1',
             snap: snap !== '0',
             glue: glue !== '0',
-            color: getCellValue(row, 'Color') || null,
+            color: parseColor(getCellValue(row, 'Color'), colorPalette) || getCellValue(row, 'Color') || null,
             colorTrans: getCellValue(row, 'ColorTrans') || null,
             cells: {
               Visible: visible ?? null,

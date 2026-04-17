@@ -348,6 +348,35 @@ function getFallbackFill(shape, themeColors) {
     : ((!shape.fillForeground && themeColors.lt1 && shape.fontColor && !isLightColor(shape.fontColor)) ? themeColors.lt1 : shape.fillBackground));
 }
 
+function getShapeLayerInfo(shape, pageContext) {
+  if (!pageContext?.layersByIndex || !shape.layerMembers?.length) return { hidden: false, monochromeColor: null };
+
+  const matchedLayers = shape.layerMembers
+    .map((index) => pageContext.layersByIndex.get(String(index)))
+    .filter(Boolean);
+
+  if (matchedLayers.length === 0) return { hidden: false, monochromeColor: null };
+
+  const visibleLayers = matchedLayers.filter((layer) => layer.visible !== false);
+  if (visibleLayers.length === 0) return { hidden: true, monochromeColor: null };
+
+  const themedAccentStroke = /AccentColor|LineColor/i.test(shape.styleMeta?.lineColorFormula || '');
+  const themedAccentFill = /LineColor|FillColor/i.test(shape.styleMeta?.fillForegroundFormula || '');
+  const monochromeColor = visibleLayers.length === 1
+    && /^#[0-9a-f]{6}$/i.test(visibleLayers[0].color || '')
+    && themedAccentStroke
+    && themedAccentFill
+    ? visibleLayers[0].color
+    : null;
+
+  return { hidden: false, monochromeColor };
+}
+
+function getShapeStrokeColor(shape, themeColors, pageContext) {
+  const { monochromeColor } = getShapeLayerInfo(shape, pageContext);
+  return monochromeColor || shape.lineColor || themeColors.dk1 || '#000000';
+}
+
 function getGradientAngle(shape) {
   if (shape.fillGradientDir) return shape.fillGradientDir * 45;
   const patternAngles = {
@@ -411,7 +440,8 @@ function createGradientDef(svgNS, id, shape) {
   return gradient;
 }
 
-function getFillPaint(shape, svgNS, defs, themeColors) {
+function getFillPaint(shape, svgNS, defs, themeColors, layerInfo = null) {
+  if (layerInfo?.monochromeColor) return '#FFFFFF';
   const fillColor = getFallbackFill(shape, themeColors);
   if (shape.fillPattern >= 25 && shape.fillPattern <= 40 && shape.fillBackground && fillColor) {
     if (shape.fillBackground.toUpperCase() === fillColor.toUpperCase()) return fillColor;
@@ -668,7 +698,7 @@ function appendShapeMetadata(target, shape, svgNS) {
   }
 }
 
-function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, fontScale, themeColors = {}) {
+function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, fontScale, themeColors = {}, pageContext = null) {
   if (fontScale === undefined) fontScale = strokeScale;
   const g = document.createElementNS(svgNS, 'g');
   if (shape.id) {
@@ -685,6 +715,8 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
     g.setAttribute('data-layers', xmlSafe(shape.layerMembers.join(',')));
     setVisioAttr(g, 'layerMember', shape.layerMembers.join(','));
   }
+  const layerInfo = getShapeLayerInfo(shape, pageContext);
+  if (layerInfo.hidden) g.setAttribute('display', 'none');
   appendShapeMetadata(g, shape, svgNS);
 
   // Dedicated 1D connector rendering uses page-coordinate geometry instead of
@@ -696,7 +728,7 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
       const path = document.createElementNS(svgNS, 'path');
       path.setAttribute('d', pathData);
       path.setAttribute('fill', 'none');
-      const strokeColor = shape.linePattern === 0 ? 'none' : (shape.lineColor || themeColors.dk1 || '#000000');
+      const strokeColor = shape.linePattern === 0 ? 'none' : getShapeStrokeColor(shape, themeColors, pageContext);
       const effectiveWeight = Math.max(inToPx(shape.lineWeight || 0.01) * strokeScale, 1.5);
       path.setAttribute('stroke', strokeColor);
       path.setAttribute('stroke-width', String(effectiveWeight));
@@ -748,7 +780,7 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
       path.setAttribute('d', pathData);
 
       // Fill
-      const fillColor = getFillPaint(shape, svgNS, defs, themeColors);
+      const fillColor = getFillPaint(shape, svgNS, defs, themeColors, layerInfo);
       if (!paintFill || geo.noFill || !fillColor || shape.fillPattern === 0) {
         path.setAttribute('fill', 'none');
       } else {
@@ -766,7 +798,7 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
       if (!paintStroke || geo.noLine || shape.linePattern === 0) {
         path.setAttribute('stroke', 'none');
       } else {
-        path.setAttribute('stroke', shape.lineColor || themeColors.dk1 || '#000000');
+        path.setAttribute('stroke', getShapeStrokeColor(shape, themeColors, pageContext));
         const effectiveWeight = inToPx(shape.lineWeight) * strokeScale;
         path.setAttribute('stroke-width', String(Math.max(effectiveWeight, 0.5)));
         const dashArray = getDashArray(shape.linePattern, effectiveWeight);
@@ -781,13 +813,13 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
       // Arrow markers
       if (paintStroke && shape.beginArrow && shape.beginArrow > 0) {
         const markerId = `arrow-begin-${arrowCounter.value++}`;
-        const marker = createArrowMarker(svgNS, markerId, shape.lineColor || themeColors.dk1 || '#000000', true);
+        const marker = createArrowMarker(svgNS, markerId, getShapeStrokeColor(shape, themeColors, pageContext), true);
         defs.appendChild(marker);
         path.setAttribute('marker-start', `url(#${markerId})`);
       }
       if (paintStroke && shape.endArrow && shape.endArrow > 0) {
         const markerId = `arrow-end-${arrowCounter.value++}`;
-        const marker = createArrowMarker(svgNS, markerId, shape.lineColor || themeColors.dk1 || '#000000', false);
+        const marker = createArrowMarker(svgNS, markerId, getShapeStrokeColor(shape, themeColors, pageContext), false);
         defs.appendChild(marker);
         path.setAttribute('marker-end', `url(#${markerId})`);
       }
@@ -824,7 +856,7 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
       });
 
       const noEffectiveLine = geo.noLine || shape.linePattern === 0;
-      const hasPaintedFill = !geo.noFill && shape.fillPattern !== 0 && getFillPaint(shape, svgNS, defs, themeColors);
+      const hasPaintedFill = !geo.noFill && shape.fillPattern !== 0 && getFillPaint(shape, svgNS, defs, themeColors, layerInfo);
       const fillPathData = hasPaintedFill
         ? geometryToPath(geo.rows, shape.width, shape.height, { connectInternalMoves: true })
         : strokePathData;
@@ -865,13 +897,13 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
     rect.setAttribute('y', '0');
     rect.setAttribute('width', String(inToPx(shape.width)));
     rect.setAttribute('height', String(inToPx(shape.height)));
-    const rectFill = getFillPaint(shape, svgNS, defs, themeColors);
+    const rectFill = getFillPaint(shape, svgNS, defs, themeColors, layerInfo);
     if (rectFill && shape.fillPattern !== 0) {
       rect.setAttribute('fill', rectFill);
     } else {
       rect.setAttribute('fill', 'none');
     }
-    rect.setAttribute('stroke', shape.linePattern === 0 ? 'none' : (shape.lineColor || themeColors.dk1 || '#000000'));
+    rect.setAttribute('stroke', shape.linePattern === 0 ? 'none' : getShapeStrokeColor(shape, themeColors, pageContext));
     rect.setAttribute('stroke-width', String(Math.max(inToPx(shape.lineWeight) * strokeScale, 0.5)));
     if (shape.rounding > 0) {
       rect.setAttribute('rx', String(inToPx(shape.rounding)));
@@ -882,7 +914,7 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
 
   // Render sub-shapes (groups)
   for (const sub of shape.subShapes) {
-    g.appendChild(renderShape(sub, svgNS, shape.height, defs, arrowCounter, strokeScale, fontScale, themeColors));
+    g.appendChild(renderShape(sub, svgNS, shape.height, defs, arrowCounter, strokeScale, fontScale, themeColors, pageContext));
   }
 
   appendImageNode(g, shape, svgNS);
@@ -947,9 +979,12 @@ export function renderPage(page, container) {
   const strokeScale = page.drawingScale || (page.drawingUnitInInches ? (1 / page.drawingUnitInInches) : 1);
   const fontScale = strokeScale;
   const themeColors = page.themeColors || {};
+  const pageContext = {
+    layersByIndex: new Map((page.layers || []).map((layer) => [String(layer.index), layer]))
+  };
 
   for (const shape of page.shapes) {
-    svg.appendChild(renderShape(shape, svgNS, page.height, defs, arrowCounter, strokeScale, fontScale, themeColors));
+    svg.appendChild(renderShape(shape, svgNS, page.height, defs, arrowCounter, strokeScale, fontScale, themeColors, pageContext));
   }
 
   container.innerHTML = '';
