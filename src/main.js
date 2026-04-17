@@ -1,4 +1,4 @@
-import { parseVsdx, saveVsdxLayerPermissions, saveVsdxWithoutHiddenLayers, saveVsdxWithoutNonSelectedLayers, saveVsdxWithoutNonVisibleData } from './vsdx-parser.js';
+import { parseVsdx, saveVsdxLayerPermissions, saveVsdxWithoutHiddenLayers, saveVsdxWithoutNonSelectedLayers, saveVsdxWithoutNonVisibleData, getVsdxShapeXmlSnippet, replaceVsdxShapeXmlSnippet } from './vsdx-parser.js';
 import { parseVsd } from './vsd-parser.js';
 import { renderPage } from './svg-renderer.js';
 
@@ -36,6 +36,12 @@ const shapeContextMenu = document.getElementById('shape-context-menu');
 const shapeContextSubtitle = document.getElementById('shape-context-subtitle');
 const shapeContextSearch = document.getElementById('shape-context-search');
 const shapeContextList = document.getElementById('shape-context-list');
+const shapeContextEditXml = document.getElementById('shape-context-edit-xml');
+const shapeXmlModal = document.getElementById('shape-xml-modal');
+const shapeXmlClose = document.getElementById('shape-xml-close');
+const shapeXmlCancel = document.getElementById('shape-xml-cancel');
+const shapeXmlSave = document.getElementById('shape-xml-save');
+const shapeXmlTextarea = document.getElementById('shape-xml-textarea');
 
 let currentPages = [];
 let currentPageIndex = 0;
@@ -49,6 +55,8 @@ let currentFileBuffer = null;
 let currentFileType = null;
 let contextShapeId = null;
 let selectedShapeId = null;
+let editingShapeId = null;
+let editingShapeXmlId = null;
 const hiddenShapeIdsByPage = new Map();
 const collapsedShapeIdsByPage = new Map();
 const MIN_ZOOM = 0.1;
@@ -72,6 +80,7 @@ async function applyUpdatedVsdxBuffer(buffer, pageId = null) {
   hiddenLayers = getInitialHiddenLayers();
   focusedLayerIndex = null;
   selectedShapeId = null;
+  editingShapeId = null;
   buildPageTabs();
   buildLayersSidebar();
   renderCurrentPage();
@@ -134,6 +143,7 @@ function buildPageTabs() {
       hiddenLayers = getInitialHiddenLayers();
       focusedLayerIndex = null;
       selectedShapeId = null;
+      editingShapeId = null;
       buildLayersSidebar();
       resetView();
       renderCurrentPage();
@@ -385,9 +395,48 @@ function getTreeRootShape(shapeId = selectedShapeId) {
   return path.length > 1 ? path[path.length - 2] : path[0];
 }
 
+function normalizeShapeText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function isGenericShapeTitle(shape) {
+  if (!shape?.title || shape?.id === null || shape?.id === undefined) return false;
+  const title = String(shape.title).trim();
+  return title === `Shape.${shape.id}` || title === `Group.${shape.id}`;
+}
+
 function getShapeLabel(shape) {
   if (!shape) return '';
-  return shape.title || shape.name || shape.nameU || shape.text || `${shape.type || 'Shape'} ${shape.id}`;
+  const text = normalizeShapeText(shape.text);
+  const title = normalizeShapeText(shape.title);
+  const name = normalizeShapeText(shape.name);
+  const nameU = normalizeShapeText(shape.nameU);
+
+  if (name) return name;
+  if (nameU) return nameU;
+  if (text && isGenericShapeTitle(shape)) return text;
+  if (title) return title;
+  if (text) return text;
+  return `${shape.type || 'Shape'} ${shape.id}`;
+}
+
+function getShapeTreeMeta(shape) {
+  if (!shape) return '';
+  const parts = [`${shape.type || 'Shape'} #${shape.id}`];
+  const text = normalizeShapeText(shape.text);
+  if (text && text !== getShapeLabel(shape)) parts.push(text);
+  return parts.join(' · ');
+}
+
+function setShapeName(shapeId, nextName) {
+  const shape = findShapeById(getCurrentPage()?.shapes || [], shapeId);
+  if (!shape) return;
+  const trimmed = normalizeShapeText(nextName);
+  shape.name = trimmed || null;
+  shape.nameU = trimmed || null;
+  shape.title = trimmed || (normalizeShapeText(shape.text) || `${shape.type || 'Shape'}.${shape.id}`);
+  editingShapeId = null;
+  renderCurrentPage();
 }
 
 function syncSelectedShapeHighlight() {
@@ -425,6 +474,7 @@ function removeShapeById(shapes, shapeId) {
 
 function setSelectedShape(shapeId) {
   selectedShapeId = shapeId === null || shapeId === undefined ? null : String(shapeId);
+  editingShapeId = null;
   renderCurrentPage();
 }
 
@@ -458,6 +508,7 @@ function deleteShapeFromTree(shapeId) {
   removeShapeById(page.shapes || [], key);
   getHiddenShapeIds().delete(key);
   getCollapsedShapeIds().delete(key);
+  if (editingShapeId === key) editingShapeId = null;
 
   if (selectedShapeId !== null) {
     const selectedPath = findShapePath([root].filter(Boolean), selectedShapeId) || findShapePath(page.shapes || [], selectedShapeId);
@@ -493,15 +544,46 @@ function createShapeTreeNode(shape, depth, rootShapeId) {
   checkbox.setAttribute('aria-label', `Toggle visibility for ${getShapeLabel(shape)}`);
   checkbox.addEventListener('change', () => setShapeVisible(shape.id, checkbox.checked));
 
-  const label = document.createElement('button');
-  label.type = 'button';
-  label.className = 'shape-tree-label';
-  label.textContent = getShapeLabel(shape);
-  const meta = document.createElement('span');
-  meta.className = 'shape-tree-meta';
-  meta.textContent = `${shape.type || 'Shape'} #${shape.id}`;
-  label.appendChild(meta);
-  label.addEventListener('click', () => setSelectedShape(shape.id));
+  const isEditing = editingShapeId !== null && String(shape.id) === String(editingShapeId);
+  let label;
+  if (isEditing) {
+    label = document.createElement('input');
+    label.type = 'text';
+    label.className = 'shape-tree-editor';
+    label.value = normalizeShapeText(shape.name) || normalizeShapeText(shape.nameU) || normalizeShapeText(shape.text) || '';
+    label.placeholder = getShapeLabel(shape);
+    label.addEventListener('click', (e) => e.stopPropagation());
+    label.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        setShapeName(shape.id, label.value);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        editingShapeId = null;
+        renderShapeTree();
+      }
+    });
+    label.addEventListener('blur', () => setShapeName(shape.id, label.value));
+    queueMicrotask(() => {
+      label.focus();
+      label.select();
+    });
+  } else {
+    label = document.createElement('button');
+    label.type = 'button';
+    label.className = 'shape-tree-label';
+    label.textContent = getShapeLabel(shape);
+    const meta = document.createElement('span');
+    meta.className = 'shape-tree-meta';
+    meta.textContent = getShapeTreeMeta(shape);
+    label.appendChild(meta);
+    label.addEventListener('click', () => setSelectedShape(shape.id));
+    label.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      editingShapeId = String(shape.id);
+      renderShapeTree();
+    });
+  }
 
   const remove = document.createElement('button');
   remove.type = 'button';
@@ -511,9 +593,17 @@ function createShapeTreeNode(shape, depth, rootShapeId) {
   remove.title = remove.disabled ? 'Root shape cannot be deleted from this view' : 'Delete this shape from the current view';
   remove.addEventListener('click', () => deleteShapeFromTree(shape.id));
 
+  const editXml = document.createElement('button');
+  editXml.type = 'button';
+  editXml.className = 'shape-tree-xml';
+  editXml.textContent = '</>';
+  editXml.title = 'Edit this shape XML';
+  editXml.addEventListener('click', () => openShapeXmlEditor(shape.id));
+
   row.appendChild(expander);
   row.appendChild(checkbox);
   row.appendChild(label);
+  row.appendChild(editXml);
   row.appendChild(remove);
 
   const fragment = document.createDocumentFragment();
@@ -550,6 +640,50 @@ function renderShapeTree() {
 
 function getContextShape() {
   return contextShapeId !== null ? findShapeById(currentPages[currentPageIndex]?.shapes || [], contextShapeId) : null;
+}
+
+function hideShapeXmlEditor() {
+  editingShapeXmlId = null;
+  shapeXmlModal.classList.remove('visible');
+}
+
+async function openShapeXmlEditor(shapeId) {
+  if (currentFileType !== 'vsdx' || !currentFileBuffer) {
+    showError('Shape XML editing is only available for .vsdx files');
+    return;
+  }
+
+  const page = getCurrentPage();
+  if (!page) return;
+
+  try {
+    editingShapeXmlId = String(shapeId);
+    shapeXmlTextarea.value = await getVsdxShapeXmlSnippet(currentFileBuffer, page.id, shapeId);
+    shapeXmlModal.classList.add('visible');
+    closeShapeContextMenu();
+    shapeXmlTextarea.focus();
+    shapeXmlTextarea.select();
+  } catch (e) {
+    console.error(e);
+    showError('Failed to load shape XML: ' + e.message);
+  }
+}
+
+async function applyShapeXmlEditor() {
+  if (editingShapeXmlId === null || currentFileType !== 'vsdx' || !currentFileBuffer) return;
+  const page = getCurrentPage();
+  if (!page) return;
+
+  try {
+    const editedShapeId = editingShapeXmlId;
+    const buffer = await replaceVsdxShapeXmlSnippet(currentFileBuffer, page.id, editedShapeId, shapeXmlTextarea.value);
+    hideShapeXmlEditor();
+    await applyUpdatedVsdxBuffer(buffer, page.id);
+    setSelectedShape(editedShapeId);
+  } catch (e) {
+    console.error(e);
+    showError('Failed to apply shape XML: ' + e.message);
+  }
 }
 
 function closeShapeContextMenu() {
@@ -940,6 +1074,7 @@ async function loadFile(file) {
     hiddenLayers = getInitialHiddenLayers();
     focusedLayerIndex = null;
     selectedShapeId = null;
+    editingShapeId = null;
     layerFilterText.value = '';
     buildLayersSidebar();
     resetView();
@@ -1135,6 +1270,15 @@ layerMatrixReplace?.addEventListener('keydown', (e) => {
 });
 layerMatrixReplaceAll?.addEventListener('click', replaceAllMatrixLayerNames);
 shapeContextSearch.addEventListener('input', renderShapeContextMenu);
+shapeContextEditXml?.addEventListener('click', () => {
+  if (contextShapeId !== null) openShapeXmlEditor(contextShapeId);
+});
+shapeXmlClose?.addEventListener('click', hideShapeXmlEditor);
+shapeXmlCancel?.addEventListener('click', hideShapeXmlEditor);
+shapeXmlSave?.addEventListener('click', applyShapeXmlEditor);
+shapeXmlModal?.addEventListener('click', (e) => {
+  if (e.target === shapeXmlModal) hideShapeXmlEditor();
+});
 document.addEventListener('click', (e) => {
   if (!shapeContextMenu.classList.contains('visible')) return;
   if (shapeContextMenu.contains(e.target)) return;
@@ -1169,6 +1313,10 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     layerMatrixSearch.focus();
     layerMatrixSearch.select();
+    return;
+  }
+  if (e.key === 'Escape' && shapeXmlModal.classList.contains('visible')) {
+    hideShapeXmlEditor();
     return;
   }
   if (e.key === 'Escape' && shapeContextMenu.classList.contains('visible')) {

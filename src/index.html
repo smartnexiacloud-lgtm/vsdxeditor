@@ -515,6 +515,66 @@
       color: #8f9ac3;
       font-size: 12px;
     }
+    .shape-context-actions {
+      display: flex;
+      gap: 8px;
+    }
+    .shape-context-action {
+      background: #24345f;
+      color: #f0f0f5;
+      border: 1px solid #35518c;
+      border-radius: 4px;
+      padding: 6px 9px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .shape-context-action:hover {
+      background: #304579;
+    }
+    .shape-xml-textarea {
+      width: 100%;
+      min-height: 360px;
+      resize: vertical;
+      background: #0b1226;
+      color: #f0f0f5;
+      border: 1px solid #35518c;
+      border-radius: 6px;
+      padding: 10px 12px;
+      font: 12px/1.4 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    }
+    .shape-xml-textarea:focus {
+      outline: none;
+      border-color: #e94560;
+      box-shadow: 0 0 0 2px rgba(233, 69, 96, 0.18);
+    }
+    .shape-xml-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .shape-xml-actions button {
+      background: #24345f;
+      color: #f0f0f5;
+      border: 1px solid #35518c;
+      border-radius: 4px;
+      padding: 7px 12px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .shape-xml-actions button:hover {
+      background: #304579;
+    }
+    .shape-xml-actions .shape-xml-save {
+      background: #e94560;
+      border-color: #e94560;
+      color: #fff;
+    }
+    .shape-xml-actions .shape-xml-save:hover {
+      background: #ef5c75;
+    }
 
     /* Viewport */
     #viewport {
@@ -597,6 +657,7 @@
       opacity: 0.6;
     }
     .shape-tree-expander,
+    .shape-tree-xml,
     .shape-tree-delete {
       width: 22px;
       height: 22px;
@@ -610,6 +671,7 @@
       line-height: 1;
     }
     .shape-tree-expander:disabled,
+    .shape-tree-xml:disabled,
     .shape-tree-delete:disabled {
       opacity: 0.35;
       cursor: default;
@@ -644,6 +706,21 @@
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+    .shape-tree-editor {
+      flex: 1;
+      min-width: 0;
+      background: #0f1730;
+      color: #f0f0f5;
+      border: 1px solid #35518c;
+      border-radius: 4px;
+      padding: 5px 7px;
+      font: inherit;
+    }
+    .shape-tree-editor:focus {
+      outline: none;
+      border-color: #e94560;
+      box-shadow: 0 0 0 2px rgba(233, 69, 96, 0.18);
     }
 
     /* Error */
@@ -744,11 +821,31 @@
   <div id="error-box"></div>
   <div id="shape-context-menu" class="shape-context-menu">
     <div class="shape-context-header">
-      <div class="shape-context-title">Send Shape To Layer</div>
+      <div class="shape-context-title">Send Object To Layer</div>
       <div id="shape-context-subtitle" class="shape-context-subtitle"></div>
       <input id="shape-context-search" class="shape-context-search" type="search" placeholder="Filter layers">
+      <div class="shape-context-actions">
+        <button id="shape-context-edit-xml" class="shape-context-action" type="button">Edit XML</button>
+      </div>
     </div>
     <div id="shape-context-list" class="shape-context-list"></div>
+  </div>
+  <div id="shape-xml-modal" class="matrix-modal" role="dialog" aria-modal="true" aria-labelledby="shape-xml-title">
+    <div class="matrix-panel">
+      <div class="matrix-header">
+        <div id="shape-xml-title" class="matrix-title">Edit Shape XML</div>
+        <div class="matrix-tools">
+          <button id="shape-xml-close" class="matrix-close" type="button" aria-label="Close shape XML editor">&times;</button>
+        </div>
+      </div>
+      <div class="matrix-body" style="padding: 14px;">
+        <textarea id="shape-xml-textarea" class="shape-xml-textarea" spellcheck="false"></textarea>
+        <div class="shape-xml-actions">
+          <button id="shape-xml-cancel" type="button">Cancel</button>
+          <button id="shape-xml-save" class="shape-xml-save" type="button">Apply XML</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="main.js"></script>

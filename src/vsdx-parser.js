@@ -2,6 +2,8 @@ import JSZip from 'jszip';
 import { inheritFromMaster, resolveFields } from './shape-inheritance.js';
 import { renderPage } from './svg-renderer.js';
 
+const VISIO_MAIN_NS = 'http://schemas.microsoft.com/office/visio/2012/main';
+
 // MS-VSDX color table (indices 0-23). Values above 23 are resolved through
 // visio/document.xml <Colors><ColorEntry .../></Colors>.
 const VISIO_COLORS = [
@@ -1317,7 +1319,7 @@ function getOrCreateCell(doc, row, name) {
   let cell = getCell(row, name);
   if (cell) return cell;
 
-  cell = doc.createElementNS(row.namespaceURI || 'http://schemas.microsoft.com/office/visio/2012/main', 'Cell');
+  cell = doc.createElementNS(row.namespaceURI || VISIO_MAIN_NS, 'Cell');
   cell.setAttribute('N', name);
   row.appendChild(cell);
   return cell;
@@ -1373,6 +1375,70 @@ function resolveZipTarget(basePath, target) {
     else parts.push(part);
   }
   return parts.join('/');
+}
+
+function findShapeElementById(parentEl, shapeId) {
+  for (const shapeEl of getDirectChildren(parentEl, 'Shape')) {
+    if (String(shapeEl.getAttribute('ID')) === String(shapeId)) return shapeEl;
+    for (const shapesEl of getDirectChildren(shapeEl, 'Shapes')) {
+      const found = findShapeElementById(shapesEl, shapeId);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+async function resolvePagePart(zip, pageId) {
+  const pagesXml = await readZipText(zip, 'visio/pages/pages.xml');
+  if (!pagesXml) throw new Error('VSDX package is missing visio/pages/pages.xml');
+
+  const pagesDoc = parseXml(pagesXml);
+  const pagesRels = await parseZipRels(zip, 'visio/pages/pages.xml');
+  const pageEl = [...byTag(pagesDoc, 'Page')].find(el => String(el.getAttribute('ID')) === String(pageId));
+  if (!pageEl) throw new Error('Could not find the current page in the VSDX package');
+
+  const relEl = byTag(pageEl, 'Rel')[0];
+  const rId = relEl ? (relEl.getAttribute('r:id') || relEl.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id')) : null;
+  const pagePath = resolveZipTarget('visio/pages/pages.xml', rId ? pagesRels[rId] : null);
+  if (!pagePath) throw new Error('Could not resolve the current page drawing part');
+  return { pagePath };
+}
+
+export async function getVsdxShapeXmlSnippet(arrayBuffer, pageId, shapeId) {
+  const zip = await JSZip.loadAsync(arrayBuffer);
+  const { pagePath } = await resolvePagePart(zip, pageId);
+  const pageXml = await readZipText(zip, pagePath);
+  if (!pageXml) throw new Error(`VSDX package is missing ${pagePath}`);
+
+  const pageDoc = parseXml(pageXml);
+  const shapeEl = findShapeElementById(pageDoc.documentElement, shapeId);
+  if (!shapeEl) throw new Error(`Could not find shape ${shapeId} in ${pagePath}`);
+  return new XMLSerializer().serializeToString(shapeEl);
+}
+
+export async function replaceVsdxShapeXmlSnippet(arrayBuffer, pageId, shapeId, shapeXmlSnippet) {
+  const zip = await JSZip.loadAsync(arrayBuffer);
+  const { pagePath } = await resolvePagePart(zip, pageId);
+  const pageXml = await readZipText(zip, pagePath);
+  if (!pageXml) throw new Error(`VSDX package is missing ${pagePath}`);
+
+  const pageDoc = parseXml(pageXml);
+  const currentShapeEl = findShapeElementById(pageDoc.documentElement, shapeId);
+  if (!currentShapeEl) throw new Error(`Could not find shape ${shapeId} in ${pagePath}`);
+
+  const snippetDoc = parseXml(`<Root xmlns="${VISIO_MAIN_NS}">${String(shapeXmlSnippet || '').trim()}</Root>`);
+  const parseError = byTag(snippetDoc, 'parsererror')[0];
+  if (parseError) throw new Error('Shape XML is not well-formed');
+
+  const replacementShapeEl = getDirectChildren(snippetDoc.documentElement, 'Shape')[0];
+  if (!replacementShapeEl) throw new Error('Shape XML must contain exactly one <Shape> element');
+  if (String(replacementShapeEl.getAttribute('ID') || '') !== String(shapeId)) {
+    throw new Error(`Shape XML must keep ID=\"${shapeId}\"`);
+  }
+
+  currentShapeEl.parentNode.replaceChild(replacementShapeEl.cloneNode(true), currentShapeEl);
+  zip.file(pagePath, new XMLSerializer().serializeToString(pageDoc));
+  return zip.generateAsync({ type: 'arraybuffer' });
 }
 
 async function patchVsdxLayerPermissions(zip, pages) {
@@ -1433,6 +1499,13 @@ function patchShapeLayerMembers(doc, parentEl, shapesById) {
     const id = shapeEl.getAttribute('ID');
     const shape = id ? shapesById.get(String(id)) : null;
     if (shape) {
+      const nextName = String(shape.name || '').trim();
+      const nextNameU = String(shape.nameU || nextName).trim();
+      if (nextName) shapeEl.setAttribute('Name', nextName);
+      else shapeEl.removeAttribute('Name');
+      if (nextNameU) shapeEl.setAttribute('NameU', nextNameU);
+      else shapeEl.removeAttribute('NameU');
+
       const members = (shape.layerMembers || []).map(value => String(value)).filter(Boolean);
       if (members.length > 0) setCellValue(doc, shapeEl, 'LayerMember', members.join(';'));
       else removeCell(shapeEl, 'LayerMember');
