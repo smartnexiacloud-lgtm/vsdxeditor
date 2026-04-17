@@ -826,6 +826,14 @@ function parseShape(shapeEl, masters, parentMaster, themeColors, context = {}) {
     quickStyle: quickStyleFillColor,
     colorPalette
   });
+  const fillForegroundTrans = getCellFloat(shapeEl, 'FillForegndTrans')
+    ?? (masterShape ? getCellFloat(masterShape.el, 'FillForegndTrans') : null)
+    ?? styleCellFloat(styleSheets, fillStyleId, 'FillForegndTrans', 'fill')
+    ?? 0;
+  const fillBackgroundTrans = getCellFloat(shapeEl, 'FillBkgndTrans')
+    ?? (masterShape ? getCellFloat(masterShape.el, 'FillBkgndTrans') : null)
+    ?? styleCellFloat(styleSheets, fillStyleId, 'FillBkgndTrans', 'fill')
+    ?? fillForegroundTrans;
   const fillPattern = getCellFloat(shapeEl, 'FillPattern') ?? (masterShape ? getCellFloat(masterShape.el, 'FillPattern') : null) ?? styleCellFloat(styleSheets, fillStyleId, 'FillPattern', 'fill') ?? 1;
   const fillGradientDir = getCellFloat(shapeEl, 'FillGradientDir') ?? (masterShape ? getCellFloat(masterShape.el, 'FillGradientDir') : null);
   const shapeGradientStops = parseFillGradientStops(shapeEl, themeColors, colorPalette);
@@ -964,6 +972,8 @@ function parseShape(shapeEl, masters, parentMaster, themeColors, context = {}) {
     linePattern,
     fillForeground,
     fillBackground,
+    fillForegroundTrans,
+    fillBackgroundTrans,
     fillPattern,
     fillGradientDir,
     fillGradientStops,

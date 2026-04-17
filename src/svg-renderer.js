@@ -409,6 +409,11 @@ function appendGradientStops(gradient, svgNS, stops) {
   }
 }
 
+function clampOpacityFromTransparency(transparency, fallback = 0) {
+  const value = Number.isFinite(transparency) ? transparency : fallback;
+  return Math.max(0, Math.min(1, 1 - value));
+}
+
 function createGradientDef(svgNS, id, shape) {
   const isRadial = isRadialGradientPattern(shape.fillPattern);
   const gradient = document.createElementNS(svgNS, isRadial ? 'radialGradient' : 'linearGradient');
@@ -433,8 +438,16 @@ function createGradientDef(svgNS, id, shape) {
   const stops = shape.fillGradientStops && shape.fillGradientStops.length > 0
     ? shape.fillGradientStops
     : [
-      { offset: 0, color: shape.fillBackground || '#FFFFFF', opacity: 1 },
-      { offset: 100, color: shape.fillForeground || shape.fillBackground || '#CCCCCC', opacity: 1 }
+      {
+        offset: 0,
+        color: shape.fillBackground || '#FFFFFF',
+        opacity: clampOpacityFromTransparency(shape.fillBackgroundTrans, shape.fillForegroundTrans || 0)
+      },
+      {
+        offset: 100,
+        color: shape.fillForeground || shape.fillBackground || '#CCCCCC',
+        opacity: clampOpacityFromTransparency(shape.fillForegroundTrans, 0)
+      }
     ];
   appendGradientStops(gradient, svgNS, stops);
   return gradient;
@@ -454,6 +467,14 @@ function getFillPaint(shape, svgNS, defs, themeColors, layerInfo = null) {
     return `url(#${gradientId})`;
   }
   return fillColor;
+}
+
+function getFillOpacity(shape, fillPaint, layerInfo = null) {
+  if (!fillPaint || fillPaint === 'none') return null;
+  if (layerInfo?.monochromeColor) return 1;
+  if (typeof fillPaint === 'string' && fillPaint.startsWith('url(#')) return null;
+  const opacity = clampOpacityFromTransparency(shape.fillForegroundTrans, 0);
+  return opacity < 1 ? opacity : null;
 }
 
 function toConnectorPoint(shape, pageHeight, x, y) {
@@ -785,6 +806,8 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
         path.setAttribute('fill', 'none');
       } else {
         path.setAttribute('fill', fillColor);
+        const fillOpacity = getFillOpacity(shape, fillColor, layerInfo);
+        if (fillOpacity !== null) path.setAttribute('fill-opacity', String(fillOpacity));
         if (hasMultipleSubpaths(pathData)) {
           path.setAttribute('fill-rule', 'evenodd');
           path.setAttribute('clip-rule', 'evenodd');
@@ -900,6 +923,8 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
     const rectFill = getFillPaint(shape, svgNS, defs, themeColors, layerInfo);
     if (rectFill && shape.fillPattern !== 0) {
       rect.setAttribute('fill', rectFill);
+      const fillOpacity = getFillOpacity(shape, rectFill, layerInfo);
+      if (fillOpacity !== null) rect.setAttribute('fill-opacity', String(fillOpacity));
     } else {
       rect.setAttribute('fill', 'none');
     }
