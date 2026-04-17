@@ -1393,6 +1393,8 @@ async function patchVsdxLayerPermissions(zip, pages) {
       const layer = layersByIndex.get(String(row.getAttribute('IX')));
       if (!layer) continue;
 
+      setCellValue(doc, row, 'Name', String(layer.name || `Layer ${layer.index}`));
+      setCellValue(doc, row, 'NameUniv', String(layer.nameUniv || layer.name || `Layer ${layer.index}`));
       setCellValue(doc, row, 'Visible', boolToCellValue(layer.visible, true));
       setCellValue(doc, row, 'Print', boolToCellValue(layer.print, true));
       setCellValue(doc, row, 'Active', boolToCellValue(layer.active, false));
@@ -1493,6 +1495,56 @@ function prunePageLayerRows(pageEl, selectedLayerIndexes) {
   return removedCount;
 }
 
+function shapeHiddenByLayers(shape, hiddenLayerIndexes) {
+  const members = (shape?.layerMembers || []).map(index => String(index));
+  return members.length > 0 && members.every(index => hiddenLayerIndexes.has(index));
+}
+
+function shapeHasVisibleOwnContent(shape) {
+  if (!shape) return false;
+  if (shape.text) return true;
+  if (shape.image?.href) return true;
+  if ((shape.geometry || []).some((geo) => !geo.noShow && (geo.rows || []).length > 0)) return true;
+  return false;
+}
+
+function collectVisibleShapeIds(shapes, hiddenLayerIndexes, visibleShapeIds) {
+  let anyVisible = false;
+  for (const shape of shapes || []) {
+    if (!shape?.id) continue;
+    if (shapeHiddenByLayers(shape, hiddenLayerIndexes)) continue;
+
+    const childVisible = collectVisibleShapeIds(shape.subShapes || [], hiddenLayerIndexes, visibleShapeIds);
+    const ownVisible = shapeHasVisibleOwnContent(shape);
+    if (ownVisible || childVisible) {
+      visibleShapeIds.add(String(shape.id));
+      anyVisible = true;
+    }
+  }
+
+  return anyVisible;
+}
+
+function pruneNonVisibleShapeElements(parentEl, visibleShapeIds, removedShapeIds) {
+  let removedCount = 0;
+  for (const shapeEl of [...getDirectChildren(parentEl, 'Shape')]) {
+    const id = shapeEl.getAttribute('ID');
+    const keepShape = id && visibleShapeIds.has(String(id));
+
+    if (!keepShape) {
+      if (id) removedShapeIds.add(id);
+      shapeEl.parentNode.removeChild(shapeEl);
+      removedCount++;
+      continue;
+    }
+
+    for (const shapesEl of getDirectChildren(shapeEl, 'Shapes')) {
+      removedCount += pruneNonVisibleShapeElements(shapesEl, visibleShapeIds, removedShapeIds);
+    }
+  }
+  return removedCount;
+}
+
 export async function saveVsdxWithoutNonSelectedLayers(arrayBuffer, pages, pageId, selectedLayerIndexes) {
   const zip = await JSZip.loadAsync(arrayBuffer);
   await patchVsdxLayerPermissions(zip, pages);
@@ -1539,4 +1591,46 @@ export async function saveVsdxWithoutHiddenLayers(arrayBuffer, pages, pageId, hi
     .filter(index => !hiddenLayerIndexes.has(index)));
 
   return saveVsdxWithoutNonSelectedLayers(arrayBuffer, pages, pageId, selectedLayerIndexes);
+}
+
+export async function saveVsdxWithoutNonVisibleData(arrayBuffer, pages, pageId, hiddenLayerIndexes = new Set()) {
+  const page = (pages || []).find(candidate => String(candidate.id) === String(pageId));
+  if (!page) throw new Error('Could not find the current page in the parsed model');
+
+  const hiddenIndexes = new Set([...hiddenLayerIndexes].map(index => String(index)));
+  const visibleShapeIds = new Set();
+  collectVisibleShapeIds(page.shapes || [], hiddenIndexes, visibleShapeIds);
+
+  const zip = await JSZip.loadAsync(arrayBuffer);
+  await patchVsdxLayerPermissions(zip, pages);
+
+  const pagesXml = await readZipText(zip, 'visio/pages/pages.xml');
+  if (!pagesXml) throw new Error('VSDX package is missing visio/pages/pages.xml');
+
+  const pagesDoc = parseXml(pagesXml);
+  const pagesRels = await parseZipRels(zip, 'visio/pages/pages.xml');
+  const pageEl = [...byTag(pagesDoc, 'Page')].find(el => String(el.getAttribute('ID')) === String(pageId));
+  if (!pageEl) throw new Error('Could not find the current page in the VSDX package');
+
+  const relEl = byTag(pageEl, 'Rel')[0];
+  const rId = relEl ? (relEl.getAttribute('r:id') || relEl.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id')) : null;
+  const pagePath = resolveZipTarget('visio/pages/pages.xml', rId ? pagesRels[rId] : null);
+  if (!pagePath) throw new Error('Could not resolve the current page drawing part');
+
+  const pageXml = await readZipText(zip, pagePath);
+  if (!pageXml) throw new Error(`VSDX package is missing ${pagePath}`);
+
+  const pageDoc = parseXml(pageXml);
+  const removedShapeIds = new Set();
+  let removedCount = 0;
+  for (const shapesEl of getDirectChildren(pageDoc.documentElement, 'Shapes')) {
+    removedCount += pruneNonVisibleShapeElements(shapesEl, visibleShapeIds, removedShapeIds);
+  }
+  removeDanglingConnects(pageDoc, removedShapeIds);
+
+  zip.file(pagePath, new XMLSerializer().serializeToString(pageDoc));
+  return {
+    buffer: await zip.generateAsync({ type: 'arraybuffer' }),
+    removedCount
+  };
 }

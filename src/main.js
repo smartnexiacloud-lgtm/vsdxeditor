@@ -1,4 +1,4 @@
-import { parseVsdx, saveVsdxLayerPermissions, saveVsdxWithoutHiddenLayers, saveVsdxWithoutNonSelectedLayers } from './vsdx-parser.js';
+import { parseVsdx, saveVsdxLayerPermissions, saveVsdxWithoutHiddenLayers, saveVsdxWithoutNonSelectedLayers, saveVsdxWithoutNonVisibleData } from './vsdx-parser.js';
 import { parseVsd } from './vsd-parser.js';
 import { renderPage } from './svg-renderer.js';
 
@@ -372,6 +372,29 @@ function createEditableBoolCell(page, layer, prop, defaultValue, matrixRow = nul
   return cell;
 }
 
+function createEditableTextCell(page, layer, prop, fallbackValue = '', onChange = null) {
+  const cell = document.createElement('td');
+  cell.className = 'matrix-layer-name';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'matrix-text-input';
+  input.value = layer[prop] ?? fallbackValue;
+  input.placeholder = fallbackValue;
+  input.setAttribute('aria-label', `${page.name || 'Page'} ${prop}`);
+  input.addEventListener('change', () => {
+    const nextValue = input.value.trim() || fallbackValue;
+    layer[prop] = nextValue;
+    if (prop === 'name') layer.nameUniv = nextValue;
+    layer.cells = layer.cells || {};
+    layer.cells.Name = nextValue;
+    layer.cells.NameUniv = layer.nameUniv ?? nextValue;
+    input.value = nextValue;
+    if (onChange) onChange(nextValue);
+  });
+  cell.appendChild(input);
+  return cell;
+}
+
 function normalizeMatrixText(value) {
   return String(value || '').toLowerCase();
 }
@@ -445,7 +468,10 @@ function buildLayerMatrix() {
       const row = document.createElement('tr');
       const matrixRow = editableRowCount++;
       row.appendChild(createTextCell(page.name || 'Page'));
-      row.appendChild(createTextCell(layer.name || `Layer ${layer.index}`, 'matrix-layer-name'));
+      row.appendChild(createEditableTextCell(page, layer, 'name', `Layer ${layer.index}`, () => {
+        if (isCurrentPage) buildLayersSidebar();
+        buildLayerMatrix();
+      }));
       row.appendChild(createTextCell(String(layer.index)));
       row.appendChild(createEditableBoolCell(page, layer, 'visible', true, matrixRow, 0, (selected) => {
         if (isCurrentPage) {
@@ -691,20 +717,15 @@ removeNonVisibleButton.addEventListener('click', async () => {
     .filter(layer => hiddenLayers.has(layer.index))
     .map(layer => String(layer.index)));
 
-  if (!hiddenLayerIndexes.size) {
-    showError('Hide at least one layer before removing non-visible data');
-    return;
-  }
-
   try {
-    const { buffer, removedCount } = await saveVsdxWithoutHiddenLayers(
+    const { buffer, removedCount } = await saveVsdxWithoutNonVisibleData(
       currentFileBuffer,
       currentPages,
       page.id,
       hiddenLayerIndexes
     );
     if (removedCount === 0) {
-      showError('No hidden-layer data was removed from this page');
+      showError('No non-visible data was removed from this page');
       return;
     }
     await applyUpdatedVsdxBuffer(buffer, page.id);
