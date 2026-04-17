@@ -26,6 +26,12 @@ const layerMatrixSearch = document.getElementById('layer-matrix-search');
 const saveVsdxButton = document.getElementById('btn-save-vsdx');
 const removeNonSelectedButton = document.getElementById('btn-remove-non-selected');
 const removeNonVisibleButton = document.getElementById('btn-remove-non-visible');
+const shapeContextMenu = document.getElementById('shape-context-menu');
+const shapeContextSubtitle = document.getElementById('shape-context-subtitle');
+const shapeContextSearch = document.getElementById('shape-context-search');
+const shapeContextList = document.getElementById('shape-context-list');
+const DPI = 96;
+const VIEWPORT_OVERSCAN_PX = 600;
 
 let currentPages = [];
 let currentPageIndex = 0;
@@ -37,11 +43,22 @@ let hiddenLayers = new Set();
 let focusedLayerIndex = null;
 let currentFileBuffer = null;
 let currentFileType = null;
+let renderFrame = 0;
+let transformFrame = 0;
+let lastRenderedSignature = null;
+let lastRenderedPageId = null;
+let contextShapeId = null;
+
+function inToPx(inches) {
+  return inches * DPI;
+}
 
 async function applyUpdatedVsdxBuffer(buffer, pageId = null) {
   const result = await parseVsdx(buffer);
   currentFileBuffer = buffer;
   currentPages = result.pages;
+  lastRenderedSignature = null;
+  lastRenderedPageId = null;
 
   if (pageId !== null && pageId !== undefined) {
     const nextIndex = currentPages.findIndex(page => String(page.id) === String(pageId));
@@ -55,7 +72,7 @@ async function applyUpdatedVsdxBuffer(buffer, pageId = null) {
   focusedLayerIndex = null;
   buildPageTabs();
   buildLayersSidebar();
-  renderCurrentPage();
+  renderCurrentPage(true);
 }
 
 function getInitialHiddenLayers(page = currentPages[currentPageIndex]) {
@@ -80,7 +97,148 @@ function updateTransform() {
   zoomInfo.textContent = `${Math.round(zoom * 100)}%`;
 }
 
-function renderCurrentPage() {
+function scheduleTransformUpdate() {
+  if (transformFrame) return;
+  transformFrame = requestAnimationFrame(() => {
+    transformFrame = 0;
+    updateTransform();
+  });
+}
+
+function getViewportBoundsInPagePixels() {
+  const rect = viewportEl.getBoundingClientRect();
+  if (!rect.width || !rect.height || !Number.isFinite(zoom) || zoom <= 0) return null;
+
+  const overscan = VIEWPORT_OVERSCAN_PX / zoom;
+  return {
+    left: (-panX / zoom) - overscan,
+    top: (-panY / zoom) - overscan,
+    right: ((rect.width - panX) / zoom) + overscan,
+    bottom: ((rect.height - panY) / zoom) + overscan
+  };
+}
+
+function rectsIntersect(a, b) {
+  if (!a || !b) return true;
+  return a.left <= b.right && a.right >= b.left && a.top <= b.bottom && a.bottom >= b.top;
+}
+
+function unionBounds(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  return {
+    left: Math.min(a.left, b.left),
+    top: Math.min(a.top, b.top),
+    right: Math.max(a.right, b.right),
+    bottom: Math.max(a.bottom, b.bottom)
+  };
+}
+
+function transformLocalPoint(shape, pageHeight, x, y) {
+  const px = inToPx(shape.pinX || 0);
+  const py = inToPx((pageHeight || 0) - (shape.pinY || 0));
+  const lpx = inToPx(shape.locPinX || 0);
+  const lpy = inToPx((shape.height || 0) - (shape.locPinY || 0));
+  const theta = -(shape.angle || 0);
+  const cos = Math.cos(theta);
+  const sin = Math.sin(theta);
+  const dx = x - lpx;
+  const dy = y - lpy;
+  return {
+    x: px + dx * cos - dy * sin,
+    y: py + dx * sin + dy * cos
+  };
+}
+
+function getShapeOwnBounds(shape, pageHeight) {
+  const strokePad = Math.max(inToPx(shape.lineWeight || 0.01), 2);
+
+  if (shape.is1D && shape.beginX !== null && shape.beginY !== null && shape.endX !== null && shape.endY !== null) {
+    const x1 = inToPx(shape.beginX);
+    const y1 = inToPx(pageHeight - shape.beginY);
+    const x2 = inToPx(shape.endX);
+    const y2 = inToPx(pageHeight - shape.endY);
+    return {
+      left: Math.min(x1, x2) - strokePad,
+      top: Math.min(y1, y2) - strokePad,
+      right: Math.max(x1, x2) + strokePad,
+      bottom: Math.max(y1, y2) + strokePad
+    };
+  }
+
+  const hasOwnContent = shape.image?.href || shape.text || (shape.geometry || []).length > 0 || shape.width > 0 || shape.height > 0;
+  if (!hasOwnContent) return null;
+
+  const widthPx = inToPx(shape.width || 0);
+  const heightPx = inToPx(shape.height || 0);
+  const corners = [
+    transformLocalPoint(shape, pageHeight, 0, 0),
+    transformLocalPoint(shape, pageHeight, widthPx, 0),
+    transformLocalPoint(shape, pageHeight, widthPx, heightPx),
+    transformLocalPoint(shape, pageHeight, 0, heightPx)
+  ];
+  const xs = corners.map((point) => point.x);
+  const ys = corners.map((point) => point.y);
+  return {
+    left: Math.min(...xs) - strokePad,
+    top: Math.min(...ys) - strokePad,
+    right: Math.max(...xs) + strokePad,
+    bottom: Math.max(...ys) + strokePad
+  };
+}
+
+function getShapeBounds(shape, pageHeight) {
+  const ownBounds = getShapeOwnBounds(shape, pageHeight);
+  const childBounds = (shape.subShapes || []).reduce((bounds, child) => (
+    unionBounds(bounds, getShapeBounds(child, pageHeight))
+  ), null);
+  return unionBounds(ownBounds, childBounds);
+}
+
+function shapeHiddenByCurrentLayers(shape, page) {
+  const members = (shape.layerMembers || []).map((index) => String(index));
+  if (!members.length) return false;
+  const layersByIndex = new Map((page.layers || []).map((layer) => [String(layer.index), layer]));
+  const matchedLayers = members.map((index) => layersByIndex.get(index)).filter(Boolean);
+  return matchedLayers.length > 0 && matchedLayers.every((layer) => layer.visible === false);
+}
+
+function filterShapesForViewport(shapes, page, viewportBounds) {
+  const kept = [];
+
+  for (const shape of shapes || []) {
+    if (shapeHiddenByCurrentLayers(shape, page)) continue;
+
+    const filteredChildren = filterShapesForViewport(shape.subShapes || [], page, viewportBounds);
+    const bounds = getShapeBounds(shape, page.height);
+    const intersectsViewport = rectsIntersect(bounds, viewportBounds);
+    if (!intersectsViewport && filteredChildren.length === 0) continue;
+
+    kept.push(filteredChildren.length === (shape.subShapes || []).length
+      ? shape
+      : { ...shape, subShapes: filteredChildren });
+  }
+
+  return kept;
+}
+
+function collectShapeIds(shapes, ids = []) {
+  for (const shape of shapes || []) {
+    ids.push(String(shape.id));
+    collectShapeIds(shape.subShapes || [], ids);
+  }
+  return ids;
+}
+
+function scheduleRenderCurrentPage(force = false) {
+  if (renderFrame) return;
+  renderFrame = requestAnimationFrame(() => {
+    renderFrame = 0;
+    renderCurrentPage(force);
+  });
+}
+
+function renderCurrentPage(force = false) {
   if (!currentPages.length) return;
   const page = currentPages[currentPageIndex];
   let renderedPage = page;
@@ -94,6 +252,19 @@ function renderCurrentPage() {
     }
   }
 
+  const viewportBounds = getViewportBoundsInPagePixels();
+  const visibleShapes = viewportBounds
+    ? filterShapesForViewport(renderedPage.shapes, renderedPage, viewportBounds)
+    : renderedPage.shapes;
+  const signature = collectShapeIds(visibleShapes).join(',');
+  if (!force && lastRenderedPageId === String(page.id) && lastRenderedSignature === signature) {
+    applyLayerVisibility();
+    return;
+  }
+
+  lastRenderedPageId = String(page.id);
+  lastRenderedSignature = signature;
+  renderedPage = { ...renderedPage, shapes: visibleShapes };
   renderPage(renderedPage, svgContainer);
   applyLayerVisibility();
   attachSvgLayerFocusHandlers();
@@ -108,12 +279,14 @@ function buildPageTabs() {
     btn.className = 'page-tab' + (currentPages.indexOf(page) === currentPageIndex ? ' active' : '');
     btn.addEventListener('click', () => {
       currentPageIndex = currentPages.indexOf(page);
+      lastRenderedSignature = null;
+      lastRenderedPageId = null;
       buildPageTabs();
       hiddenLayers = getInitialHiddenLayers();
       focusedLayerIndex = null;
       buildLayersSidebar();
       resetView();
-      renderCurrentPage();
+      renderCurrentPage(true);
     });
     pageTabs.appendChild(btn);
   });
@@ -248,6 +421,7 @@ function setLayerSelected(layerIndex, selected) {
 
   updateLayersCount(getCurrentLayers().length, getFilteredLayers().length);
   applyLayerVisibility();
+  scheduleRenderCurrentPage(true);
 }
 
 function toggleLayer(layerIndex) {
@@ -317,10 +491,106 @@ function focusLayerFromSvgElement(target) {
   focusLayerRow(layerIndex);
 }
 
+function findShapeById(shapes, shapeId) {
+  for (const shape of shapes || []) {
+    if (String(shape.id) === String(shapeId)) return shape;
+    const child = findShapeById(shape.subShapes || [], shapeId);
+    if (child) return child;
+  }
+  return null;
+}
+
+function getContextShape() {
+  return contextShapeId !== null ? findShapeById(currentPages[currentPageIndex]?.shapes || [], contextShapeId) : null;
+}
+
+function closeShapeContextMenu() {
+  contextShapeId = null;
+  shapeContextMenu.classList.remove('visible');
+}
+
+function layerMatchesContextFilter(layer) {
+  const needle = normalizeLayerText(shapeContextSearch?.value);
+  if (!needle) return true;
+  const haystack = [layer.name, layer.nameUniv, layer.index].map(normalizeLayerText).join(' ');
+  return haystack.includes(needle);
+}
+
+function assignShapeToLayer(shapeId, layerIndex) {
+  const shape = findShapeById(currentPages[currentPageIndex]?.shapes || [], shapeId);
+  if (!shape) return;
+  shape.layerMembers = [String(layerIndex)];
+  closeShapeContextMenu();
+  scheduleRenderCurrentPage(true);
+}
+
+function renderShapeContextMenu() {
+  const page = currentPages[currentPageIndex];
+  const shape = getContextShape();
+  if (!page || !shape) {
+    closeShapeContextMenu();
+    return;
+  }
+
+  const currentLayer = String(shape.layerMembers?.[0] || '');
+  const layers = (page.layers || []).filter(layerMatchesContextFilter);
+  shapeContextSubtitle.textContent = `${shape.title || shape.name || `Shape ${shape.id}`} · current layer ${currentLayer || 'none'}`;
+  shapeContextList.innerHTML = '';
+
+  if (!layers.length) {
+    const empty = document.createElement('div');
+    empty.className = 'shape-context-empty';
+    empty.textContent = 'No matching layers.';
+    shapeContextList.appendChild(empty);
+    return;
+  }
+
+  for (const layer of layers) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'shape-context-item';
+    if (String(layer.index) === currentLayer) item.classList.add('current');
+    item.addEventListener('click', () => assignShapeToLayer(shape.id, layer.index));
+
+    const name = document.createElement('span');
+    name.className = 'shape-context-item-name';
+    name.textContent = layer.name || `Layer ${layer.index}`;
+
+    const meta = document.createElement('span');
+    meta.className = 'shape-context-item-meta';
+    meta.textContent = `#${layer.index}${String(layer.index) === currentLayer ? ' · current' : ''}`;
+
+    item.appendChild(name);
+    item.appendChild(meta);
+    shapeContextList.appendChild(item);
+  }
+}
+
+function openShapeContextMenu(shapeId, clientX, clientY) {
+  contextShapeId = String(shapeId);
+  renderShapeContextMenu();
+  shapeContextMenu.classList.add('visible');
+
+  const margin = 12;
+  const maxLeft = window.innerWidth - shapeContextMenu.offsetWidth - margin;
+  const maxTop = window.innerHeight - shapeContextMenu.offsetHeight - margin;
+  shapeContextMenu.style.left = `${Math.max(margin, Math.min(clientX, maxLeft))}px`;
+  shapeContextMenu.style.top = `${Math.max(margin, Math.min(clientY, maxTop))}px`;
+  shapeContextSearch.value = '';
+  shapeContextSearch.focus();
+  shapeContextSearch.select();
+}
+
 function attachSvgLayerFocusHandlers() {
   const svg = svgContainer.querySelector('svg');
   if (!svg) return;
   svg.addEventListener('click', (e) => focusLayerFromSvgElement(e.target));
+  svg.addEventListener('contextmenu', (e) => {
+    const group = e.target.closest?.('g[data-shape-id]');
+    if (!group) return;
+    e.preventDefault();
+    openShapeContextMenu(group.getAttribute('data-shape-id'), e.clientX, e.clientY);
+  });
 }
 
 function formatLayerBool(value, defaultValue = null) {
@@ -530,7 +800,7 @@ function resetView() {
   zoom = 1;
   panX = 0;
   panY = 0;
-  updateTransform();
+  scheduleTransformUpdate();
 }
 
 async function loadFile(file) {
@@ -546,6 +816,8 @@ async function loadFile(file) {
     currentFileType = name.endsWith('.vsdx') ? 'vsdx' : 'vsd';
     const result = currentFileType === 'vsd' ? await parseVsd(buffer) : await parseVsdx(buffer);
     currentPages = result.pages;
+    lastRenderedSignature = null;
+    lastRenderedPageId = null;
     saveVsdxButton.disabled = currentFileType !== 'vsdx';
     removeNonSelectedButton.disabled = currentFileType !== 'vsdx';
     removeNonVisibleButton.disabled = currentFileType !== 'vsdx';
@@ -559,7 +831,7 @@ async function loadFile(file) {
     layerFilterText.value = '';
     buildLayersSidebar();
     resetView();
-    renderCurrentPage();
+    renderCurrentPage(true);
   } catch (e) {
     console.error(e);
     showError('Failed to parse VSDX file: ' + e.message);
@@ -599,12 +871,13 @@ viewportEl.addEventListener('wheel', (e) => {
   const my = e.clientY - rect.top;
 
   // Zoom towards mouse position
-  const newZoom = Math.max(0.1, Math.min(zoom * delta, 20));
+  const newZoom = Math.max(0.1, Math.min(zoom * delta, 2000));
   const scale = newZoom / zoom;
   panX = mx - scale * (mx - panX);
   panY = my - scale * (my - panY);
   zoom = newZoom;
-  updateTransform();
+  scheduleTransformUpdate();
+  scheduleRenderCurrentPage();
 }, { passive: false });
 
 viewportEl.addEventListener('mousedown', (e) => {
@@ -620,7 +893,8 @@ window.addEventListener('mousemove', (e) => {
   if (!isPanning) return;
   panX = e.clientX - panStartX;
   panY = e.clientY - panStartY;
-  updateTransform();
+  scheduleTransformUpdate();
+  scheduleRenderCurrentPage();
 });
 
 window.addEventListener('mouseup', () => {
@@ -630,12 +904,14 @@ window.addEventListener('mouseup', () => {
 
 // Toolbar buttons
 document.getElementById('btn-zoom-in').addEventListener('click', () => {
-  zoom = Math.min(zoom * 1.2, 20);
-  updateTransform();
+  zoom = Math.min(zoom * 1.2, 2000);
+  scheduleTransformUpdate();
+  scheduleRenderCurrentPage();
 });
 document.getElementById('btn-zoom-out').addEventListener('click', () => {
   zoom = Math.max(zoom / 1.2, 0.1);
-  updateTransform();
+  scheduleTransformUpdate();
+  scheduleRenderCurrentPage();
 });
 document.getElementById('btn-zoom-fit').addEventListener('click', () => {
   resetView();
@@ -739,6 +1015,12 @@ layerMatrixModal.addEventListener('click', (e) => {
   if (e.target === layerMatrixModal) hideLayerMatrix();
 });
 layerMatrixSearch.addEventListener('input', buildLayerMatrix);
+shapeContextSearch.addEventListener('input', renderShapeContextMenu);
+document.addEventListener('click', (e) => {
+  if (!shapeContextMenu.classList.contains('visible')) return;
+  if (shapeContextMenu.contains(e.target)) return;
+  closeShapeContextMenu();
+});
 layerMatrixBody.addEventListener('keydown', (e) => {
   const input = e.target?.closest?.('input[data-matrix-row][data-matrix-col]');
   if (!input) return;
@@ -763,6 +1045,10 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     layerMatrixSearch.focus();
     layerMatrixSearch.select();
+    return;
+  }
+  if (e.key === 'Escape' && shapeContextMenu.classList.contains('visible')) {
+    closeShapeContextMenu();
     return;
   }
   if (e.key === 'Escape' && layerMatrixModal.classList.contains('visible')) hideLayerMatrix();

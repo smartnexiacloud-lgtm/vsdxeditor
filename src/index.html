@@ -395,6 +395,99 @@
       border-color: #e94560;
       box-shadow: 0 0 0 2px rgba(233, 69, 96, 0.18);
     }
+    .shape-context-menu {
+      position: fixed;
+      z-index: 950;
+      display: none;
+      width: min(360px, calc(100vw - 24px));
+      max-height: min(480px, calc(100vh - 24px));
+      background: #16213e;
+      border: 1px solid #35518c;
+      border-radius: 8px;
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+      overflow: hidden;
+    }
+    .shape-context-menu.visible {
+      display: flex;
+      flex-direction: column;
+    }
+    .shape-context-header {
+      padding: 10px 12px 8px;
+      border-bottom: 1px solid #0f3460;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .shape-context-title {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #f0f0f5;
+    }
+    .shape-context-subtitle {
+      font-size: 12px;
+      color: #8f9ac3;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .shape-context-search {
+      background: #0f1730;
+      color: #f0f0f5;
+      border: 1px solid #35518c;
+      border-radius: 4px;
+      padding: 7px 9px;
+      font-size: 12px;
+    }
+    .shape-context-list {
+      overflow: auto;
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .shape-context-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      width: 100%;
+      background: #1c2a4d;
+      color: #f0f0f5;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      padding: 8px 10px;
+      cursor: pointer;
+      text-align: left;
+      font: inherit;
+    }
+    .shape-context-item:hover,
+    .shape-context-item:focus {
+      background: #24345f;
+      border-color: #e94560;
+      outline: none;
+    }
+    .shape-context-item.current {
+      border-color: #7b52b9;
+      background: #21315a;
+    }
+    .shape-context-item-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+    }
+    .shape-context-item-meta {
+      font-size: 11px;
+      color: #8f9ac3;
+      flex-shrink: 0;
+    }
+    .shape-context-empty {
+      padding: 14px 12px;
+      color: #8f9ac3;
+      font-size: 12px;
+    }
 
     /* Viewport */
     #viewport {
@@ -504,6 +597,14 @@
   </div>
 
   <div id="error-box"></div>
+  <div id="shape-context-menu" class="shape-context-menu">
+    <div class="shape-context-header">
+      <div class="shape-context-title">Send Shape To Layer</div>
+      <div id="shape-context-subtitle" class="shape-context-subtitle"></div>
+      <input id="shape-context-search" class="shape-context-search" type="search" placeholder="Filter layers">
+    </div>
+    <div id="shape-context-list" class="shape-context-list"></div>
+  </div>
 
   <script src="main.js"></script>
 </body>
