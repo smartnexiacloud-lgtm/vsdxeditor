@@ -296,12 +296,14 @@
     .matrix-tools {
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       gap: 10px;
       min-width: 0;
       flex: 1;
       justify-content: flex-end;
     }
-    .matrix-search {
+    .matrix-search,
+    .matrix-replace {
       width: min(320px, 100%);
       min-width: 180px;
       background: #0f1730;
@@ -311,8 +313,28 @@
       padding: 6px 9px;
       font-size: 12px;
     }
-    .matrix-search::placeholder {
+    .matrix-search::placeholder,
+    .matrix-replace::placeholder {
       color: #8f9ac3;
+    }
+    .matrix-replace-action {
+      background: #e94560;
+      color: #fff;
+      border: 1px solid #e94560;
+      border-radius: 4px;
+      padding: 6px 10px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .matrix-replace-action:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .matrix-replace-status {
+      color: #b8c0df;
+      font-size: 12px;
+      min-width: 88px;
     }
     .matrix-title {
       font-size: 13px;
@@ -594,6 +616,9 @@
         <div id="layer-matrix-title" class="matrix-title">Layer Visibility Matrix</div>
         <div class="matrix-tools">
           <input id="layer-matrix-search" class="matrix-search" type="search" placeholder="Search matrix (Ctrl+F)" aria-label="Search layer matrix">
+          <input id="layer-matrix-replace" class="matrix-replace" type="text" placeholder="Replace layer names with" aria-label="Replacement layer name text">
+          <button id="layer-matrix-replace-all" class="matrix-replace-action" type="button" disabled>Replace all</button>
+          <span id="layer-matrix-replace-status" class="matrix-replace-status" aria-live="polite"></span>
           <button id="layer-matrix-close" class="matrix-close" type="button" aria-label="Close layer matrix">&times;</button>
         </div>
       </div>

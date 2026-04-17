@@ -23,6 +23,9 @@ const layerMatrixModal = document.getElementById('layer-matrix-modal');
 const layerMatrixBody = document.getElementById('layer-matrix-body');
 const layerMatrixClose = document.getElementById('layer-matrix-close');
 const layerMatrixSearch = document.getElementById('layer-matrix-search');
+const layerMatrixReplace = document.getElementById('layer-matrix-replace');
+const layerMatrixReplaceAll = document.getElementById('layer-matrix-replace-all');
+const layerMatrixReplaceStatus = document.getElementById('layer-matrix-replace-status');
 const saveVsdxButton = document.getElementById('btn-save-vsdx');
 const removeNonSelectedButton = document.getElementById('btn-remove-non-selected');
 const removeNonVisibleButton = document.getElementById('btn-remove-non-visible');
@@ -488,11 +491,8 @@ function createEditableTextCell(page, layer, prop, fallbackValue = '', matrixRow
   }
   input.addEventListener('change', () => {
     const nextValue = input.value.trim() || fallbackValue;
-    layer[prop] = nextValue;
-    if (prop === 'name') layer.nameUniv = nextValue;
-    layer.cells = layer.cells || {};
-    layer.cells.Name = nextValue;
-    layer.cells.NameUniv = layer.nameUniv ?? nextValue;
+    if (prop === 'name') setLayerName(layer, nextValue);
+    else layer[prop] = nextValue;
     input.value = nextValue;
     if (onChange) onChange(nextValue);
   });
@@ -502,6 +502,62 @@ function createEditableTextCell(page, layer, prop, fallbackValue = '', matrixRow
 
 function normalizeMatrixText(value) {
   return String(value || '').toLowerCase();
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function setLayerName(layer, name) {
+  layer.name = name;
+  layer.nameUniv = name;
+  layer.cells = layer.cells || {};
+  layer.cells.Name = name;
+  layer.cells.NameUniv = name;
+}
+
+function updateMatrixReplaceState() {
+  if (!layerMatrixReplaceAll) return;
+  layerMatrixReplaceAll.disabled = !String(layerMatrixSearch?.value || '').trim();
+}
+
+function setMatrixReplaceStatus(text) {
+  if (!layerMatrixReplaceStatus) return;
+  layerMatrixReplaceStatus.textContent = text;
+}
+
+function replaceAllMatrixLayerNames() {
+  const findText = String(layerMatrixSearch?.value || '').trim();
+  if (!findText) {
+    setMatrixReplaceStatus('Enter search text');
+    updateMatrixReplaceState();
+    return;
+  }
+
+  const replacement = String(layerMatrixReplace?.value || '');
+  const matcher = new RegExp(escapeRegExp(findText), 'gi');
+  let changed = 0;
+
+  for (const page of currentPages.filter(page => !page.isBackground)) {
+    for (const layer of page.layers || []) {
+      const currentName = layer.name || `Layer ${layer.index}`;
+      if (!matcher.test(currentName)) {
+        matcher.lastIndex = 0;
+        continue;
+      }
+
+      matcher.lastIndex = 0;
+      setLayerName(layer, currentName.replace(matcher, () => replacement));
+      changed += 1;
+    }
+  }
+
+  if (changed > 0) {
+    buildLayersSidebar();
+    buildLayerMatrix();
+  }
+  setMatrixReplaceStatus(changed === 1 ? '1 renamed' : `${changed} renamed`);
+  updateMatrixReplaceState();
 }
 
 function layerMatchesMatrixFilter(page, layer) {
@@ -610,6 +666,8 @@ function buildLayerMatrix() {
 
 function showLayerMatrix() {
   buildLayerMatrix();
+  updateMatrixReplaceState();
+  setMatrixReplaceStatus('');
   layerMatrixModal.classList.add('visible');
   layerMatrixSearch?.focus();
   layerMatrixSearch?.select();
@@ -843,7 +901,18 @@ layerMatrixClose.addEventListener('click', hideLayerMatrix);
 layerMatrixModal.addEventListener('click', (e) => {
   if (e.target === layerMatrixModal) hideLayerMatrix();
 });
-layerMatrixSearch.addEventListener('input', buildLayerMatrix);
+layerMatrixSearch.addEventListener('input', () => {
+  buildLayerMatrix();
+  updateMatrixReplaceState();
+  setMatrixReplaceStatus('');
+});
+layerMatrixReplace?.addEventListener('input', () => setMatrixReplaceStatus(''));
+layerMatrixReplace?.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  replaceAllMatrixLayerNames();
+});
+layerMatrixReplaceAll?.addEventListener('click', replaceAllMatrixLayerNames);
 shapeContextSearch.addEventListener('input', renderShapeContextMenu);
 document.addEventListener('click', (e) => {
   if (!shapeContextMenu.classList.contains('visible')) return;
