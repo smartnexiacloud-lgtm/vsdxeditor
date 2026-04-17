@@ -399,6 +399,7 @@ function renderShapeContextMenu() {
 
 function openShapeContextMenu(shapeId, clientX, clientY) {
   contextShapeId = String(shapeId);
+  shapeContextSearch.value = '';
   renderShapeContextMenu();
   shapeContextMenu.classList.add('visible');
 
@@ -407,7 +408,6 @@ function openShapeContextMenu(shapeId, clientX, clientY) {
   const maxTop = window.innerHeight - shapeContextMenu.offsetHeight - margin;
   shapeContextMenu.style.left = `${Math.max(margin, Math.min(clientX, maxLeft))}px`;
   shapeContextMenu.style.top = `${Math.max(margin, Math.min(clientY, maxTop))}px`;
-  shapeContextSearch.value = '';
   shapeContextSearch.focus();
   shapeContextSearch.select();
 }
@@ -700,7 +700,7 @@ viewportEl.addEventListener('wheel', (e) => {
   const my = e.clientY - rect.top;
 
   // Zoom towards mouse position
-  const newZoom = Math.max(0.1, Math.min(zoom * delta, 2000));
+  const newZoom = Math.max(0.1, Math.min(zoom * delta, 20));
   const scale = newZoom / zoom;
   panX = mx - scale * (mx - panX);
   panY = my - scale * (my - panY);
@@ -731,7 +731,7 @@ window.addEventListener('mouseup', () => {
 
 // Toolbar buttons
 document.getElementById('btn-zoom-in').addEventListener('click', () => {
-  zoom = Math.min(zoom * 1.2, 2000);
+  zoom = Math.min(zoom * 1.2, 20);
   updateTransform();
 });
 document.getElementById('btn-zoom-out').addEventListener('click', () => {
