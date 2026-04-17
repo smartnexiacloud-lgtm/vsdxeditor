@@ -1,5 +1,6 @@
 import JSZip from 'jszip';
 import { inheritFromMaster, resolveFields } from './shape-inheritance.js';
+import { renderPage } from './svg-renderer.js';
 
 // MS-VSDX color table (indices 0-23). Values above 23 are resolved through
 // visio/document.xml <Colors><ColorEntry .../></Colors>.
@@ -1553,34 +1554,43 @@ function prunePageLayerRows(pageEl, selectedLayerIndexes) {
   return removedCount;
 }
 
-function shapeHiddenByLayers(shape, hiddenLayerIndexes) {
-  const members = (shape?.layerMembers || []).map(index => String(index));
-  return members.length > 0 && members.every(index => hiddenLayerIndexes.has(index));
-}
+function collectVisibleShapeIdsFromRenderedPage(page, hiddenLayerIndexes) {
+  const renderHost = document.createElement('div');
+  const hiddenIndexes = new Set([...hiddenLayerIndexes].map(index => String(index)));
+  const renderedPage = {
+    ...page,
+    layers: (page.layers || []).map(layer => ({
+      ...layer,
+      visible: !hiddenIndexes.has(String(layer.index))
+    }))
+  };
 
-function shapeHasVisibleOwnContent(shape) {
-  if (!shape) return false;
-  if (shape.text) return true;
-  if (shape.image?.href) return true;
-  if ((shape.geometry || []).some((geo) => !geo.noShow && (geo.rows || []).length > 0)) return true;
-  return false;
-}
+  renderPage(renderedPage, renderHost);
+  const visibleShapeIds = new Set();
+  const groups = renderHost.querySelectorAll('g[data-shape-id]');
 
-function collectVisibleShapeIds(shapes, hiddenLayerIndexes, visibleShapeIds) {
-  let anyVisible = false;
-  for (const shape of shapes || []) {
-    if (!shape?.id) continue;
-    if (shapeHiddenByLayers(shape, hiddenLayerIndexes)) continue;
+  for (const group of groups) {
+    const id = group.getAttribute('data-shape-id');
+    if (!id) continue;
 
-    const childVisible = collectVisibleShapeIds(shape.subShapes || [], hiddenLayerIndexes, visibleShapeIds);
-    const ownVisible = shapeHasVisibleOwnContent(shape);
-    if (ownVisible || childVisible) {
-      visibleShapeIds.add(String(shape.id));
-      anyVisible = true;
+    let hidden = false;
+    let node = group;
+    while (node && node !== renderHost) {
+      if (node.nodeType === 1) {
+        const displayAttr = node.getAttribute?.('display');
+        const displayStyle = node.style?.display;
+        if (displayAttr === 'none' || displayStyle === 'none') {
+          hidden = true;
+          break;
+        }
+      }
+      node = node.parentNode;
     }
+
+    if (!hidden) visibleShapeIds.add(String(id));
   }
 
-  return anyVisible;
+  return visibleShapeIds;
 }
 
 function pruneNonVisibleShapeElements(parentEl, visibleShapeIds, removedShapeIds) {
@@ -1657,8 +1667,7 @@ export async function saveVsdxWithoutNonVisibleData(arrayBuffer, pages, pageId, 
   if (!page) throw new Error('Could not find the current page in the parsed model');
 
   const hiddenIndexes = new Set([...hiddenLayerIndexes].map(index => String(index)));
-  const visibleShapeIds = new Set();
-  collectVisibleShapeIds(page.shapes || [], hiddenIndexes, visibleShapeIds);
+  const visibleShapeIds = collectVisibleShapeIdsFromRenderedPage(page, hiddenIndexes);
 
   const zip = await JSZip.loadAsync(arrayBuffer);
   await patchVsdxLayerPermissions(zip, pages);
