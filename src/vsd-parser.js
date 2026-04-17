@@ -966,6 +966,42 @@ function synthesizeLayerStyleMeta(shape) {
   }
 }
 
+function inferOneDShapeMetrics(shape) {
+  if (!shape || shape.is1D) return;
+  if (!shape.geometry?.length || Math.abs(shape.height || 0) > 1e-9 || !(shape.width > 0)) return;
+
+  const firstGeo = shape.geometry.find(geo => Array.isArray(geo?.rows) && geo.rows.length >= 2);
+  if (!firstGeo) return;
+  const move = firstGeo.rows.find(row => row?.type === 'MoveTo');
+  const line = firstGeo.rows.find(row => row?.type === 'LineTo');
+  if (!move || !line) return;
+
+  // Binary VSD files in this corpus often omit decoded XFORM_1D rows even for
+  // simple 1D line shapes. When the shape collapses to a zero-height segment,
+  // infer the page-space endpoints from the existing transform metadata so the
+  // renderer can use the same dedicated connector path as VSDX.
+  const cos = Math.cos(shape.angle || 0);
+  const sin = Math.sin(shape.angle || 0);
+  const localPoints = [
+    { x: move.x ?? 0, y: move.y ?? 0 },
+    { x: line.x ?? 0, y: line.y ?? 0 }
+  ];
+  const pagePoints = localPoints.map((point) => {
+    const dx = point.x - (shape.locPinX || 0);
+    const dy = point.y - (shape.locPinY || 0);
+    return {
+      x: (shape.pinX || 0) + dx * cos - dy * sin,
+      y: (shape.pinY || 0) + dx * sin + dy * cos
+    };
+  });
+
+  shape.is1D = true;
+  shape.beginX = pagePoints[0].x;
+  shape.beginY = pagePoints[0].y;
+  shape.endX = pagePoints[1].x;
+  shape.endY = pagePoints[1].y;
+}
+
 // Thin wrapper: delegate U+FFFC placeholder substitution to the shared helper.
 // We keep this named function because it's referenced from finalizeShape below.
 function spliceFieldsIntoText(text, fields, ctx) {
@@ -1722,6 +1758,7 @@ function finalizeShape(shape, currentGeometry, pageCtx, namesById, mastersMap, o
     inheritPaintFromMaster(shape, shape._masterShape);
   }
   assignShapeMetadata(shape);
+  inferOneDShapeMetrics(shape);
   synthesizeLayerStyleMeta(shape);
 
   // When building a master-page stream we want to keep raw U+FFFC placeholders

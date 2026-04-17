@@ -1378,12 +1378,15 @@ function resolveZipTarget(basePath, target) {
 }
 
 function findShapeElementById(parentEl, shapeId) {
+  for (const shapesEl of getDirectChildren(parentEl, 'Shapes')) {
+    const found = findShapeElementById(shapesEl, shapeId);
+    if (found) return found;
+  }
+
   for (const shapeEl of getDirectChildren(parentEl, 'Shape')) {
     if (String(shapeEl.getAttribute('ID')) === String(shapeId)) return shapeEl;
-    for (const shapesEl of getDirectChildren(shapeEl, 'Shapes')) {
-      const found = findShapeElementById(shapesEl, shapeId);
-      if (found) return found;
-    }
+    const found = findShapeElementById(shapeEl, shapeId);
+    if (found) return found;
   }
   return null;
 }

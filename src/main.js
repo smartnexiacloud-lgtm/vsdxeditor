@@ -359,6 +359,18 @@ function findShapeById(shapes, shapeId) {
   return null;
 }
 
+function findPageForShape(shapeId) {
+  const currentPage = getCurrentPage();
+  if (!currentPage) return null;
+
+  if (findShapeById(currentPage.shapes || [], shapeId)) return currentPage;
+  if (currentPage.backPage) {
+    const bgPage = currentPages.find(page => String(page.id) === String(currentPage.backPage));
+    if (bgPage && findShapeById(bgPage.shapes || [], shapeId)) return bgPage;
+  }
+  return null;
+}
+
 function findShapePath(shapes, shapeId, path = []) {
   for (const shape of shapes || []) {
     const nextPath = [...path, shape];
@@ -653,7 +665,7 @@ async function openShapeXmlEditor(shapeId) {
     return;
   }
 
-  const page = getCurrentPage();
+  const page = findPageForShape(shapeId);
   if (!page) return;
 
   try {
@@ -671,14 +683,14 @@ async function openShapeXmlEditor(shapeId) {
 
 async function applyShapeXmlEditor() {
   if (editingShapeXmlId === null || currentFileType !== 'vsdx' || !currentFileBuffer) return;
-  const page = getCurrentPage();
+  const page = findPageForShape(editingShapeXmlId);
   if (!page) return;
 
   try {
     const editedShapeId = editingShapeXmlId;
     const buffer = await replaceVsdxShapeXmlSnippet(currentFileBuffer, page.id, editedShapeId, shapeXmlTextarea.value);
     hideShapeXmlEditor();
-    await applyUpdatedVsdxBuffer(buffer, page.id);
+    await applyUpdatedVsdxBuffer(buffer, getCurrentPage()?.id || page.id);
     setSelectedShape(editedShapeId);
   } catch (e) {
     console.error(e);
