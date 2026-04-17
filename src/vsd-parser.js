@@ -936,6 +936,36 @@ function assignShapeMetadata(shape) {
     (shape.id ? `${shape.type || 'Shape'}.${shape.id}` : null);
 }
 
+function synthesizeLayerStyleMeta(shape) {
+  if (!shape?.layerMembers?.length) return;
+
+  const styleMeta = shape.styleMeta ? { ...shape.styleMeta } : {
+    lineColorFormula: null,
+    fillForegroundFormula: null,
+    fillBackgroundFormula: null,
+    quickStyleLineColor: null,
+    quickStyleFillColor: null,
+    quickStyleFontColor: null
+  };
+
+  // VSD resolves theme formulas to concrete paint values, but the SVG
+  // renderer keys off the original formula intent to collapse theme accents to
+  // the active layer color. Recreate the subset of metadata the renderer uses.
+  if (!styleMeta.fillForegroundFormula && shape.fillForeground && shape.fillPattern !== 0) {
+    styleMeta.fillForegroundFormula = 'THEMEGUARD(MSOTINT(THEME("LineColor"),60))';
+  }
+  if (!styleMeta.lineColorFormula &&
+      shape.lineColor &&
+      shape.lineColor !== '#000000' &&
+      shape.linePattern !== 0) {
+    styleMeta.lineColorFormula = 'THEMEGUARD(MSOTINT(THEME("AccentColor"),40))';
+  }
+
+  if (styleMeta.lineColorFormula || styleMeta.fillForegroundFormula || styleMeta.fillBackgroundFormula) {
+    shape.styleMeta = styleMeta;
+  }
+}
+
 // Thin wrapper: delegate U+FFFC placeholder substitution to the shared helper.
 // We keep this named function because it's referenced from finalizeShape below.
 function spliceFieldsIntoText(text, fields, ctx) {
@@ -1018,19 +1048,28 @@ function readGeometry(data) {
 }
 
 function readLayerMembership(data) {
-  const r = data;
-  r.pos = 0;
-  const bytes = [];
-  while (r.remaining > 0 && bytes.length < 100) {
-    const b = r.readU8();
-    if (b === 0) break;
-    bytes.push(b);
+  const bytes = Array.from(data.u8 || []);
+  const members = [];
+  let current = '';
+
+  // These rows are compact binary records. The useful layer id/name payload is
+  // embedded as short ASCII runs near the tail, wrapped in control markers.
+  // Scanning the full row for identifier-like tokens is more robust than
+  // treating the chunk as a null-terminated string.
+  for (const byte of bytes) {
+    const ch = String.fromCharCode(byte);
+    if (/[0-9A-Za-z_.-]/.test(ch)) {
+      current += ch;
+      continue;
+    }
+    if (current) {
+      members.push(current);
+      current = '';
+    }
   }
-  // Strip any non-printable bytes; Visio stores layer membership as a
-  // semicolon-separated list of ASCII indices or names. Any control chars we
-  // pick up are scratch bytes from the chunk tail and must never flow into
-  // attribute values (which XML serializers reject).
-  return String.fromCharCode(...bytes.filter(b => b >= 0x20 && b < 0x7f));
+  if (current) members.push(current);
+
+  return members.join(';');
 }
 
 function readLayer(data) {
@@ -1627,6 +1666,7 @@ function buildShapesFromChunks(chunks, opts = {}) {
     }
   }
   for (const pg of pages) clean(pg.shapes);
+  for (const pg of pages) propagateLayerMembership(pg.shapes);
 
   return pages;
 }
@@ -1682,6 +1722,7 @@ function finalizeShape(shape, currentGeometry, pageCtx, namesById, mastersMap, o
     inheritPaintFromMaster(shape, shape._masterShape);
   }
   assignShapeMetadata(shape);
+  synthesizeLayerStyleMeta(shape);
 
   // When building a master-page stream we want to keep raw U+FFFC placeholders
   // intact so the page-level builder can run field resolution in the page's
@@ -1714,6 +1755,16 @@ function finalizeShape(shape, currentGeometry, pageCtx, namesById, mastersMap, o
   delete shape._textStyle;
   delete shape._hasFill;
   delete shape._hasLine;
+}
+
+function propagateLayerMembership(shapes, inheritedMembers = []) {
+  for (const shape of shapes || []) {
+    if ((!shape.layerMembers || shape.layerMembers.length === 0) && inheritedMembers.length > 0) {
+      shape.layerMembers = [...inheritedMembers];
+      synthesizeLayerStyleMeta(shape);
+    }
+    propagateLayerMembership(shape.subShapes, shape.layerMembers || inheritedMembers);
+  }
 }
 
 function readPointer(reader) {
