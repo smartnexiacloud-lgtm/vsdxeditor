@@ -51,6 +51,8 @@ let contextShapeId = null;
 let selectedShapeId = null;
 const hiddenShapeIdsByPage = new Map();
 const collapsedShapeIdsByPage = new Map();
+const MIN_ZOOM = 0.1;
+const MAX_ZOOM = 2000;
 
 async function applyUpdatedVsdxBuffer(buffer, pageId = null) {
   const result = await parseVsdx(buffer);
@@ -981,7 +983,7 @@ viewportEl.addEventListener('wheel', (e) => {
   const my = e.clientY - rect.top;
 
   // Zoom towards mouse position
-  const newZoom = Math.max(0.1, Math.min(zoom * delta, 20));
+  const newZoom = Math.max(MIN_ZOOM, Math.min(zoom * delta, MAX_ZOOM));
   const scale = newZoom / zoom;
   panX = mx - scale * (mx - panX);
   panY = my - scale * (my - panY);
@@ -1012,11 +1014,11 @@ window.addEventListener('mouseup', () => {
 
 // Toolbar buttons
 document.getElementById('btn-zoom-in').addEventListener('click', () => {
-  zoom = Math.min(zoom * 1.2, 20);
+  zoom = Math.min(zoom * 1.2, MAX_ZOOM);
   updateTransform();
 });
 document.getElementById('btn-zoom-out').addEventListener('click', () => {
-  zoom = Math.max(zoom / 1.2, 0.1);
+  zoom = Math.max(zoom / 1.2, MIN_ZOOM);
   updateTransform();
 });
 document.getElementById('btn-zoom-fit').addEventListener('click', () => {
