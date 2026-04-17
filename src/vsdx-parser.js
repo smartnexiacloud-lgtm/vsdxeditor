@@ -1537,21 +1537,54 @@ function removeDanglingConnects(pageDoc, removedShapeIds) {
 
 function prunePageLayerRows(pageEl, selectedLayerIndexes) {
   const pageSheet = getDirectChildren(pageEl, 'PageSheet')[0];
-  if (!pageSheet) return 0;
+  if (!pageSheet) return { removedCount: 0, layerIndexMap: new Map() };
 
   const layerSection = getDirectChildren(pageSheet, 'Section')
     .find((section) => section.getAttribute('N') === 'Layer');
-  if (!layerSection) return 0;
+  if (!layerSection) return { removedCount: 0, layerIndexMap: new Map() };
 
   let removedCount = 0;
+  let nextIndex = 0;
+  const layerIndexMap = new Map();
   for (const row of [...getDirectChildren(layerSection, 'Row')]) {
     const index = String(row.getAttribute('IX') || '');
     if (!selectedLayerIndexes.has(index)) {
       row.parentNode.removeChild(row);
       removedCount++;
+      continue;
+    }
+
+    layerIndexMap.set(index, String(nextIndex));
+    row.setAttribute('IX', String(nextIndex));
+    nextIndex++;
+  }
+  return { removedCount, layerIndexMap };
+}
+
+function remapLayerMemberValue(value, layerIndexMap) {
+  const mapped = String(value || '')
+    .split(/[;,]/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => layerIndexMap.get(part))
+    .filter(Boolean);
+
+  return mapped.length > 0 ? mapped.join(';') : null;
+}
+
+function remapShapeLayerMembers(parentEl, layerIndexMap) {
+  for (const shapeEl of getDirectChildren(parentEl, 'Shape')) {
+    const layerMember = getCell(shapeEl, 'LayerMember');
+    if (layerMember) {
+      const mappedValue = remapLayerMemberValue(layerMember.getAttribute('V'), layerIndexMap);
+      if (mappedValue) layerMember.setAttribute('V', mappedValue);
+      else shapeEl.removeChild(layerMember);
+    }
+
+    for (const shapesEl of getDirectChildren(shapeEl, 'Shapes')) {
+      remapShapeLayerMembers(shapesEl, layerIndexMap);
     }
   }
-  return removedCount;
 }
 
 function collectVisibleShapeIdsFromRenderedPage(page, hiddenLayerIndexes) {
@@ -1642,8 +1675,13 @@ export async function saveVsdxWithoutNonSelectedLayers(arrayBuffer, pages, pageI
   }
   removeDanglingConnects(pageDoc, removedShapeIds);
 
+  const { removedCount: removedLayerRows, layerIndexMap } = prunePageLayerRows(pageEl, selectedLayerIndexes);
+  if (layerIndexMap.size > 0) {
+    for (const shapesEl of getDirectChildren(pageDoc.documentElement, 'Shapes')) {
+      remapShapeLayerMembers(shapesEl, layerIndexMap);
+    }
+  }
   zip.file(pagePath, new XMLSerializer().serializeToString(pageDoc));
-  const removedLayerRows = prunePageLayerRows(pageEl, selectedLayerIndexes);
   zip.file('visio/pages/pages.xml', new XMLSerializer().serializeToString(pagesDoc));
   return {
     buffer: await zip.generateAsync({ type: 'arraybuffer' }),
