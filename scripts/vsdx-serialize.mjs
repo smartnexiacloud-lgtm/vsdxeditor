@@ -2,16 +2,24 @@
 //
 //   node scripts/vsdx-serialize.mjs unpack   <file.vsdx> <outDir>
 //   node scripts/vsdx-serialize.mjs pack     <dir> <out.vsdx>
-//   node scripts/vsdx-serialize.mjs verify   <file.vsdx>   # prove byte-stable round-trip
-//   node scripts/vsdx-serialize.mjs textconv <file.vsdx>   # git diff textconv: dump to stdout
+//   node scripts/vsdx-serialize.mjs verify   <file.vsdx>          # prove byte-stable round-trip
+//   node scripts/vsdx-serialize.mjs textconv <file.vsdx>          # git diff textconv: dump to stdout
+//   node scripts/vsdx-serialize.mjs merge    %O %A %B %P          # git merge driver: 3-way merge
 //
 // Goal of step 1: prove that unpack -> pack -> unpack is idempotent (stable text)
 // and that re-packing the same tree yields byte-identical archives. That stability
 // is the precondition for git diff/merge to be meaningful on Visio files.
+//
+// The merge driver builds on that: it unpacks base/ours/theirs to their canonical
+// part trees, 3-way merges each part (XML via `git merge-file` on the pretty-printed
+// text; binaries by identity), and repacks. Because the trees are deterministic,
+// only genuine content changes surface as conflicts -- not resave churn.
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import JSZip from 'jszip';
 import { DOMParser } from '@xmldom/xmldom';
 
@@ -117,6 +125,18 @@ function walkFiles(dir, base = dir) {
   return results;
 }
 
+// Resolve a zip-supplied relative path under `base`, refusing anything that
+// escapes it (Zip Slip: an entry named "../../evil" would otherwise write
+// outside the output tree). Returns the safe absolute path.
+function safeJoin(base, relPath) {
+  const dest = path.resolve(base, relPath);
+  const root = path.resolve(base);
+  if (dest !== root && !dest.startsWith(root + path.sep)) {
+    throw new Error(`refusing path outside output dir: ${relPath}`);
+  }
+  return dest;
+}
+
 // ---- commands -------------------------------------------------------------
 async function readZipParts(buffer) {
   const zip = await JSZip.loadAsync(buffer);
@@ -143,7 +163,7 @@ async function unpack(file, outDir) {
   const parts = await readZipParts(fs.readFileSync(file));
   fs.rmSync(outDir, { recursive: true, force: true });
   for (const part of parts) {
-    const dest = path.join(outDir, part.path);
+    const dest = safeJoin(outDir, part.path);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.writeFileSync(dest, part.content);
   }
@@ -238,6 +258,130 @@ async function countParts(buffer) {
   return Object.values(zip.files).filter((f) => !f.dir).length;
 }
 
+// ---- merge driver ---------------------------------------------------------
+// git invokes:  ... merge %O %A %B %P
+//   %O = ancestor (base), %A = ours + destination for the result, %B = theirs,
+//   %P = the real path in the work tree (for messages). Exit 0 = clean, 1 = conflict.
+
+const bufOf = (part) => (part.xml ? Buffer.from(part.content, 'utf8') : part.content);
+const partsEqual = (x, y) => Buffer.compare(bufOf(x), bufOf(y)) === 0;
+
+// Read a .vsdx into a Map<path, part>. Missing/empty inputs (git supplies an empty
+// file when there is no common ancestor) yield an empty map rather than throwing.
+async function partMap(file) {
+  const m = new Map();
+  try {
+    const buf = fs.readFileSync(file);
+    if (buf.length === 0) return m;
+    for (const part of await readZipParts(buf)) m.set(part.path, part);
+  } catch {
+    /* treat unreadable input as absent */
+  }
+  return m;
+}
+
+// 3-way text merge of one canonicalized XML part via `git merge-file`.
+// Returns merged text (with conflict markers on conflict) and a conflict flag.
+function threeWayText(oursStr, baseStr, theirsStr) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vsdx-merge-'));
+  const of = path.join(dir, 'ours'), bf = path.join(dir, 'base'), tf = path.join(dir, 'theirs');
+  fs.writeFileSync(of, oursStr);
+  fs.writeFileSync(bf, baseStr);
+  fs.writeFileSync(tf, theirsStr);
+  try {
+    // -p writes the merged result to stdout; arg order is <current> <base> <other>.
+    const content = execFileSync(
+      'git',
+      ['merge-file', '-p', '-L', 'ours', '-L', 'base', '-L', 'theirs', of, bf, tf],
+      { encoding: 'utf8', maxBuffer: 1 << 28 }
+    );
+    return { content, conflict: false };
+  } catch (e) {
+    // git merge-file exits with the number of conflicts (>0); stdout still holds the merge.
+    if (typeof e.status === 'number' && e.status > 0) return { content: e.stdout, conflict: true };
+    throw e;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// Merge a single part across the three trees. Returns { content, conflict, kind }.
+// content === null means "the part is absent in the merge result" (a deletion).
+function mergePart(p, base, ours, theirs) {
+  const xml = isXmlPath(p);
+  const has = (x) => x != null;
+
+  if (has(ours) && has(theirs)) {
+    if (partsEqual(ours, theirs)) return { content: ours.content, conflict: false };
+    if (xml) {
+      const r = threeWayText(ours.content, has(base) ? base.content : '', theirs.content);
+      return { content: r.content, conflict: r.conflict, kind: 'text' };
+    }
+    // binary: mergeable only if one side kept the base bytes
+    if (has(base) && partsEqual(ours, base)) return { content: theirs.content, conflict: false };
+    if (has(base) && partsEqual(theirs, base)) return { content: ours.content, conflict: false };
+    return { content: ours.content, conflict: true, kind: 'binary' }; // keep ours, flag it
+  }
+
+  if (has(ours) && !has(theirs)) {
+    if (!has(base)) return { content: ours.content, conflict: false };     // ours added
+    if (partsEqual(ours, base)) return { content: null, conflict: false };  // unchanged -> honor delete
+    return { content: ours.content, conflict: true, kind: 'modify/delete' };
+  }
+
+  if (!has(ours) && has(theirs)) {
+    if (!has(base)) return { content: theirs.content, conflict: false };   // theirs added
+    if (partsEqual(theirs, base)) return { content: null, conflict: false }; // unchanged -> honor our delete
+    return { content: theirs.content, conflict: true, kind: 'modify/delete' };
+  }
+
+  return { content: null, conflict: false }; // present only in base (both deleted), or nowhere
+}
+
+// Write an in-memory part list to a plain directory so a human can resolve markers.
+function dumpTree(parts, dir) {
+  fs.rmSync(dir, { recursive: true, force: true });
+  for (const part of parts) {
+    const dest = safeJoin(dir, part.path);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.writeFileSync(dest, part.xml ? Buffer.from(part.content, 'utf8') : part.content);
+  }
+}
+
+async function merge(baseFile, oursFile, theirsFile, pathName = oursFile) {
+  const [base, ours, theirs] = await Promise.all([
+    partMap(baseFile), partMap(oursFile), partMap(theirsFile),
+  ]);
+
+  const allPaths = [...new Set([...base.keys(), ...ours.keys(), ...theirs.keys()])].sort();
+  const merged = [];
+  const conflicts = [];
+  for (const p of allPaths) {
+    const res = mergePart(p, base.get(p), ours.get(p), theirs.get(p));
+    if (res.conflict) conflicts.push({ path: p, kind: res.kind });
+    if (res.content != null) merged.push({ path: p, xml: isXmlPath(p), content: res.content });
+  }
+
+  // Always write the (possibly marker-bearing) result back to %A -- that is where
+  // git reads the merge outcome from.
+  fs.writeFileSync(oursFile, await packPartsToZip(merged));
+
+  if (conflicts.length === 0) {
+    console.error(`vsdx merge: clean (${merged.length} parts) ${pathName}`);
+    return 0;
+  }
+
+  // A repacked .vsdx with conflict markers inside its XML won't open in Visio and
+  // can't be canonicalized, so also dump the merged tree for hand-editing.
+  const workDir = `${pathName}.merge`;
+  dumpTree(merged, workDir);
+  console.error(`vsdx merge: CONFLICT in ${pathName} (${conflicts.length} part(s)):`);
+  for (const c of conflicts) console.error(`    ${c.kind.padEnd(13)} ${c.path}`);
+  console.error(`  Resolve the markers in:  ${workDir}/`);
+  console.error(`  then repack + stage:     node scripts/vsdx-serialize.mjs pack ${workDir} ${pathName} && git add ${pathName}`);
+  return 1;
+}
+
 // ---- main -----------------------------------------------------------------
 // Don't crash when a reader (head, git's pager) closes the pipe early.
 process.stdout.on('error', (e) => {
@@ -245,16 +389,17 @@ process.stdout.on('error', (e) => {
   throw e;
 });
 
-const [cmd, a, b] = process.argv.slice(2);
+const [cmd, a, b, c, d] = process.argv.slice(2);
 const run = {
   unpack: () => unpack(a, b),
   pack: () => pack(a, b),
   verify: () => verify(a).then((ok) => process.exit(ok ? 0 : 1)),
   textconv: () => textconv(a),
+  merge: () => merge(a, b, c, d).then((code) => process.exit(code)), // %O %A %B %P
 }[cmd];
 
 if (!run) {
-  console.error('usage: vsdx-serialize.mjs <unpack|pack|verify> ...');
+  console.error('usage: vsdx-serialize.mjs <unpack|pack|verify|textconv|merge> ...');
   process.exit(2);
 }
 run().catch((e) => {

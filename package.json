@@ -17,7 +17,7 @@
     "vsdx:verify": "node scripts/vsdx-serialize.mjs verify",
     "test:vsdx-diff": "node scripts/test-vsdx-diff.mjs test-files/test4_connectors.vsdx test-files/test9_rect_and_line.vsdx",
     "test:diff-view": "node scripts/test-diff-view.mjs",
-    "vsdx:install-difftool": "git config diff.vsdx.textconv 'node scripts/vsdx-serialize.mjs textconv' && git config diff.vsdx.binary true && echo 'git diff.vsdx.textconv configured'"
+    "vsdx:install-difftool": "git config diff.vsdx.textconv 'node scripts/vsdx-serialize.mjs textconv' && git config diff.vsdx.binary true && git config merge.vsdx.name 'deterministic vsdx 3-way merge' && git config merge.vsdx.driver 'node scripts/vsdx-serialize.mjs merge %O %A %B %P' && echo 'git vsdx diff + merge drivers configured'"
   },
   "keywords": [],
   "author": "",
