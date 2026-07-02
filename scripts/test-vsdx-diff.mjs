@@ -3,8 +3,9 @@
 // are handled (layers matched by name, membership resolved to names).
 
 import { JSDOM } from 'jsdom';
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
-import { join, resolve } from 'path';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync, symlinkSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import { pathToFileURL } from 'url';
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>');
@@ -14,10 +15,14 @@ globalThis.DOMParser = dom.window.DOMParser;
 globalThis.XMLSerializer = dom.window.XMLSerializer;
 globalThis.Node = dom.window.Node;
 
-// Copy ESM sources into a module-typed temp dir (package is commonjs).
-const tmp = resolve(process.cwd(), '.tmp-esm-diff');
-if (!existsSync(tmp)) mkdirSync(tmp);
+// Copy ESM sources into a module-typed temp dir (package is commonjs). Use the
+// OS tmpdir and clean up on exit so we never leave .tmp-esm-* dirs in the repo.
+const tmp = mkdtempSync(join(tmpdir(), 'vsdx-esm-diff-'));
+process.on('exit', () => { try { rmSync(tmp, { recursive: true, force: true }); } catch {} });
 writeFileSync(join(tmp, 'package.json'), '{"type":"module"}');
+// Symlink the project's node_modules so bare imports (jszip, …) still resolve
+// from the out-of-tree temp dir.
+symlinkSync(join(process.cwd(), 'node_modules'), join(tmp, 'node_modules'), 'dir');
 const copy = (src, dst, reps = []) => {
   let code = readFileSync(src, 'utf8');
   for (const [a, b] of reps) code = code.replace(a, b);
@@ -40,6 +45,14 @@ if (files.length === 0) {
   console.error('usage: test-vsdx-diff.mjs <file.vsdx> [more.vsdx ...]');
   process.exit(2);
 }
+
+// Shared pass/fail tally so BOTH the real-fixture checks below and the synthetic
+// scenarios gate the final exit code.
+let pass = 0, fail = 0;
+const check = (name, cond, detail = '') => {
+  console.log(`  ${cond ? 'PASS ✓' : 'FAIL ✗'} ${name}${cond ? '' : '  ' + detail}`);
+  cond ? pass++ : fail++;
+};
 
 for (const file of files) {
   console.log(`\n════════ ${file} ════════`);
@@ -75,19 +88,14 @@ for (const file of files) {
   const survivorsNames = page.layers.slice(1).map((l) => l.name);
   const spuriousChange = pd.layers.changed.filter((c) => survivorsNames.includes(c.name)
     && c.changes.some((x) => x.field !== 'visible' && x.field !== 'print')); // props shouldn't shift from IX remap
-  console.log(`  ASSERT removed-layer-by-name: ${okRemoved ? 'PASS ✓' : 'FAIL ✗'}`);
-  console.log(`  ASSERT no spurious survivor prop-churn: ${spuriousChange.length === 0 ? 'PASS ✓' : 'FAIL ✗ ' + JSON.stringify(spuriousChange)}`);
+  check(`removed-layer-by-name (${file})`, okRemoved);
+  check(`no spurious survivor prop-churn (${file})`, spuriousChange.length === 0, JSON.stringify(spuriousChange));
 }
 
 // ── Synthetic scenarios ─────────────────────────────────────────────────────
 // The test fixtures only have single-layer pages, so build multi-layer models
 // directly to prove IX-remap resilience, hidden-layer, and membership-move.
 console.log('\n════════ synthetic scenarios ════════');
-let pass = 0, fail = 0;
-const check = (name, cond, detail = '') => {
-  console.log(`  ${cond ? 'PASS ✓' : 'FAIL ✗'} ${name}${cond ? '' : '  ' + detail}`);
-  cond ? pass++ : fail++;
-};
 const layer = (index, name, over = {}) => ({
   index: String(index), name, nameUniv: name,
   visible: true, print: true, active: false, lock: false, snap: true, glue: true,
@@ -134,5 +142,5 @@ const doc = (layers, shapes) => ({ pages: [{ id: '1', name: 'P', layers, shapes 
     !!m && m.from.join() === 'Walls' && m.to.join() === 'Doors', JSON.stringify(pd.membership));
 }
 
-console.log(`\nsynthetic: ${pass} passed, ${fail} failed`);
+console.log(`\ntotal: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

@@ -18,7 +18,7 @@ const LABELS = {
   added: 'Added',
   removed: 'Removed',
   modified: 'Modified',
-  moved: 'Moved layer',
+  moved: 'Membership', // shape's layer-membership changed (not a layer moving)
 };
 
 // Draw a crisp bbox outline around a shape group to make the change legible
@@ -143,30 +143,53 @@ function buildSummary(pageDiff) {
 }
 
 // ── Pan / zoom shared across one or two panes ──────────────────────────────
+// Wheel-zoom and drag-start are bound to EACH pane's own scroll container, so
+// both panes respond in side-by-side mode (not just the first). The window-level
+// move/up listeners and per-container listeners are all removed by destroy(),
+// which render()/close() call so nothing accumulates across re-renders.
 function makePanZoom(panes) {
   const state = { zoom: 1, x: 0, y: 0 };
   const apply = () => {
     for (const p of panes) p.style.transform = `translate(${state.x}px,${state.y}px) scale(${state.zoom})`;
   };
-  const container = panes[0].parentElement.parentElement; // the scroll area
-  container.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    const rect = container.getBoundingClientRect();
-    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
-    const delta = e.deltaY > 0 ? 0.9 : 1.1;
-    const nz = Math.max(0.05, Math.min(state.zoom * delta, 200));
-    const scale = nz / state.zoom;
-    state.x = mx - scale * (mx - state.x);
-    state.y = my - scale * (my - state.y);
-    state.zoom = nz;
-    apply();
-  }, { passive: false });
   let panning = false, sx = 0, sy = 0;
-  container.addEventListener('mousedown', (e) => { panning = true; sx = e.clientX - state.x; sy = e.clientY - state.y; });
-  window.addEventListener('mousemove', (e) => { if (panning) { state.x = e.clientX - sx; state.y = e.clientY - sy; apply(); } });
-  window.addEventListener('mouseup', () => { panning = false; });
+  const onMove = (e) => { if (panning) { state.x = e.clientX - sx; state.y = e.clientY - sy; apply(); } };
+  const onUp = () => { panning = false; };
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+
+  const bound = [];
+  for (const p of panes) {
+    const container = p.parentElement; // the .diff-pane-scroll area
+    if (!container) continue;
+    const onWheel = (e) => {
+      e.preventDefault();
+      const rect = container.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      const delta = e.deltaY > 0 ? 0.9 : 1.1;
+      const nz = Math.max(0.05, Math.min(state.zoom * delta, 200));
+      const scale = nz / state.zoom;
+      state.x = mx - scale * (mx - state.x);
+      state.y = my - scale * (my - state.y);
+      state.zoom = nz;
+      apply();
+    };
+    const onDown = (e) => { panning = true; sx = e.clientX - state.x; sy = e.clientY - state.y; };
+    container.addEventListener('wheel', onWheel, { passive: false });
+    container.addEventListener('mousedown', onDown);
+    bound.push({ container, onWheel, onDown });
+  }
+
   const reset = () => { state.zoom = 1; state.x = 0; state.y = 0; apply(); };
-  return { reset, apply, state };
+  const destroy = () => {
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+    for (const { container, onWheel, onDown } of bound) {
+      container.removeEventListener('wheel', onWheel);
+      container.removeEventListener('mousedown', onDown);
+    }
+  };
+  return { reset, apply, state, destroy };
 }
 
 // ── Public entry ───────────────────────────────────────────────────────────
@@ -234,6 +257,14 @@ export async function openDiffView({ baseBuffer, headBuffer, baseName, headName,
     header = newHeader;
 
     const pd = diff.pages[pageIdx];
+    if (!pd) {
+      // No comparable pages at all — avoid indexing into an empty diff.
+      if (panZoom) { panZoom.destroy(); panZoom = null; }
+      canvas.innerHTML = '';
+      canvas.append(el('div', { class: 'diff-missing' }, 'No pages to compare.'));
+      summary.innerHTML = '';
+      return;
+    }
     const bp = basePages.get(String(pd.pageId));
     const hp = headPages.get(String(pd.pageId));
     const maps = classMaps(pd);
@@ -241,8 +272,14 @@ export async function openDiffView({ baseBuffer, headBuffer, baseName, headName,
     canvas.innerHTML = '';
     let panes;
     if (mode === 'overlay') {
-      // Render head; splice in removed shapes cloned from a base render.
-      const { pane, inner, svg } = renderPane(hp || bp, 'Overlay (head + removed)');
+      // Render head; splice in removed shapes cloned from a base render. When a
+      // page exists on only one side, label what's actually shown.
+      const overlayLabel =
+        hp && bp ? 'Overlay (head + removed)'
+          : pd.status === 'removed' ? 'Base (removed in head)'
+            : pd.status === 'added' ? 'Head (added in head)'
+              : 'Overlay';
+      const { pane, inner, svg } = renderPane(hp || bp, overlayLabel);
       const removedClones = [];
       if (svg && hp && bp) {
         const ghost = el('div');
@@ -271,10 +308,12 @@ export async function openDiffView({ baseBuffer, headBuffer, baseName, headName,
     summary.innerHTML = '';
     summary.append(el('div', { class: 'diff-sec-title diff-sec-head' }, `Page: ${pd.name || 'Page'} [${pd.status}]`), ...buildSummary(pd));
 
-    if (panes.length) panZoom = makePanZoom(panes);
+    if (panZoom) panZoom.destroy();          // tear down the previous render's listeners
+    panZoom = panes.length ? makePanZoom(panes) : null;
   }
 
   function close() {
+    if (panZoom) { panZoom.destroy(); panZoom = null; }
     root.remove();
     if (typeof onClose === 'function') onClose();
   }

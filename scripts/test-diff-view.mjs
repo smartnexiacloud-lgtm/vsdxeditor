@@ -4,8 +4,9 @@
 // skipped (guarded); dataset.diff is still set, which is what we assert on.
 
 import { JSDOM } from 'jsdom';
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
-import { join, resolve } from 'path';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync, symlinkSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import { pathToFileURL } from 'url';
 import JSZip from 'jszip';
 
@@ -21,9 +22,12 @@ dom.window.SVGElement.prototype.getBBox = function () {
   return { x: 10, y: 20, width: 100, height: 60 };
 };
 
-const tmp = resolve(process.cwd(), '.tmp-esm-diffview');
-if (!existsSync(tmp)) mkdirSync(tmp);
+// OS tmpdir + cleanup on exit, so no .tmp-esm-* dirs are left in the repo.
+const tmp = mkdtempSync(join(tmpdir(), 'vsdx-esm-diffview-'));
+process.on('exit', () => { try { rmSync(tmp, { recursive: true, force: true }); } catch {} });
 writeFileSync(join(tmp, 'package.json'), '{"type":"module"}');
+// Symlink the project's node_modules so bare imports still resolve out of tree.
+symlinkSync(join(process.cwd(), 'node_modules'), join(tmp, 'node_modules'), 'dir');
 const copy = (src, dst, reps = []) => {
   let code = readFileSync(src, 'utf8');
   for (const [a, b] of reps) code = code.replace(a, b);

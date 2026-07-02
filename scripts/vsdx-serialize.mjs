@@ -45,7 +45,7 @@ const escAttr = (s) =>
   escText(s).replace(/"/g, '&quot;').replace(/\r/g, '&#13;').replace(/\n/g, '&#10;').replace(/\t/g, '&#9;');
 
 const isWhitespaceText = (node) => node.nodeType === 3 && /^\s*$/.test(node.data);
-const ELEMENT_NODE = 1, TEXT_NODE = 3, CDATA_NODE = 4;
+const ELEMENT_NODE = 1, TEXT_NODE = 3, CDATA_NODE = 4, COMMENT_NODE = 8;
 
 function attrsString(el) {
   const attrs = [];
@@ -64,6 +64,7 @@ function classifyChildren(el) {
     count++;
     if (n.nodeType === ELEMENT_NODE) hasElement = true;
     else if (n.nodeType === CDATA_NODE) hasRealText = true;
+    else if (n.nodeType === COMMENT_NODE) hasRealText = true; // preserve comments inline, don't drop them
     else if (n.nodeType === TEXT_NODE && !isWhitespaceText(n)) hasRealText = true;
   }
   return { hasElement, hasRealText, count };
@@ -73,6 +74,7 @@ function classifyChildren(el) {
 function serializeInline(node) {
   if (node.nodeType === TEXT_NODE) return escText(node.data);
   if (node.nodeType === CDATA_NODE) return `<![CDATA[${node.data}]]>`;
+  if (node.nodeType === COMMENT_NODE) return `<!--${node.data}-->`;
   if (node.nodeType !== ELEMENT_NODE) return '';
   const el = node;
   const open = `<${el.tagName}${attrsString(el)}`;
@@ -108,7 +110,16 @@ function serializeBlock(el, depth, out) {
 }
 
 function canonicalizeXml(xmlString) {
-  const doc = new DOMParser().parseFromString(xmlString, 'text/xml');
+  // An empty/whitespace-only or otherwise root-less part makes xmldom throw
+  // ("missing root element"); keep such content verbatim rather than crashing.
+  // The no-op onError also silences xmldom's stderr noise on that path.
+  let doc;
+  try {
+    doc = new DOMParser({ onError: () => {} }).parseFromString(xmlString, 'text/xml');
+  } catch {
+    return xmlString;
+  }
+  if (!doc || !doc.documentElement) return xmlString;
   const out = ['<?xml version="1.0" encoding="UTF-8"?>\n'];
   serializeBlock(doc.documentElement, 0, out);
   return out.join('');
@@ -218,9 +229,13 @@ async function verify(file) {
   console.log(`XML text stable across round-trip:  ${textStable ? 'YES ✓' : 'NO ✗'}`);
   console.log(`archive bytes stable across resave: ${bytesStable ? 'YES ✓' : 'NO ✗'}`);
   if (!textStable) {
-    for (let i = 0; i < p1.length; i++) {
-      if (p1[i].xml && p1[i].content !== p2[i].content)
-        console.log(`  DIFF in ${p1[i].path}`);
+    if (p1.length !== p2.length) {
+      console.log(`  parts count changed across round-trip: ${p1.length} -> ${p2.length}`);
+    } else {
+      for (let i = 0; i < p1.length; i++) {
+        if (p1[i].xml && p1[i].content !== p2[i].content)
+          console.log(`  DIFF in ${p1[i].path}`);
+      }
     }
   }
   return textStable && bytesStable;

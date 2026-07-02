@@ -169,22 +169,32 @@ export function computeDiff(base, head) {
 
   for (const [id, hp] of headPages) {
     const bp = basePages.get(id);
-    if (!bp) {
-      pages.push({ pageId: hp.id, name: hp.name, status: 'added', layers: emptyLayers(), membership: [], shapes: emptyShapes() });
-    } else {
-      pages.push(diffPage(bp, hp));
-    }
+    pages.push(bp ? diffPage(bp, hp) : wholePage(hp, 'added'));
   }
   for (const [id, bp] of basePages) {
-    if (!headPages.has(id)) {
-      pages.push({ pageId: bp.id, name: bp.name, status: 'removed', layers: emptyLayers(), membership: [], shapes: emptyShapes() });
-    }
+    if (!headPages.has(id)) pages.push(wholePage(bp, 'removed'));
   }
   return { pages };
 }
 
 const emptyLayers = () => ({ added: [], removed: [], changed: [] });
 const emptyShapes = () => ({ added: [], removed: [], modified: [] });
+
+// A page present on only one side: every shape/layer on it is wholly added or
+// removed, so enumerate them instead of reporting an empty (unchanged-looking) diff.
+function wholePage(page, status) {
+  const ids = [...flattenShapes(page.shapes).keys()];
+  const layers = emptyLayers();
+  const shapes = emptyShapes();
+  if (status === 'added') {
+    shapes.added = ids.map((id) => ({ id }));
+    layers.added = (page.layers || []).map((l) => ({ name: layerKey(l), index: l.index }));
+  } else {
+    shapes.removed = ids.map((id) => ({ id, cascadedFromLayer: null }));
+    layers.removed = (page.layers || []).map((l) => ({ name: layerKey(l), index: l.index, cascadedShapeIds: [] }));
+  }
+  return { pageId: page.id, name: page.name, status, layers, membership: [], shapes };
+}
 
 // Human-readable summary (for CLI / debugging).
 export function summarizeDiff(diff) {
