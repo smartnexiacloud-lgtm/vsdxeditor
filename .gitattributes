@@ -1,0 +1,6 @@
+# Show canonical XML when diffing .vsdx files instead of "Binary files differ",
+# and 3-way merge them on their canonical part trees instead of failing as binary.
+# Both require a one-time local setup of the driver commands:
+#     npm run vsdx:install-difftool
+# (git can't ship the commands themselves in .gitattributes for security reasons)
+*.vsdx diff=vsdx merge=vsdx
