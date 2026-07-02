@@ -1,0 +1,5 @@
+# Show canonical XML when diffing .vsdx files instead of "Binary files differ".
+# Requires a one-time local setup of the textconv command:
+#     npm run vsdx:install-difftool
+# (git can't ship the command itself in .gitattributes for security reasons)
+*.vsdx diff=vsdx

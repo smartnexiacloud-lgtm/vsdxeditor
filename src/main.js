@@ -1,6 +1,7 @@
 import { parseVsdx, saveVsdxLayerPermissions, saveVsdxWithoutHiddenLayers, saveVsdxWithoutNonSelectedLayers, saveVsdxWithoutNonVisibleData, getVsdxShapeXmlSnippet, replaceVsdxShapeXmlSnippet } from './vsdx-parser.js';
 import { parseVsd } from './vsd-parser.js';
 import { renderPage } from './svg-renderer.js';
+import { openDiffView } from './diff-view.js';
 
 const dropZone = document.getElementById('drop-zone');
 const fileInput = document.getElementById('file-input');
@@ -29,6 +30,8 @@ const layerMatrixReplaceStatus = document.getElementById('layer-matrix-replace-s
 const saveVsdxButton = document.getElementById('btn-save-vsdx');
 const removeNonSelectedButton = document.getElementById('btn-remove-non-selected');
 const removeNonVisibleButton = document.getElementById('btn-remove-non-visible');
+const compareButton = document.getElementById('btn-compare');
+const compareInput = document.getElementById('compare-input');
 const shapeTreeSidebar = document.getElementById('shape-tree-sidebar');
 const shapeTreeSubtitle = document.getElementById('shape-tree-subtitle');
 const shapeTreeBody = document.getElementById('shape-tree-body');
@@ -1078,6 +1081,7 @@ async function loadFile(file) {
     saveVsdxButton.disabled = currentFileType !== 'vsdx';
     removeNonSelectedButton.disabled = currentFileType !== 'vsdx';
     removeNonVisibleButton.disabled = currentFileType !== 'vsdx';
+    compareButton.disabled = currentFileType !== 'vsdx';
     // Default to first foreground page
     const firstFg = currentPages.findIndex(p => !p.isBackground);
     currentPageIndex = firstFg >= 0 ? firstFg : 0;
@@ -1180,6 +1184,33 @@ document.getElementById('btn-layers').addEventListener('click', () => {
   btn.classList.toggle('active');
 });
 document.getElementById('btn-layer-matrix').addEventListener('click', showLayerMatrix);
+
+// Compare against another .vsdx (visual diff overlay / side-by-side)
+compareButton.addEventListener('click', () => {
+  if (currentFileType !== 'vsdx' || !currentFileBuffer) {
+    showError('Compare is only available for .vsdx files');
+    return;
+  }
+  compareInput.click();
+});
+compareInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  compareInput.value = '';
+  if (!file) return;
+  try {
+    const headBuffer = await file.arrayBuffer();
+    await openDiffView({
+      baseBuffer: currentFileBuffer,
+      headBuffer,
+      baseName: fileName.textContent || 'base',
+      headName: file.name,
+      mount: document.body,
+    });
+  } catch (err) {
+    console.error(err);
+    showError('Failed to diff: ' + err.message);
+  }
+});
 saveVsdxButton.addEventListener('click', async () => {
   if (currentFileType !== 'vsdx' || !currentFileBuffer) {
     showError('Save VSDX is only available for .vsdx files');

@@ -11,7 +11,13 @@
     "test:render-regressions": "node scripts/test-render-regressions.mjs",
     "test:libvisio-port": "node --test tests/libvisio-ng-port.test.mjs",
     "export:our-svg": "node scripts/export-our-svg.mjs",
-    "compare:renderers": "node scripts/compare-renderers.mjs"
+    "compare:renderers": "node scripts/compare-renderers.mjs",
+    "vsdx:unpack": "node scripts/vsdx-serialize.mjs unpack",
+    "vsdx:pack": "node scripts/vsdx-serialize.mjs pack",
+    "vsdx:verify": "node scripts/vsdx-serialize.mjs verify",
+    "test:vsdx-diff": "node scripts/test-vsdx-diff.mjs test-files/test4_connectors.vsdx test-files/test9_rect_and_line.vsdx",
+    "test:diff-view": "node scripts/test-diff-view.mjs",
+    "vsdx:install-difftool": "git config diff.vsdx.textconv 'node scripts/vsdx-serialize.mjs textconv' && git config diff.vsdx.binary true && echo 'git diff.vsdx.textconv configured'"
   },
   "keywords": [],
   "author": "",
