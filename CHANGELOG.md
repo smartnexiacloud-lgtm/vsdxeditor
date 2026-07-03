@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`git vsdxdiff`** — a git difftool that opens the browser **visual** diff
+  (overlay + side-by-side) for two revisions of a `.vsdx`, serving the app and
+  both versions from a throwaway localhost server (`scripts/git-difftool-serve.mjs`).
+- App auto-loads a comparison from URL query params
+  (`?base=…&head=…` / `?file=…`), used by the difftool.
+- `vsdx:install-difftool` now also registers the difftool and the `git vsdxdiff`
+  alias (moved into `scripts/install-git-integration.mjs`).
+
 ## [0.0.1] — 2026-07-03
 
 First tagged release.
