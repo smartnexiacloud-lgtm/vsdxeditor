@@ -1,17 +1,13 @@
 {
   "name": "vsdxeditor",
-  "version": "1.0.0",
-  "description": "",
+  "version": "0.0.1",
+  "description": "Browser-based viewer, editor, and visual differ for Visio .vsdx (and .vsd) drawings, with a deterministic git diff/merge toolchain for .vsdx files.",
   "main": "index.js",
   "scripts": {
     "build": "esbuild src/main.js --bundle --outfile=dist/main.js --format=iife --minify",
-    "postbuild": "cp src/index.html dist/index.html",
+    "postbuild": "cp src/index.html dist/index.html && node scripts/build-docs.mjs",
     "dev": "esbuild src/main.js --bundle --outfile=dist/main.js --format=iife --servedir=dist --serve=8080",
-    "test:oreilly-fixtures": "node scripts/test-oreilly-fixtures.mjs",
-    "test:render-regressions": "node scripts/test-render-regressions.mjs",
-    "test:libvisio-port": "node --test tests/libvisio-ng-port.test.mjs",
-    "export:our-svg": "node scripts/export-our-svg.mjs",
-    "compare:renderers": "node scripts/compare-renderers.mjs",
+    "test": "npm run test:vsdx-diff && npm run test:diff-view",
     "vsdx:unpack": "node scripts/vsdx-serialize.mjs unpack",
     "vsdx:pack": "node scripts/vsdx-serialize.mjs pack",
     "vsdx:verify": "node scripts/vsdx-serialize.mjs verify",
@@ -19,13 +15,31 @@
     "test:diff-view": "node scripts/test-diff-view.mjs",
     "vsdx:install-difftool": "git config diff.vsdx.textconv 'node scripts/vsdx-serialize.mjs textconv' && git config diff.vsdx.binary true && git config merge.vsdx.name 'deterministic vsdx 3-way merge' && git config merge.vsdx.driver 'node scripts/vsdx-serialize.mjs merge %O %A %B %P' && echo 'git vsdx diff + merge drivers configured'"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "visio",
+    "vsdx",
+    "vsd",
+    "viewer",
+    "editor",
+    "diff",
+    "svg",
+    "git"
+  ],
+  "author": "Smart Nexia",
   "license": "GPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/smartnexiacloud-lgtm/vsdxeditor.git"
+  },
+  "homepage": "https://smartnexiacloud-lgtm.github.io/vsdxeditor/",
+  "bugs": {
+    "url": "https://github.com/smartnexiacloud-lgtm/vsdxeditor/issues"
+  },
   "type": "commonjs",
   "devDependencies": {
     "esbuild": "^0.28.0",
-    "jsdom": "^29.0.2"
+    "jsdom": "^29.0.2",
+    "marked": "^18.0.5"
   },
   "dependencies": {
     "@xmldom/xmldom": "^0.9.9",

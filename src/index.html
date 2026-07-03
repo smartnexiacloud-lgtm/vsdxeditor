@@ -62,7 +62,8 @@
       border-bottom: 1px solid #0f3460;
       flex-shrink: 0;
     }
-    .toolbar button {
+    .toolbar button,
+    .toolbar a#link-help {
       background: #0f3460;
       color: #e0e0e0;
       border: 1px solid #1a1a5e;
@@ -72,7 +73,12 @@
       font-size: 13px;
       transition: background 0.15s;
     }
-    .toolbar button:hover {
+    .toolbar a#link-help {
+      text-decoration: none;
+      line-height: 1;
+    }
+    .toolbar button:hover,
+    .toolbar a#link-help:hover {
       background: #533483;
     }
     .toolbar button:disabled {
@@ -811,6 +817,7 @@
       <button id="btn-export">Export SVG</button>
       <button id="btn-compare" disabled>Compare…</button>
       <span id="zoom-info">100%</span>
+      <a id="link-help" href="usage.html" target="_blank" rel="noopener">Help</a>
     </div>
     <input type="file" id="compare-input" accept=".vsdx" style="display:none">
     <div id="page-tabs"></div>
