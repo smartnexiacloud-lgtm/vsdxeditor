@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "build": "esbuild src/main.js --bundle --outfile=dist/main.js --format=iife --minify",
-    "postbuild": "cp src/index.html dist/index.html",
+    "postbuild": "cp src/index.html dist/index.html && node scripts/build-docs.mjs",
     "dev": "esbuild src/main.js --bundle --outfile=dist/main.js --format=iife --servedir=dist --serve=8080",
     "test": "npm run test:vsdx-diff && npm run test:diff-view",
     "vsdx:unpack": "node scripts/vsdx-serialize.mjs unpack",
@@ -38,7 +38,8 @@
   "type": "commonjs",
   "devDependencies": {
     "esbuild": "^0.28.0",
-    "jsdom": "^29.0.2"
+    "jsdom": "^29.0.2",
+    "marked": "^18.0.5"
   },
   "dependencies": {
     "@xmldom/xmldom": "^0.9.9",
