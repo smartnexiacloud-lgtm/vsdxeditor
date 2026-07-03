@@ -1,2 +1,19 @@
 node_modules/
 dist/
+
+# Local scratch / debug work (never committed)
+.tmp-*/
+*.log
+
+# Ad-hoc sample & dump files kept out of the repo
+why*.vsdx
+testraum*
+test.vsd
+test.vsdx
+test.svg
+schema.json
+dump-*.mjs
+inspect-schema.mjs
+test-parse.mjs
+test-render.mjs
+test-render-vsd.mjs
