@@ -62,10 +62,14 @@ npm run build   # bundle the app into dist/ (index.html + main.js)
 `.vsdx` files are ZIP archives, so out of the box git treats them as opaque
 binaries — every change is *"Binary files differ"* and merges always conflict.
 This repo ships tooling that fixes both: `git diff` shows canonical XML, and
-`git merge` performs a real 3-way merge on the drawing's part tree.
+`git merge` performs a real 3-way merge on the drawing's part tree. It also adds
+`git vsdxdiff`, which opens a **graphical** diff of two revisions in your browser.
 
 ```bash
 npm run vsdx:install-difftool   # one-time, per clone
+
+git diff drawing.vsdx           # readable canonical-XML diff in the terminal
+git vsdxdiff drawing.vsdx       # visual diff (overlay + side-by-side) in the browser
 ```
 
 The `.gitattributes` in this repo already maps `*.vsdx` to the `vsdx` diff and
@@ -107,6 +111,9 @@ npm run test:diff-view    # side-by-side diff rendering
 | `src/shape-inheritance.js` | Shape style inheritance resolution |
 | `src/vsdx-diff.js` / `src/diff-view.js` | Diff engine + diff UI |
 | `scripts/vsdx-serialize.mjs` | Canonical serialize / pack / textconv / merge driver |
+| `scripts/git-difftool-serve.mjs` | `git difftool` server that opens the browser visual diff |
+| `scripts/install-git-integration.mjs` | Registers the git diff/merge/difftool config |
+| `scripts/build-docs.mjs` | Renders `docs/usage.md` → `dist/usage.html` |
 
 ---
 

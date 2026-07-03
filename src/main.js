@@ -1425,3 +1425,35 @@ document.getElementById('btn-export').addEventListener('click', () => {
   a.click();
   URL.revokeObjectURL(url);
 });
+
+// Auto-load from URL query params — used by the `git difftool` integration
+// (scripts/git-difftool-serve.mjs) to open two revisions in the visual diff:
+//   ?diff=1&base=<url>&head=<url>&baseName=<label>&headName=<label>
+// A single ?file=<url> just loads that file into the viewer.
+async function initFromQuery() {
+  const params = new URLSearchParams(location.search);
+  try {
+    if (params.get('base') && params.get('head')) {
+      const [baseBuffer, headBuffer] = await Promise.all([
+        fetch(params.get('base')).then(r => r.arrayBuffer()),
+        fetch(params.get('head')).then(r => r.arrayBuffer()),
+      ]);
+      await openDiffView({
+        baseBuffer,
+        headBuffer,
+        baseName: params.get('baseName') || 'base',
+        headName: params.get('headName') || 'head',
+        mount: document.body,
+      });
+    } else if (params.get('file')) {
+      const url = params.get('file');
+      const buffer = await fetch(url).then(r => r.arrayBuffer());
+      const name = params.get('fileName') || url.split('/').pop() || 'file.vsdx';
+      await loadFile(new File([buffer], name));
+    }
+  } catch (err) {
+    console.error(err);
+    showError('Failed to auto-load from URL: ' + err.message);
+  }
+}
+initFromQuery();

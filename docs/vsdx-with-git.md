@@ -12,6 +12,8 @@ tractable for git:
 - **`git merge`** performs a real 3-way merge on the drawing's XML (a git
   **merge driver**), so non-overlapping edits combine automatically and only
   genuine conflicts stop you.
+- **`git vsdxdiff`** opens a **graphical** diff of two revisions in your browser
+  (overlay + side-by-side), via a git **difftool**.
 
 Both work because the tooling **canonicalizes** the package deterministically —
 sorted attributes, a fixed timestamp, sorted ZIP entries, fixed compression — so
@@ -37,6 +39,10 @@ That command writes to your local `.git/config`:
 [merge "vsdx"]
     name = deterministic vsdx 3-way merge
     driver = node scripts/vsdx-serialize.mjs merge %O %A %B %P
+[difftool "vsdxvisual"]
+    cmd = node "$(git rev-parse --show-toplevel)/scripts/git-difftool-serve.mjs" "$LOCAL" "$REMOTE" "$MERGED"
+[alias]
+    vsdxdiff = difftool --no-prompt -t vsdxvisual
 ```
 
 The repo's `.gitattributes` already routes `.vsdx` to these drivers:
@@ -58,6 +64,29 @@ git log -p -- drawing.vsdx        # history as XML diffs
 
 The textconv is **read-only** — it changes how git *shows* the file, not how it
 *stores* it. The blob in the repository is still the original `.vsdx`.
+
+## Visual diff (`git vsdxdiff`)
+
+`git diff` shows the *textual* XML change. To **see** the change as a drawing —
+the browser overlay + side-by-side view — use the `git vsdxdiff` alias the
+setup installed:
+
+```bash
+git vsdxdiff drawing.vsdx                       # working tree vs. HEAD
+git vsdxdiff HEAD~1 -- drawing.vsdx             # HEAD vs. a previous commit
+git vsdxdiff main feature -- drawing.vsdx       # across two branches
+```
+
+git extracts both sides to temp files, then the difftool
+(`scripts/git-difftool-serve.mjs`) builds the app if needed, serves it plus the
+two revisions from a throwaway `localhost` server, and opens your browser at the
+Compare view with both files preloaded. **Everything stays local** — nothing is
+uploaded. Press **Ctrl+C** in the terminal when you're done to shut the server
+down (git waits for that before cleaning up its temp files).
+
+Unlike `git diff` (which needs no window), this is a real GUI tool, so it's a
+`difftool` rather than the default `diff` — hence the dedicated `git vsdxdiff`
+alias instead of plain `git diff`.
 
 ## Merging
 
