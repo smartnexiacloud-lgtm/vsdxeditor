@@ -1,4 +1,5 @@
 import { parseVsdx, saveVsdxLayerPermissions, saveVsdxWithoutHiddenLayers, saveVsdxWithoutNonSelectedLayers, saveVsdxWithoutNonVisibleData, getVsdxShapeXmlSnippet, replaceVsdxShapeXmlSnippet } from './vsdx-parser.js';
+import { embedVsdxInSvg, extractVsdxFromSvg } from './svg-vsdx-embed.js';
 import { parseVsd } from './vsd-parser.js';
 import { renderPage } from './svg-renderer.js';
 import { openDiffView } from './diff-view.js';
@@ -1064,9 +1065,23 @@ function resetView() {
 }
 
 async function loadFile(file) {
-  const name = file.name.toLowerCase();
+  let name = file.name.toLowerCase();
+  if (name.endsWith('.svg')) {
+    // SVGs exported by this app carry the source document as base64 metadata;
+    // unwrap it and load the embedded .vsdx/.vsd as if it were opened directly.
+    const embedded = extractVsdxFromSvg(await file.text());
+    if (!embedded) {
+      showError('This SVG has no embedded VSDX data (only SVGs exported by this app can be re-opened)');
+      return;
+    }
+    const embeddedName = /\.vsdx?$/i.test(embedded.name)
+      ? embedded.name
+      : file.name.replace(/\.svg$/i, '') + '.vsdx';
+    file = new File([embedded.buffer], embeddedName);
+    name = embeddedName.toLowerCase();
+  }
   if (!name.endsWith('.vsdx') && !name.endsWith('.vsd')) {
-    showError('Please select a .vsd or .vsdx file');
+    showError('Please select a .vsd, .vsdx, or exported .svg file');
     return;
   }
   try {
@@ -1411,12 +1426,24 @@ layersList.addEventListener('keydown', (e) => {
   }
 });
 
-// Export SVG
-document.getElementById('btn-export').addEventListener('click', () => {
+// Export SVG — with the source document embedded as base64 metadata so the
+// exported SVG can be re-opened (or converted back to .vsdx) losslessly.
+document.getElementById('btn-export').addEventListener('click', async () => {
   const svg = svgContainer.querySelector('svg');
   if (!svg) return;
   const serializer = new XMLSerializer();
-  const svgStr = serializer.serializeToString(svg);
+  let svgStr = serializer.serializeToString(svg);
+  try {
+    if (currentFileBuffer) {
+      // Embed what "Save VSDX" would produce, so layer edits round-trip too.
+      const source = currentFileType === 'vsdx'
+        ? await saveVsdxLayerPermissions(currentFileBuffer, currentPages)
+        : currentFileBuffer;
+      svgStr = embedVsdxInSvg(svgStr, source, fileName.textContent || 'diagram.vsdx');
+    }
+  } catch (e) {
+    console.error('Failed to embed VSDX metadata in SVG, exporting plain SVG:', e);
+  }
   const blob = new Blob([svgStr], { type: 'image/svg+xml' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');

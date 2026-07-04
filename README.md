@@ -23,6 +23,8 @@ Everything runs client-side: files never leave your machine.
   shape to a different layer.
 - **Prune** the drawing: *Remove Non-visible* or *Remove Non-selected* shapes.
 - **Export SVG** of the current page, or **Save VSDX** with your edits applied.
+  Exported SVGs embed the source `.vsdx` as base64 metadata, so dropping an
+  exported `.svg` back into the app round-trips losslessly to the drawing.
 - **Compare two files** — overlay + side-by-side visual diff that highlights
   moved, added, removed, and modified shapes, and reports layer changes.
 - **Git integration** — readable `git diff` and true 3-way `git merge` for

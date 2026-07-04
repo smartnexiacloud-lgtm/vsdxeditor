@@ -72,6 +72,9 @@ These edit the in-memory document; use **Save VSDX** to persist the result.
 
 ## Exporting
 
-- **Export SVG** — download the current page as an `.svg`.
+- **Export SVG** — download the current page as an `.svg`. The source `.vsdx`
+  (with your layer edits applied) is embedded in the SVG as base64
+  `<metadata>`, so an exported `.svg` can be dropped back into the app — or
+  handed to someone else — and opened again as the full drawing, losslessly.
 - **Save VSDX** — download a `.vsdx` with all your edits (layer changes, shape
   XML edits, pruning) applied.

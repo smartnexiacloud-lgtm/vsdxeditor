@@ -7,12 +7,14 @@
     "build": "esbuild src/main.js --bundle --outfile=dist/main.js --format=iife --minify",
     "postbuild": "cp src/index.html dist/index.html && node scripts/build-docs.mjs",
     "dev": "esbuild src/main.js --bundle --outfile=dist/main.js --format=iife --servedir=dist --serve=8080",
-    "test": "npm run test:vsdx-diff && npm run test:diff-view",
+    "test": "npm run test:vsdx-diff && npm run test:diff-view && npm run test:svg-roundtrip && npm run test:app-svg-roundtrip",
     "vsdx:unpack": "node scripts/vsdx-serialize.mjs unpack",
     "vsdx:pack": "node scripts/vsdx-serialize.mjs pack",
     "vsdx:verify": "node scripts/vsdx-serialize.mjs verify",
     "test:vsdx-diff": "node scripts/test-vsdx-diff.mjs test-files/test4_connectors.vsdx test-files/test9_rect_and_line.vsdx",
     "test:diff-view": "node scripts/test-diff-view.mjs",
+    "test:svg-roundtrip": "node scripts/test-svg-roundtrip.mjs",
+    "test:app-svg-roundtrip": "node scripts/test-app-svg-roundtrip.mjs",
     "vsdx:install-difftool": "node scripts/install-git-integration.mjs"
   },
   "keywords": [
