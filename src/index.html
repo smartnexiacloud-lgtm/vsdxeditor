@@ -265,6 +265,14 @@
       opacity: 0.45;
       cursor: not-allowed;
     }
+    .views-hint {
+      font-size: 10.5px;
+      line-height: 1.35;
+      color: #7d88b5;
+    }
+    .views-hint strong {
+      color: #b8c0df;
+    }
     #layers-list {
       flex: 1;
       overflow-y: auto;
@@ -355,7 +363,8 @@
       justify-content: flex-end;
     }
     .matrix-search,
-    .matrix-replace {
+    .matrix-replace,
+    .matrix-page-filter {
       width: min(320px, 100%);
       min-width: 180px;
       background: #0f1730;
@@ -364,6 +373,11 @@
       border-radius: 4px;
       padding: 6px 9px;
       font-size: 12px;
+    }
+    .matrix-page-filter {
+      width: auto;
+      min-width: 150px;
+      cursor: pointer;
     }
     .matrix-search::placeholder,
     .matrix-replace::placeholder {
@@ -899,6 +913,7 @@
             <button id="btn-view-update" type="button" title="Overwrite the selected view with the current layer visibility" disabled>Update</button>
             <button id="btn-view-delete" type="button" title="Delete the selected view" disabled>Delete</button>
           </div>
+          <div class="views-hint">Views are stored inside the .vsdx — they persist when you click <strong>Save VSDX</strong>.</div>
         </div>
         <div id="layers-list" tabindex="0" role="listbox" aria-label="Layers"></div>
       </div>
@@ -922,6 +937,7 @@
       <div class="matrix-header">
         <div id="layer-matrix-title" class="matrix-title">Layer Visibility Matrix</div>
         <div class="matrix-tools">
+          <select id="layer-matrix-page" class="matrix-page-filter" aria-label="Filter matrix by page"></select>
           <input id="layer-matrix-search" class="matrix-search" type="search" placeholder="Search matrix (Ctrl+F)" aria-label="Search layer matrix">
           <input id="layer-matrix-replace" class="matrix-replace" type="text" placeholder="Replace layer names with" aria-label="Replacement layer name text">
           <button id="layer-matrix-replace-all" class="matrix-replace-action" type="button" disabled>Replace all</button>

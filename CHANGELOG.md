@@ -7,6 +7,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Layer Matrix page filter** — the matrix can now be narrowed to a single
+  page (or shown across all pages); *Replace all* respects the filter.
+- The **Named views** section of the layers sidebar now explains where views
+  are stored (inside the .vsdx on **Save VSDX**).
+
+### Changed
 - **Website / front page** on GitHub Pages: a landing page (`index.html`) with a
   features overview and links, plus rendered **How-to**, **Changelog**, and
   **Download** pages sharing a common nav. The app itself moved to `app.html`.

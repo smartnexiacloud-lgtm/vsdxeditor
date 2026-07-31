@@ -24,7 +24,7 @@ portable offline builds.
 - **Zoom** (in / out / fit-to-window) and pan.
 - **Layers** — toggle layer visibility from a sidebar, or open the full
   **Layer Visibility Matrix** to bulk-edit which layers each page shows,
-  search/filter layers, and rename layers with *Replace all*.
+  filter by page, search/filter layers, and rename layers with *Replace all*.
 - **Named views** — save the current layer visibility as a named preset (a
   per-page snapshot) so a collaborative drawing can flip between the layer sets
   different teams care about. Views are embedded in the `.vsdx` itself — they

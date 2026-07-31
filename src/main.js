@@ -28,6 +28,7 @@ const layerMatrixSearch = document.getElementById('layer-matrix-search');
 const layerMatrixReplace = document.getElementById('layer-matrix-replace');
 const layerMatrixReplaceAll = document.getElementById('layer-matrix-replace-all');
 const layerMatrixReplaceStatus = document.getElementById('layer-matrix-replace-status');
+const layerMatrixPage = document.getElementById('layer-matrix-page');
 const saveVsdxButton = document.getElementById('btn-save-vsdx');
 const removeNonSelectedButton = document.getElementById('btn-remove-non-selected');
 const removeNonVisibleButton = document.getElementById('btn-remove-non-visible');
@@ -912,7 +913,7 @@ function replaceAllMatrixLayerNames() {
   const matcher = new RegExp(escapeRegExp(findText), 'gi');
   let changed = 0;
 
-  for (const page of currentPages.filter(page => !page.isBackground)) {
+  for (const page of getMatrixFilteredPages()) {
     for (const layer of page.layers || []) {
       const currentName = layer.name || `Layer ${layer.index}`;
       if (!matcher.test(currentName)) {
@@ -932,6 +933,39 @@ function replaceAllMatrixLayerNames() {
   }
   setMatrixReplaceStatus(changed === 1 ? '1 renamed' : `${changed} renamed`);
   updateMatrixReplaceState();
+}
+
+function getMatrixForegroundPages() {
+  return currentPages.filter(page => !page.isBackground);
+}
+
+// Page filter selection, keyed by the page's index in currentPages ('' = all).
+let layerMatrixPageFilter = '';
+
+function refreshMatrixPageFilter() {
+  if (!layerMatrixPage) return;
+  const pages = getMatrixForegroundPages();
+  const prev = layerMatrixPage.value;
+  layerMatrixPage.innerHTML = '';
+  const all = document.createElement('option');
+  all.value = '';
+  all.textContent = 'All pages';
+  layerMatrixPage.appendChild(all);
+  for (const page of pages) {
+    const opt = document.createElement('option');
+    opt.value = String(currentPages.indexOf(page));
+    opt.textContent = page.name || `Page ${currentPages.indexOf(page) + 1}`;
+    layerMatrixPage.appendChild(opt);
+  }
+  // Keep the previous selection if the page still exists.
+  layerMatrixPage.value = (prev && [...layerMatrixPage.options].some(o => o.value === prev)) ? prev : layerMatrixPageFilter;
+}
+
+function getMatrixFilteredPages() {
+  const pages = getMatrixForegroundPages();
+  const selected = layerMatrixPage?.value ?? '';
+  if (selected === '') return pages;
+  return pages.filter(page => currentPages.indexOf(page) === Number(selected));
 }
 
 function layerMatchesMatrixFilter(page, layer) {
@@ -961,7 +995,8 @@ function focusMatrixInput(row, col) {
 
 function buildLayerMatrix() {
   layerMatrixBody.innerHTML = '';
-  const pages = currentPages.filter(page => !page.isBackground);
+  refreshMatrixPageFilter();
+  const pages = getMatrixFilteredPages();
 
   if (!pages.length) {
     layerMatrixBody.textContent = 'No foreground pages loaded.';
@@ -1435,6 +1470,10 @@ layerMatrixSearch.addEventListener('input', () => {
   buildLayerMatrix();
   updateMatrixReplaceState();
   setMatrixReplaceStatus('');
+});
+layerMatrixPage?.addEventListener('change', () => {
+  layerMatrixPageFilter = layerMatrixPage.value;
+  buildLayerMatrix();
 });
 layerMatrixReplace?.addEventListener('input', () => setMatrixReplaceStatus(''));
 layerMatrixReplace?.addEventListener('keydown', (e) => {
