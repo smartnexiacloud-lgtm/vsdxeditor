@@ -70,7 +70,7 @@ Requires Node.js (18+ recommended).
 
 ```bash
 npm install
-npm run dev     # esbuild dev server on http://localhost:8080
+npm run dev     # esbuild dev server on http://localhost:8080 (set PORT to override)
 npm run build   # bundle the app into dist/main.js
 npm run postbuild   # copy the app to dist/app.html + render the site (landing, docs, changelog)
 ```
