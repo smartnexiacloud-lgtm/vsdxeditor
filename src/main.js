@@ -31,6 +31,11 @@ const layerMatrixReplaceStatus = document.getElementById('layer-matrix-replace-s
 const saveVsdxButton = document.getElementById('btn-save-vsdx');
 const removeNonSelectedButton = document.getElementById('btn-remove-non-selected');
 const removeNonVisibleButton = document.getElementById('btn-remove-non-visible');
+const layersViews = document.getElementById('layers-views');
+const viewSelect = document.getElementById('view-select');
+const btnViewSave = document.getElementById('btn-view-save');
+const btnViewUpdate = document.getElementById('btn-view-update');
+const btnViewDelete = document.getElementById('btn-view-delete');
 const compareButton = document.getElementById('btn-compare');
 const compareInput = document.getElementById('compare-input');
 const shapeTreeSidebar = document.getElementById('shape-tree-sidebar');
@@ -57,6 +62,7 @@ let hiddenLayers = new Set();
 let focusedLayerIndex = null;
 let currentFileBuffer = null;
 let currentFileType = null;
+let viewTemplates = [];
 let contextShapeId = null;
 let selectedShapeId = null;
 let editingShapeId = null;
@@ -1091,6 +1097,7 @@ async function loadFile(file) {
     currentFileType = name.endsWith('.vsdx') ? 'vsdx' : 'vsd';
     const result = currentFileType === 'vsd' ? await parseVsd(buffer) : await parseVsdx(buffer);
     currentPages = result.pages;
+    viewTemplates = Array.isArray(result.viewTemplates) ? result.viewTemplates : [];
     hiddenShapeIdsByPage.clear();
     collapsedShapeIdsByPage.clear();
     saveVsdxButton.disabled = currentFileType !== 'vsdx';
@@ -1108,6 +1115,7 @@ async function loadFile(file) {
     editingShapeId = null;
     layerFilterText.value = '';
     buildLayersSidebar();
+    refreshViewsUI();
     resetView();
     renderCurrentPage();
   } catch (e) {
@@ -1226,6 +1234,114 @@ compareInput.addEventListener('change', async (e) => {
     showError('Failed to diff: ' + err.message);
   }
 });
+
+// ── Named views (layer-visibility presets) ────────────────────────────────
+// A view is a per-page snapshot of layer visibility saved under a name. They
+// live in the drawing's Visio Solution XML store so they travel with the file
+// (shared across a collaborating team) and survive a Microsoft Visio round-trip.
+// They are embedded into the download whenever the user does Save VSDX / Export
+// SVG — same as every other edit, which is in-memory until saved.
+
+// Push the current page's live checkbox state back onto layer.visible so a
+// capture reflects unsaved toggles on the active page (other pages already
+// mirror their state in layer.visible).
+function commitCurrentPageVisibility() {
+  const page = currentPages[currentPageIndex];
+  for (const layer of (page?.layers || [])) {
+    layer.visible = !hiddenLayers.has(layer.index);
+  }
+}
+
+function captureCurrentView(name) {
+  commitCurrentPageVisibility();
+  return {
+    name,
+    pages: currentPages
+      .filter(page => (page.layers || []).length)
+      .map(page => ({
+        id: String(page.id),
+        name: page.name || '',
+        layers: page.layers.map(layer => ({ name: layer.name, visible: layer.visible !== false })),
+      })),
+  };
+}
+
+function applyView(view) {
+  if (!view) return;
+  const pageById = new Map(currentPages.map(page => [String(page.id), page]));
+  for (const snapshot of (view.pages || [])) {
+    const page = pageById.get(String(snapshot.id))
+      || currentPages.find(p => (p.name || '') === snapshot.name);
+    if (!page) continue;
+    const wanted = new Map((snapshot.layers || []).map(l => [l.name, l.visible !== false]));
+    for (const layer of (page.layers || [])) {
+      if (wanted.has(layer.name)) layer.visible = wanted.get(layer.name);
+    }
+  }
+  hiddenLayers = getInitialHiddenLayers();
+  buildLayersSidebar();
+  applyLayerVisibility();
+  if (layerMatrixModal.classList.contains('visible')) buildLayerMatrix();
+}
+
+function refreshViewsUI() {
+  // Only meaningful for .vsdx (the store can't be persisted into a .vsd).
+  const enabled = currentFileType === 'vsdx';
+  if (layersViews) layersViews.style.display = enabled ? '' : 'none';
+  if (!viewSelect) return;
+  const prev = viewSelect.value;
+  viewSelect.innerHTML = '<option value="">— Select a view —</option>';
+  viewTemplates.forEach((view, i) => {
+    const opt = document.createElement('option');
+    opt.value = String(i);
+    opt.textContent = view.name;
+    viewSelect.appendChild(opt);
+  });
+  viewSelect.value = (prev && Number(prev) < viewTemplates.length) ? prev : '';
+  updateViewButtons();
+}
+
+function updateViewButtons() {
+  const hasSelection = viewSelect && viewSelect.value !== '';
+  if (btnViewUpdate) btnViewUpdate.disabled = !hasSelection;
+  if (btnViewDelete) btnViewDelete.disabled = !hasSelection;
+}
+
+if (viewSelect) {
+  viewSelect.addEventListener('change', () => {
+    updateViewButtons();
+    if (viewSelect.value !== '') applyView(viewTemplates[Number(viewSelect.value)]);
+  });
+}
+if (btnViewSave) {
+  btnViewSave.addEventListener('click', () => {
+    if (currentFileType !== 'vsdx') return;
+    const name = (window.prompt('Name this view (captures the current layer visibility):') || '').trim();
+    if (!name) return;
+    const view = captureCurrentView(name);
+    const existing = viewTemplates.findIndex(v => v.name === name);
+    if (existing >= 0) viewTemplates[existing] = view;
+    else viewTemplates.push(view);
+    refreshViewsUI();
+    viewSelect.value = String(viewTemplates.findIndex(v => v.name === name));
+    updateViewButtons();
+  });
+}
+if (btnViewUpdate) {
+  btnViewUpdate.addEventListener('click', () => {
+    if (viewSelect.value === '') return;
+    const i = Number(viewSelect.value);
+    viewTemplates[i] = captureCurrentView(viewTemplates[i].name);
+  });
+}
+if (btnViewDelete) {
+  btnViewDelete.addEventListener('click', () => {
+    if (viewSelect.value === '') return;
+    viewTemplates.splice(Number(viewSelect.value), 1);
+    refreshViewsUI();
+  });
+}
+
 saveVsdxButton.addEventListener('click', async () => {
   if (currentFileType !== 'vsdx' || !currentFileBuffer) {
     showError('Save VSDX is only available for .vsdx files');
@@ -1233,7 +1349,7 @@ saveVsdxButton.addEventListener('click', async () => {
   }
 
   try {
-    const output = await saveVsdxLayerPermissions(currentFileBuffer, currentPages);
+    const output = await saveVsdxLayerPermissions(currentFileBuffer, currentPages, viewTemplates);
     const blob = new Blob([output], { type: 'application/vnd.ms-visio.drawing.main+xml' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1435,9 +1551,10 @@ document.getElementById('btn-export').addEventListener('click', async () => {
   let svgStr = serializer.serializeToString(svg);
   try {
     if (currentFileBuffer) {
-      // Embed what "Save VSDX" would produce, so layer edits round-trip too.
+      // Embed what "Save VSDX" would produce, so layer edits and named views
+      // round-trip too.
       const source = currentFileType === 'vsdx'
-        ? await saveVsdxLayerPermissions(currentFileBuffer, currentPages)
+        ? await saveVsdxLayerPermissions(currentFileBuffer, currentPages, viewTemplates)
         : currentFileBuffer;
       svgStr = embedVsdxInSvg(svgStr, source, fileName.textContent || 'diagram.vsdx');
     }

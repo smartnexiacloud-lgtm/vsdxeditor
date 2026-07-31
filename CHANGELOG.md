@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Website / front page** on GitHub Pages: a landing page (`index.html`) with a
+  features overview and links, plus rendered **How-to**, **Changelog**, and
+  **Download** pages sharing a common nav. The app itself moved to `app.html`.
+- **Portable offline downloads** for Windows and Linux: `npm run package:portable`
+  inlines the whole app into a single self-contained `vsdxeditor.html` and zips
+  it per platform with a launcher (`scripts/build-portable.mjs`).
+- **Release workflow** — pushing a `v*` tag builds the portable zips and
+  publishes them to a GitHub Release automatically
+  (`.github/workflows/release.yml`).
+
+### Changed
+- The live app URL is now `…/app.html`; the site root is the new landing page.
+- `git vsdxdiff` / the difftool server now serves the app from `app.html`.
+
 ## [0.0.2] — 2026-07-03
 
 ### Added

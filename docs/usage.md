@@ -44,6 +44,29 @@ you can:
 - Rename layers: type into **Replace layer names with** and click **Replace
   all** to rename matching layers in bulk.
 
+### Named views (layer presets)
+
+The **Named views** panel in the Layers sidebar lets you save the current layer
+visibility under a name, so a shared drawing can flip between the layer sets
+different teams care about — e.g. a "Network" view and an "Electrical" view of
+the same diagram.
+
+- **Save view…** — captures a **per-page snapshot** of which layers are shown
+  and hidden right now, under a name you choose. Saving again with an existing
+  name overwrites it.
+- **Select a view** from the dropdown to apply it — every page's layers are set
+  to that view's recorded visibility. (Layers are matched by name, so a view
+  keeps working after layers are reordered.)
+- **Update** overwrites the selected view with the current visibility;
+  **Delete** removes it.
+
+Views are stored **inside the `.vsdx`** (in Visio's Solution XML store), so they
+travel with the file: anyone you share it with sees the same named views. Like
+every other edit, they're in memory until you **Save VSDX** (or **Export SVG**),
+which bakes them into the downloaded file. They also survive being opened and
+re-saved in the real Microsoft Visio desktop app — see
+[visio-roundtrip.md](visio-roundtrip.md).
+
 ## Inspecting shapes
 
 - **Shape Tree** sidebar: select a shape to see its parent group hierarchy and

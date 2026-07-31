@@ -1,4 +1,4 @@
-// Boot the REAL built app (dist/index.html + dist/main.js) in jsdom, load a
+// Boot the REAL built app (dist/app.html + dist/main.js) in jsdom, load a
 // .vsdx via the drop-zone handler, click "Export SVG", capture the downloaded
 // blob, verify it carries the embedded vsdx, then drop the exported .svg back
 // into the app and confirm it re-opens as the drawing. Run `npm run build`
@@ -10,7 +10,7 @@ if (!existsSync('dist/main.js')) {
   console.error('dist/main.js not found — run `npm run build` first');
   process.exit(1);
 }
-const html = readFileSync('dist/index.html', 'utf8');
+const html = readFileSync('dist/app.html', 'utf8');
 const bundle = readFileSync('dist/main.js', 'utf8');
 
 // Strip the <script src> (jsdom can't fetch it); the bundle is injected inline.

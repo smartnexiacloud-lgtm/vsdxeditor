@@ -1,0 +1,49 @@
+name: Release
+
+# Build the portable Windows/Linux offline packages and publish them to a
+# GitHub Release whenever a version tag (e.g. v0.0.3) is pushed.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write # needed to create the release and upload assets
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: latest
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build portable packages
+        run: npm run package:portable
+
+      - name: List artifacts
+        run: ls -l dist-portable/
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist-portable/*.zip
+          generate_release_notes: true
+          body: |
+            Portable, offline builds of VSDX Viewer — each zip contains a single
+            self-contained `vsdxeditor.html` plus a launcher.
+
+            - **Windows:** `vsdxeditor-portable-win-*.zip` → unzip, run `Open VSDX Editor.bat`
+            - **Linux:** `vsdxeditor-portable-linux-*.zip` → unzip, run `./open-vsdx-editor.sh`
+
+            See the [Changelog](https://smartnexiacloud-lgtm.github.io/vsdxeditor/changelog.html)
+            and the [live app](https://smartnexiacloud-lgtm.github.io/vsdxeditor/app.html).

@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-portable/
 
 # Local scratch / debug work (never committed)
 .tmp-*/

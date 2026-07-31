@@ -1322,7 +1322,122 @@ export async function parseVsdx(arrayBuffer) {
     });
   }
 
-  return { pages, masters, themeColors, colorPalette, styleSheets };
+  const viewTemplates = await readViewTemplatesFromZip(zip);
+
+  return { pages, masters, themeColors, colorPalette, styleSheets, viewTemplates };
+}
+
+// ── Named view templates ("layer presets") ────────────────────────────────
+// A view template is a per-page snapshot of layer visibility, saved under a
+// name so different teams can flip a collaborative drawing between the sets of
+// layers each cares about. They are stored in the drawing's Visio Solution XML
+// store — the one extensibility channel that survives a Microsoft Visio
+// open+save round-trip (see docs/visio-roundtrip.md) — so the presets travel
+// with the file and are shared by everyone who opens it.
+//
+// Shape:  { name, pages: [ { id, name, layers: [ { name, visible } ] } ] }
+const VIEWS_PART = 'visio/solutions/vsdxeditor-views.xml';
+const VIEWS_REL_TYPE = 'http://schemas.microsoft.com/visio/2010/relationships/solutionxml';
+const VIEWS_REL_ID = 'rIdVsdxViews';
+const VIEWS_NS = 'urn:vsdxeditor:views';
+const VIEWS_RELS_PATH = 'visio/_rels/document.xml.rels';
+const VIEWS_REL_TARGET = 'solutions/vsdxeditor-views.xml';
+
+function encodeUtf8Base64(str) {
+  if (typeof Buffer !== 'undefined') return Buffer.from(str, 'utf8').toString('base64');
+  return bytesToBase64(new TextEncoder().encode(str));
+}
+
+function decodeUtf8Base64(b64) {
+  const clean = String(b64).replace(/\s+/g, '');
+  if (typeof Buffer !== 'undefined') return Buffer.from(clean, 'base64').toString('utf8');
+  const bin = atob(clean);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
+function sanitizeViewTemplates(views) {
+  if (!Array.isArray(views)) return [];
+  return views
+    .filter(v => v && typeof v.name === 'string' && Array.isArray(v.pages))
+    .map(v => ({
+      name: v.name,
+      pages: v.pages
+        .filter(p => p && Array.isArray(p.layers))
+        .map(p => ({
+          id: String(p.id ?? ''),
+          name: String(p.name ?? ''),
+          layers: p.layers
+            .filter(l => l && typeof l.name === 'string')
+            .map(l => ({ name: l.name, visible: l.visible !== false })),
+        })),
+    }));
+}
+
+async function readViewTemplatesFromZip(zip) {
+  const file = zip.file(VIEWS_PART);
+  if (!file) return [];
+  try {
+    const doc = parseXml(await file.async('string'));
+    const el = byTag(doc, 'SolutionXML')[0] || doc.documentElement;
+    const payload = (el && el.textContent || '').trim();
+    if (!payload) return [];
+    const json = JSON.parse(decodeUtf8Base64(payload));
+    return sanitizeViewTemplates(json && json.views);
+  } catch {
+    return [];
+  }
+}
+
+export async function readVsdxViewTemplates(arrayBuffer) {
+  const zip = await JSZip.loadAsync(arrayBuffer);
+  return readViewTemplatesFromZip(zip);
+}
+
+async function ensureViewsRelationship(zip) {
+  const file = zip.file(VIEWS_RELS_PATH);
+  if (!file) return; // no document relationships part — nothing to hang it off
+  const doc = parseXml(await file.async('string'));
+  const relsEl = byTag(doc, 'Relationships')[0];
+  if (!relsEl) return;
+  const already = [...byTag(doc, 'Relationship')].some(r =>
+    r.getAttribute('Target') === VIEWS_REL_TARGET || r.getAttribute('Id') === VIEWS_REL_ID);
+  if (already) return;
+  const rel = doc.createElementNS(relsEl.namespaceURI, 'Relationship');
+  rel.setAttribute('Id', VIEWS_REL_ID);
+  rel.setAttribute('Type', VIEWS_REL_TYPE);
+  rel.setAttribute('Target', VIEWS_REL_TARGET);
+  relsEl.appendChild(rel);
+  zip.file(VIEWS_RELS_PATH, new XMLSerializer().serializeToString(doc));
+}
+
+async function removeViewsRelationship(zip) {
+  const file = zip.file(VIEWS_RELS_PATH);
+  if (!file) return;
+  const doc = parseXml(await file.async('string'));
+  let changed = false;
+  for (const r of [...byTag(doc, 'Relationship')]) {
+    if (r.getAttribute('Target') === VIEWS_REL_TARGET || r.getAttribute('Id') === VIEWS_REL_ID) {
+      r.parentNode.removeChild(r);
+      changed = true;
+    }
+  }
+  if (changed) zip.file(VIEWS_RELS_PATH, new XMLSerializer().serializeToString(doc));
+}
+
+async function writeViewTemplatesToZip(zip, viewTemplates) {
+  const views = sanitizeViewTemplates(viewTemplates);
+  if (views.length === 0) {
+    zip.remove(VIEWS_PART);
+    await removeViewsRelationship(zip);
+    return;
+  }
+  const payload = encodeUtf8Base64(JSON.stringify({ app: 'vsdxeditor', version: 1, views }));
+  const xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+    `<SolutionXML xmlns="${VIEWS_NS}" Name="vsdxeditor-views" encoding="base64">${payload}</SolutionXML>`;
+  zip.file(VIEWS_PART, xml);
+  await ensureViewsRelationship(zip);
 }
 
 function getOrCreateCell(doc, row, name) {
@@ -1558,10 +1673,13 @@ async function patchVsdxShapeAssignments(zip, pages) {
   }
 }
 
-export async function saveVsdxLayerPermissions(arrayBuffer, pages) {
+export async function saveVsdxLayerPermissions(arrayBuffer, pages, viewTemplates) {
   const zip = await JSZip.loadAsync(arrayBuffer);
   await patchVsdxLayerPermissions(zip, pages);
   await patchVsdxShapeAssignments(zip, pages);
+  // Only touch the view-template store when the caller passes the arg, so
+  // other save paths leave any existing presets untouched.
+  if (viewTemplates !== undefined) await writeViewTemplatesToZip(zip, viewTemplates);
   return zip.generateAsync({ type: 'arraybuffer' });
 }
 

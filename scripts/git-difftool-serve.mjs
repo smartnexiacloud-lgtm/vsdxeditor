@@ -28,7 +28,7 @@ if (!localPath || !remotePath) {
 const displayName = mergedName ? basename(mergedName) : basename(remotePath);
 
 // Ensure the app is built (dist/ is git-ignored and may be absent on a clone).
-if (!existsSync(join(root, 'dist', 'main.js')) || !existsSync(join(root, 'dist', 'index.html'))) {
+if (!existsSync(join(root, 'dist', 'main.js')) || !existsSync(join(root, 'dist', 'app.html'))) {
   console.error('vsdx difftool: building the app (dist/ missing)…');
   execFileSync('npm', ['run', 'build'], { cwd: root, stdio: 'inherit' });
   execFileSync('npm', ['run', 'postbuild'], { cwd: root, stdio: 'inherit' });
@@ -42,17 +42,19 @@ const MIME = {
 };
 
 // Explicit route table — no path traversal, only these paths are reachable.
+// The difftool serves the app itself at `/` (the app now lives at app.html;
+// index.html is the landing page and is not needed here).
 const routes = {
   '/_base.vsdx': localPath,
   '/_head.vsdx': remotePath,
-  '/index.html': join(root, 'dist', 'index.html'),
+  '/app.html': join(root, 'dist', 'app.html'),
   '/main.js': join(root, 'dist', 'main.js'),
   '/usage.html': join(root, 'dist', 'usage.html'),
 };
 
 const server = createServer(async (req, res) => {
   let path = req.url.split('?')[0];
-  if (path === '/') path = '/index.html';
+  if (path === '/') path = '/app.html';
   const file = routes[path];
   if (!file) {
     res.writeHead(404).end('Not found');

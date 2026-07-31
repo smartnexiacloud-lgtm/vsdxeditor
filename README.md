@@ -6,7 +6,14 @@ toolchain** that makes `.vsdx` files behave like text in version control.
 
 Everything runs client-side: files never leave your machine.
 
-**▶ Live app: <https://smartnexiacloud-lgtm.github.io/vsdxeditor/>**
+**🌐 Website & docs: <https://smartnexiacloud-lgtm.github.io/vsdxeditor/>**
+**▶ Open the app: <https://smartnexiacloud-lgtm.github.io/vsdxeditor/app.html>**
+**⬇ Offline downloads (Windows / Linux): [Releases](https://github.com/smartnexiacloud-lgtm/vsdxeditor/releases/latest)**
+
+The site has a [How-to guide](https://smartnexiacloud-lgtm.github.io/vsdxeditor/usage.html),
+a [Changelog](https://smartnexiacloud-lgtm.github.io/vsdxeditor/changelog.html), and a
+[Download page](https://smartnexiacloud-lgtm.github.io/vsdxeditor/download.html) for the
+portable offline builds.
 
 ---
 
@@ -18,6 +25,11 @@ Everything runs client-side: files never leave your machine.
 - **Layers** — toggle layer visibility from a sidebar, or open the full
   **Layer Visibility Matrix** to bulk-edit which layers each page shows,
   search/filter layers, and rename layers with *Replace all*.
+- **Named views** — save the current layer visibility as a named preset (a
+  per-page snapshot) so a collaborative drawing can flip between the layer sets
+  different teams care about. Views are embedded in the `.vsdx` itself — they
+  travel with the file and survive a Microsoft Visio round-trip
+  (see [docs/visio-roundtrip.md](docs/visio-roundtrip.md)).
 - **Shape Tree** — inspect a shape's group hierarchy and inherited style.
 - **Per-shape XML editing** — right-click a shape to *Edit XML*, or send a
   shape to a different layer.
@@ -34,7 +46,7 @@ Everything runs client-side: files never leave your machine.
 
 ## Quick start (using the app)
 
-1. Open <https://smartnexiacloud-lgtm.github.io/vsdxeditor/> (or run it locally, below).
+1. Open <https://smartnexiacloud-lgtm.github.io/vsdxeditor/app.html> (or run it locally, below).
 2. Click **Open** — or drag a `.vsd`/`.vsdx` file onto the drop zone.
 3. Use the page tabs, zoom, and **Layers** controls to explore the drawing.
 4. Right-click a shape to edit its XML or move it between layers.
@@ -42,6 +54,13 @@ Everything runs client-side: files never leave your machine.
 6. **Export SVG** or **Save VSDX** to download your result.
 
 A step-by-step tour of every panel is in **[docs/usage.md](docs/usage.md)**.
+
+> **Note on Visio round-tripping:** exported SVGs re-open in *this* app because
+> they carry the source drawing as embedded metadata. Getting custom data to
+> survive a detour through the real Microsoft Visio app is a different problem —
+> see **[docs/visio-roundtrip.md](docs/visio-roundtrip.md)** for what Visio
+> preserves (Shape Data, document properties, its Solution XML store) versus
+> silently drops (custom XML parts, unreferenced parts, comments).
 
 ---
 
@@ -52,10 +71,37 @@ Requires Node.js (18+ recommended).
 ```bash
 npm install
 npm run dev     # esbuild dev server on http://localhost:8080
-npm run build   # bundle the app into dist/ (index.html + main.js)
+npm run build   # bundle the app into dist/main.js
+npm run postbuild   # copy the app to dist/app.html + render the site (landing, docs, changelog)
 ```
 
-`npm run build` produces a fully static `dist/` you can host anywhere.
+`npm run build && npm run postbuild` produces a fully static `dist/` you can
+host anywhere: `index.html` (landing page), `app.html` (the app), and the
+rendered `usage.html` / `changelog.html` / `download.html` pages. This is what
+the GitHub Pages workflow deploys.
+
+---
+
+## Offline desktop downloads
+
+Prefer to work without a browser tab open to the internet? Grab a **portable
+build** from the [Releases page](https://github.com/smartnexiacloud-lgtm/vsdxeditor/releases/latest):
+a single self-contained `vsdxeditor.html` (the whole app in one file), zipped
+per platform with a launcher.
+
+| Platform | File | Run it |
+| --- | --- | --- |
+| Windows | `vsdxeditor-portable-win-<version>.zip` | double-click `Open VSDX Editor.bat` |
+| Linux | `vsdxeditor-portable-linux-<version>.zip` | run `./open-vsdx-editor.sh` |
+
+Build them yourself with:
+
+```bash
+npm run package:portable   # writes the zips to dist-portable/
+```
+
+Pushing a `v*` tag (e.g. `v0.0.3`) triggers the release workflow, which builds
+these zips and publishes them to a GitHub Release automatically.
 
 ---
 
@@ -115,7 +161,8 @@ npm run test:diff-view    # side-by-side diff rendering
 | `scripts/vsdx-serialize.mjs` | Canonical serialize / pack / textconv / merge driver |
 | `scripts/git-difftool-serve.mjs` | `git difftool` server that opens the browser visual diff |
 | `scripts/install-git-integration.mjs` | Registers the git diff/merge/difftool config |
-| `scripts/build-docs.mjs` | Renders `docs/usage.md` → `dist/usage.html` |
+| `scripts/build-docs.mjs` | Renders the GitHub Pages site: landing `index.html` + `docs/*.md` and `CHANGELOG.md` → styled `dist/*.html` |
+| `scripts/build-portable.mjs` | Inlines the app into one offline HTML and zips the Windows/Linux portable builds |
 
 ---
 

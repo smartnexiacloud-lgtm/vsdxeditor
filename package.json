@@ -5,9 +5,10 @@
   "main": "index.js",
   "scripts": {
     "build": "esbuild src/main.js --bundle --outfile=dist/main.js --format=iife --minify",
-    "postbuild": "cp src/index.html dist/index.html && node scripts/build-docs.mjs",
+    "postbuild": "cp src/index.html dist/app.html && node scripts/build-docs.mjs",
+    "package:portable": "npm run build && npm run postbuild && node scripts/build-portable.mjs",
     "dev": "esbuild src/main.js --bundle --outfile=dist/main.js --format=iife --servedir=dist --serve=8080",
-    "test": "npm run test:vsdx-diff && npm run test:diff-view && npm run test:svg-roundtrip && npm run test:app-svg-roundtrip",
+    "test": "npm run test:vsdx-diff && npm run test:diff-view && npm run test:svg-roundtrip && npm run test:app-svg-roundtrip && npm run test:view-templates && npm run test:view-templates-app",
     "vsdx:unpack": "node scripts/vsdx-serialize.mjs unpack",
     "vsdx:pack": "node scripts/vsdx-serialize.mjs pack",
     "vsdx:verify": "node scripts/vsdx-serialize.mjs verify",
@@ -15,6 +16,8 @@
     "test:diff-view": "node scripts/test-diff-view.mjs",
     "test:svg-roundtrip": "node scripts/test-svg-roundtrip.mjs",
     "test:app-svg-roundtrip": "node scripts/test-app-svg-roundtrip.mjs",
+    "test:view-templates": "node scripts/test-view-templates.mjs",
+    "test:view-templates-app": "node scripts/test-view-templates-app.mjs",
     "vsdx:install-difftool": "node scripts/install-git-integration.mjs"
   },
   "keywords": [

@@ -219,6 +219,52 @@
       font-size: 11px;
       line-height: 1.2;
     }
+    #layers-views {
+      padding: 8px 10px;
+      border-bottom: 1px solid #0f3460;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    #layers-views .views-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #8888aa;
+    }
+    #layers-views select {
+      width: 100%;
+      background: #0f1730;
+      color: #f0f0f5;
+      border: 1px solid #0f3460;
+      border-radius: 4px;
+      font: inherit;
+      height: 26px;
+      padding: 0 6px;
+    }
+    .views-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 6px;
+    }
+    .views-actions button {
+      background: #24345f;
+      color: #f0f0f5;
+      border: 1px solid #35518c;
+      border-radius: 4px;
+      height: 26px;
+      cursor: pointer;
+      font-size: 11px;
+    }
+    .views-actions button:hover {
+      background: #304579;
+    }
+    .views-actions button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
     #layers-list {
       flex: 1;
       overflow-y: auto;
@@ -842,6 +888,17 @@
             <button id="layers-deselect-filtered" type="button">Deselect filter</button>
           </div>
           <div id="layers-count" class="layers-count"></div>
+        </div>
+        <div id="layers-views">
+          <div class="views-label">Named views</div>
+          <select id="view-select" aria-label="Named views">
+            <option value="">— Select a view —</option>
+          </select>
+          <div class="views-actions">
+            <button id="btn-view-save" type="button" title="Save the current layer visibility as a named view">Save view…</button>
+            <button id="btn-view-update" type="button" title="Overwrite the selected view with the current layer visibility" disabled>Update</button>
+            <button id="btn-view-delete" type="button" title="Delete the selected view" disabled>Delete</button>
+          </div>
         </div>
         <div id="layers-list" tabindex="0" role="listbox" aria-label="Layers"></div>
       </div>
