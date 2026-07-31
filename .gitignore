@@ -4,6 +4,7 @@ dist-portable/
 
 # Local scratch / debug work (never committed)
 .tmp-*/
+.scratch/
 *.log
 
 # Ad-hoc sample & dump files kept out of the repo

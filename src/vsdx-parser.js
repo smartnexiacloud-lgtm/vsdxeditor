@@ -237,6 +237,36 @@ function styleCellFloat(styles, styleId, cellName, styleKind) {
   return Number.isNaN(n) ? null : n;
 }
 
+// Character/Paragraph defaults live in a stylesheet's Section rather than in a
+// plain Cell, so resolveStyleCellData can't see them. Walk the TextStyle chain
+// looking at row IX=0 of the named section. This is where Visio keeps the
+// document-wide defaults (e.g. "No Style" carries Size=12pt, HorzAlign=1).
+function resolveStyleSectionCell(styles, styleId, sectionName, cellName, seen = new Set()) {
+  if (!styles || !styleId || seen.has(String(styleId))) return null;
+  seen.add(String(styleId));
+
+  const style = styles.get(String(styleId));
+  if (!style) return null;
+
+  const section = getDirectChildren(style.el, 'Section')
+    .find(s => s.getAttribute('N') === sectionName);
+  if (section) {
+    const row = getDirectChildren(section, 'Row')[0];
+    if (row) {
+      const value = getCellValue(row, cellName);
+      if (value !== null) return value;
+    }
+  }
+  return resolveStyleSectionCell(styles, style.textStyle, sectionName, cellName, seen);
+}
+
+function styleSectionFloat(styles, styleId, sectionName, cellName) {
+  const value = resolveStyleSectionCell(styles, styleId, sectionName, cellName);
+  if (value === null) return null;
+  const n = parseFloat(value);
+  return Number.isNaN(n) ? null : n;
+}
+
 function parseXml(text) {
   const parser = new DOMParser();
   return parser.parseFromString(text, 'application/xml');
@@ -679,12 +709,27 @@ function mergeGeometry(masterEl, shapeEl, is1D) {
     }));
   }
   if (is1D) {
-    return shapeGeo.map(sec => ({
-      rows: [...sec.rowMap.values()].filter(r => !r.del).sort((a, b) => parseInt(a.ix) - parseInt(b.ix)),
-      noFill: sec.noFill ?? false,
-      noLine: sec.noLine ?? false,
-      noShow: sec.noShow ?? false
-    }));
+    // Shape rows win, but they only carry the cells that differ from the
+    // master - an inherited coordinate is simply absent. Merging per cell (and
+    // inheriting the section flags, which usually exist only on the master)
+    // keeps such rows from collapsing to zero-length segments.
+    const masterByIx = new Map(masterGeo.map(sec => [sec.ix, sec]));
+    return shapeGeo.map(sec => {
+      const masterSec = masterByIx.get(sec.ix);
+      const rowMap = new Map();
+      if (masterSec) {
+        for (const [ix, row] of masterSec.rowMap) rowMap.set(ix, row);
+      }
+      for (const [ix, row] of sec.rowMap) {
+        rowMap.set(ix, mergeRowData(rowMap.get(ix), row));
+      }
+      return {
+        rows: [...rowMap.values()].filter(r => !r.del).sort((a, b) => parseInt(a.ix) - parseInt(b.ix)),
+        noFill: sec.noFill ?? masterSec?.noFill ?? false,
+        noLine: sec.noLine ?? masterSec?.noLine ?? false,
+        noShow: sec.noShow ?? masterSec?.noShow ?? false
+      };
+    });
   }
   if (masterGeo.length === 0) {
     return shapeGeo.map(sec => ({
@@ -784,6 +829,11 @@ function parseShape(shapeEl, masters, parentMaster, themeColors, context = {}) {
   const txtPinY = getCellFloat(shapeEl, 'TxtPinY') ?? (masterShape ? getCellFloat(masterShape.el, 'TxtPinY') : null) ?? height / 2;
   const txtWidth = getCellFloat(shapeEl, 'TxtWidth') ?? (masterShape ? getCellFloat(masterShape.el, 'TxtWidth') : null) ?? width;
   const txtHeight = getCellFloat(shapeEl, 'TxtHeight') ?? (masterShape ? getCellFloat(masterShape.el, 'TxtHeight') : null) ?? height;
+  // Where TxtPin sits *inside* the text block. Usually the block's centre, but
+  // shapes such as dimension lines offset it so the label floats above the
+  // line; defaulting to the centre keeps the common case unchanged.
+  const txtLocPinX = getCellFloat(shapeEl, 'TxtLocPinX') ?? (masterShape ? getCellFloat(masterShape.el, 'TxtLocPinX') : null) ?? txtWidth / 2;
+  const txtLocPinY = getCellFloat(shapeEl, 'TxtLocPinY') ?? (masterShape ? getCellFloat(masterShape.el, 'TxtLocPinY') : null) ?? txtHeight / 2;
   const angle = getCellFloat(shapeEl, 'Angle') ?? (masterShape ? getCellFloat(masterShape.el, 'Angle') : null) ?? 0;
   const flipX = getCellValue(shapeEl, 'FlipX') ?? (masterShape ? getCellValue(masterShape.el, 'FlipX') : null);
   const flipY = getCellValue(shapeEl, 'FlipY') ?? (masterShape ? getCellValue(masterShape.el, 'FlipY') : null);
@@ -840,8 +890,17 @@ function parseShape(shapeEl, masters, parentMaster, themeColors, context = {}) {
   const masterGradientStops = masterShape ? parseFillGradientStops(masterShape.el, themeColors, colorPalette) : [];
   const fillGradientStops = shapeGradientStops.length > 0 ? shapeGradientStops : masterGradientStops;
   const rounding = getCellFloat(shapeEl, 'Rounding') ?? (masterShape ? getCellFloat(masterShape.el, 'Rounding') : null) ?? 0;
-  const beginArrow = getCellFloat(shapeEl, 'BeginArrow') ?? (masterShape ? getCellFloat(masterShape.el, 'BeginArrow') : null) ?? 0;
-  const endArrow = getCellFloat(shapeEl, 'EndArrow') ?? (masterShape ? getCellFloat(masterShape.el, 'EndArrow') : null) ?? 0;
+  // Arrowheads frequently live only in the LineStyle stylesheet (Visio's
+  // built-in "Dimension" style carries EndArrow=13), so the style chain has to
+  // be consulted as well or dimension lines come out with no arrowheads.
+  const beginArrow = getCellFloat(shapeEl, 'BeginArrow')
+    ?? (masterShape ? getCellFloat(masterShape.el, 'BeginArrow') : null)
+    ?? styleCellFloat(styleSheets, lineStyleId, 'BeginArrow', 'line')
+    ?? 0;
+  const endArrow = getCellFloat(shapeEl, 'EndArrow')
+    ?? (masterShape ? getCellFloat(masterShape.el, 'EndArrow') : null)
+    ?? styleCellFloat(styleSheets, lineStyleId, 'EndArrow', 'line')
+    ?? 0;
   const imgOffsetX = getCellFloat(shapeEl, 'ImgOffsetX') ?? (masterShape ? getCellFloat(masterShape.el, 'ImgOffsetX') : null) ?? 0;
   const imgOffsetY = getCellFloat(shapeEl, 'ImgOffsetY') ?? (masterShape ? getCellFloat(masterShape.el, 'ImgOffsetY') : null) ?? 0;
   const imgWidth = getCellFloat(shapeEl, 'ImgWidth') ?? (masterShape ? getCellFloat(masterShape.el, 'ImgWidth') : null) ?? width;
@@ -889,6 +948,44 @@ function parseShape(shapeEl, masters, parentMaster, themeColors, context = {}) {
       }
     }
   }
+
+  // Last resort for character formatting: the TextStyle stylesheet chain. A
+  // shape that never overrides its font (no Character section on shape or
+  // master) still has a real size - it just lives in the stylesheet. Without
+  // this the renderer had to guess, and guessed a page-unit constant that is
+  // invisible in scaled drawings.
+  const textStyleId = shapeEl.getAttribute('TextStyle')
+    ?? (masterShape ? masterShape.el.getAttribute('TextStyle') : null);
+  if (fontSize === null) {
+    fontSize = styleSectionFloat(styleSheets, textStyleId, 'Character', 'Size');
+  }
+  if (!fontFamily) {
+    fontFamily = resolveStyleSectionCell(styleSheets, textStyleId, 'Character', 'Font');
+  }
+
+  // Paragraph horizontal alignment: shape section -> master section -> style
+  // chain. Visio's built-in default is 1 (centred) and comes from "No Style".
+  const paragraphAlign = (el) => {
+    const sections = getDirectChildren(el, 'Section').filter(s => s.getAttribute('N') === 'Paragraph');
+    if (sections.length === 0) return null;
+    const rows = getDirectChildren(sections[0], 'Row');
+    return rows.length > 0 ? getCellFloat(rows[0], 'HorzAlign') : null;
+  };
+  const horzAlign = paragraphAlign(shapeEl)
+    ?? (masterShape ? paragraphAlign(masterShape.el) : null)
+    ?? styleSectionFloat(styleSheets, textStyleId, 'Paragraph', 'HorzAlign');
+
+  // HideText suppresses a shape's text without removing it. Stencils use it for
+  // optional labels (e.g. a window's width caption), so ignoring it made text
+  // appear that Visio never draws.
+  const hideText = (getCellFloat(shapeEl, 'HideText')
+    ?? (masterShape ? getCellFloat(masterShape.el, 'HideText') : null)
+    ?? 0) === 1;
+
+  // VerticalAlign is a plain cell on the shape, not a section row.
+  const vertAlign = getCellFloat(shapeEl, 'VerticalAlign')
+    ?? (masterShape ? getCellFloat(masterShape.el, 'VerticalAlign') : null)
+    ?? styleCellFloat(styleSheets, textStyleId, 'VerticalAlign', 'text');
 
   if (!fillForeground && fillPattern !== 0) {
     if (fillBackground && fontColor && isLightColor(fontColor)) {
@@ -964,6 +1061,7 @@ function parseShape(shapeEl, masters, parentMaster, themeColors, context = {}) {
     locPinX, locPinY,
     txtPinX, txtPinY,
     txtWidth, txtHeight,
+    txtLocPinX, txtLocPinY,
     angle,
     flipX: flipX === '1',
     flipY: flipY === '1',
@@ -992,6 +1090,9 @@ function parseShape(shapeEl, masters, parentMaster, themeColors, context = {}) {
     fontColor,
     bold,
     italic,
+    horzAlign,
+    vertAlign,
+    hideText,
     charFormats,
     textRuns: rawTextRuns.map(run => ({
       ...run,
@@ -1025,7 +1126,11 @@ function parseShape(shapeEl, masters, parentMaster, themeColors, context = {}) {
     const masterInherit = {
       text: masterText.text.replace(/\n$/, ''),
       fontSize: null, fontFamily: null, fontColor: null, bold: null, italic: null,
-      _fields: masterText.fields.map(f => f.ix != null && masterFields[f.ix] ? masterFields[f.ix] : f),
+      // Resolve the master's <fld> placeholders against the *shape's* field
+      // table first. A dimension line inherits its text layout from the master
+      // but the measured value lives in the instance's Field section, so using
+      // the master's table would show the stencil's placeholder measurement.
+      _fields: masterText.fields.map(f => (f.ix != null && fieldTable[f.ix]) || (f.ix != null && masterFields[f.ix]) || f),
       propMap: {}, userMap: {}
     };
     // Master character row 0
@@ -1218,7 +1323,12 @@ export async function parseVsdx(arrayBuffer) {
         const layerRows = getDirectChildren(layerSections[0], 'Row');
         for (const row of layerRows) {
           const ix = row.getAttribute('IX');
-          const name = getCellValue(row, 'Name') || getCellValue(row, 'NameUniv') || `Layer ${ix}`;
+          // Visio keeps an unnamed placeholder row for every layer that was
+          // ever deleted, so indexes stay stable. Those rows are not layers -
+          // Visio's own UI and SVG export both omit their names. Inventing a
+          // "Layer <n>" name for them conjured dozens of phantom layers.
+          const realName = getCellValue(row, 'Name') || getCellValue(row, 'NameUniv');
+          const name = realName || '';
           const visible = getCellValue(row, 'Visible');
           const print = getCellValue(row, 'Print');
           const active = getCellValue(row, 'Active');
@@ -1228,6 +1338,9 @@ export async function parseVsdx(arrayBuffer) {
           layers.push({
             index: ix,
             name,
+            // Kept in the list so layer indexes stay stable for save/prune,
+            // but flagged so the UI can leave them out.
+            placeholder: !realName,
             nameUniv: getCellValue(row, 'NameUniv') || null,
             visible: visible !== '0',
             print: print !== '0',

@@ -34,7 +34,10 @@ export function inheritFromMaster(shape, masterShape) {
     // drive resolution, because the U+FFFC placeholders refer to the master's
     // FIELD_LIST in the .vsd format, or to <fld IX=...> indices that are
     // defined on the master in .vsdx.
-    if (masterShape._fields && !shape._fields) {
+    // A shape with no <Text> of its own still has an (empty) field list, so
+    // test for emptiness rather than absence - otherwise the inherited text
+    // keeps its unresolved placeholders and renders blank.
+    if (masterShape._fields?.length && !shape._fields?.length) {
       shape._fields = masterShape._fields;
     }
   }

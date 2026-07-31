@@ -2,6 +2,27 @@ const DPI = 96; // Visio inches to pixels
 const VISIO_NS = 'http://schemas.microsoft.com/visio/2003/SVGExtensions/';
 const XMLNS_NS = 'http://www.w3.org/2000/xmlns/';
 
+// Visio's built-in text defaults, in *paper* inches. Both are multiplied by the
+// drawing scale so they end up the same size relative to the page as the
+// explicit Char.Size values Visio stores - matching Visio's own SVG export,
+// which emits 12pt text as 12 units in a 72-units-per-paper-inch viewBox.
+const DEFAULT_FONT_SIZE_IN = 12 / 72; // 12pt
+const DEFAULT_TEXT_MARGIN_IN = 4 / 72; // textBlock margins rect(4,4,4,4)
+
+// Visio HorzAlign: 0=left 1=centre 2=right 3=justify. Default is 1.
+function textAnchorFor(horzAlign) {
+  if (horzAlign === 0) return 'start';
+  if (horzAlign === 2) return 'end';
+  return 'middle';
+}
+
+// Visio VerticalAlign: 0=top 1=middle 2=bottom. Default is 1.
+function baselineFor(vertAlign) {
+  if (vertAlign === 0) return 'text-before-edge';
+  if (vertAlign === 2) return 'text-after-edge';
+  return 'central';
+}
+
 function inToPx(inches) {
   return inches * DPI;
 }
@@ -495,6 +516,24 @@ function toConnectorPoint(shape, pageHeight, x, y) {
   };
 }
 
+// True when a path's last point differs from its first, i.e. it is a stroke
+// with two distinct free ends rather than a closed outline. Only such paths
+// take arrowheads.
+function isOpenSubpath(pathData) {
+  if (!pathData || /[Zz]\s*$/.test(pathData.trim())) return false;
+  const nums = pathData.match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi);
+  if (!nums || nums.length < 4) return false;
+  const first = [parseFloat(nums[0]), parseFloat(nums[1])];
+  const last = [parseFloat(nums[nums.length - 2]), parseFloat(nums[nums.length - 1])];
+  const eps = 1e-6;
+  return Math.abs(first[0] - last[0]) > eps || Math.abs(first[1] - last[1]) > eps;
+}
+
+// A geometry section only counts if it actually contributes drawn points.
+function countVisibleGeometrySections(shape) {
+  return (shape.geometry || []).filter(geo => !geo.noShow && (geo.rows || []).length > 0).length;
+}
+
 function buildConnectorPath(shape, pageHeight) {
   const points = [];
   let hasMoveTo = false;
@@ -602,16 +641,20 @@ function formatFontFamily(fontFamily) {
   if (!fontFamily || fontFamily === 'Themed') return 'Calibri, Arial, sans-serif';
   const clean = xmlSafe(fontFamily);
   if (/,/.test(clean)) return clean;
+  if (clean === 'Calibri') return 'Calibri, Arial, sans-serif';
   return `${clean}, Calibri, Arial, sans-serif`;
 }
 
 function appendTextNode(target, shape, svgNS, pageHeight, fontScale, isConnector = false) {
-  if (!shape.text) return;
+  if (!shape.text || shape.hideText) return;
   const text = document.createElementNS(svgNS, 'text');
-  const fontSize = shape.fontSize ? inToPx(shape.fontSize) * fontScale : 12;
+  const fontSize = inToPx(shape.fontSize || DEFAULT_FONT_SIZE_IN) * fontScale;
+  const margin = inToPx(DEFAULT_TEXT_MARGIN_IN) * fontScale;
+  const horzAlign = shape.horzAlign ?? 1;
+  const vertAlign = shape.vertAlign ?? 1;
   const fill = shape.fontColor || '#000000';
-  text.setAttribute('text-anchor', 'middle');
-  text.setAttribute('dominant-baseline', 'central');
+  text.setAttribute('text-anchor', textAnchorFor(horzAlign));
+  text.setAttribute('dominant-baseline', baselineFor(vertAlign));
   text.setAttribute('font-size', String(fontSize));
   text.setAttribute('fill', fill);
   text.setAttribute('font-family', formatFontFamily(shape.fontFamily));
@@ -621,13 +664,38 @@ function appendTextNode(target, shape, svgNS, pageHeight, fontScale, isConnector
   const maxWidthPx = inToPx(Math.abs(shape.txtWidth || shape.width || 0));
   const lines = wrapTextLines(xmlSafe(shape.text), maxWidthPx, fontSize);
 
+  // Anchor point of the text block. Visio centres the block on TxtPin with size
+  // TxtWidth/TxtHeight; left/right and top/bottom alignment move the anchor to
+  // the corresponding edge, inset by the text-block margin.
+  const blockW = Math.abs(shape.txtWidth ?? shape.width ?? 0);
+  const blockH = Math.abs(shape.txtHeight ?? shape.height ?? 0);
+  // TxtPin is a point inside the block located by TxtLocPin, so the block's
+  // centre is TxtPin - TxtLocPin + half the block. When TxtLocPin is the
+  // block's centre (the usual case) this reduces to TxtPin.
+  const blockCx = (shape.txtPinX ?? ((shape.width || 0) / 2))
+    - (shape.txtLocPinX ?? (blockW / 2)) + blockW / 2;
+  const blockCy = (shape.txtPinY ?? ((shape.height || 0) / 2))
+    - (shape.txtLocPinY ?? (blockH / 2)) + blockH / 2;
+  const shapeH = shape.height || 0;
+  const anchorX = inToPx(
+    horzAlign === 0 ? blockCx - blockW / 2
+      : horzAlign === 2 ? blockCx + blockW / 2
+        : blockCx
+  ) + (horzAlign === 0 ? margin : horzAlign === 2 ? -margin : 0);
+  // SVG y grows downward, Visio y grows upward from the shape's bottom edge.
+  const anchorY = inToPx(
+    vertAlign === 0 ? shapeH - (blockCy + blockH / 2)
+      : vertAlign === 2 ? shapeH - (blockCy - blockH / 2)
+        : shapeH - blockCy
+  ) + (vertAlign === 0 ? margin : vertAlign === 2 ? -margin : 0);
+
   if (isConnector) {
     const pt = toConnectorPoint(shape, pageHeight, shape.txtPinX ?? shape.locPinX ?? 0, shape.txtPinY ?? shape.locPinY ?? 0);
     text.setAttribute('x', String(pt.x));
     text.setAttribute('y', String(pt.y));
   } else {
-    text.setAttribute('x', String(inToPx(shape.txtPinX ?? (shape.width / 2))));
-    text.setAttribute('y', String(inToPx((shape.height || 0) - (shape.txtPinY ?? (shape.height / 2)))));
+    text.setAttribute('x', String(anchorX));
+    text.setAttribute('y', String(anchorY));
   }
 
   const richRuns = (shape.textRuns || []).filter(run => run.text);
@@ -651,11 +719,15 @@ function appendTextNode(target, shape, svgNS, pageHeight, fontScale, isConnector
     const lineHeight = fontSize * 1.2;
     const centerY = isConnector
       ? (toConnectorPoint(shape, pageHeight, shape.txtPinX ?? shape.locPinX ?? 0, shape.txtPinY ?? shape.locPinY ?? 0).y)
-      : inToPx((shape.height || 0) - (shape.txtPinY ?? (shape.height / 2)));
-    const startY = centerY - ((lines.length - 1) * lineHeight / 2);
+      : anchorY;
+    // Only a middle-aligned block grows in both directions; top/bottom keep
+    // their anchored edge fixed and stack away from it.
+    const startY = vertAlign === 0 ? centerY
+      : vertAlign === 2 ? centerY - ((lines.length - 1) * lineHeight)
+        : centerY - ((lines.length - 1) * lineHeight / 2);
     const x = isConnector
       ? toConnectorPoint(shape, pageHeight, shape.txtPinX ?? shape.locPinX ?? 0, shape.txtPinY ?? shape.locPinY ?? 0).x
-      : inToPx(shape.txtPinX ?? (shape.width / 2));
+      : anchorX;
     text.textContent = '';
     for (let i = 0; i < lines.length; i++) {
       const tspan = document.createElementNS(svgNS, 'tspan');
@@ -743,7 +815,14 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
   // Dedicated 1D connector rendering uses page-coordinate geometry instead of
   // shape-local transforms. This avoids collapsing routed connectors and keeps
   // BeginX/EndX fallbacks consistent with Visio.
-  if (shape.is1D && shape.subShapes.length === 0) {
+  //
+  // It flattens every geometry section into one polyline, so it only suits
+  // shapes that really are a single stroke. Plenty of 1D shapes are not:
+  // a dimension line carries Begin/End *and* several independent geometry
+  // sections (extension lines, arrow legs, hidden construction geometry).
+  // Flattening those drew phantom lines between the sections and lost both the
+  // per-section flags and the arrowheads, so they take the normal path below.
+  if (shape.is1D && shape.subShapes.length === 0 && countVisibleGeometrySections(shape) <= 1) {
     const pathData = buildConnectorPath(shape, pageHeight);
     if (pathData) {
       const path = document.createElementNS(svgNS, 'path');
@@ -833,14 +912,17 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
       path.setAttribute('stroke-linejoin', 'round');
       if (geo.noShow) addClass(path, 'vsdx-hidden');
 
-      // Arrow markers
-      if (paintStroke && shape.beginArrow && shape.beginArrow > 0) {
+      // Arrow markers. Visio only puts them on an open subpath - a section that
+      // returns to its starting point (a dimension line's extension "bracket")
+      // gets none, which is what its own SVG export does too.
+      const openPath = isOpenSubpath(pathData);
+      if (paintStroke && openPath && shape.beginArrow && shape.beginArrow > 0) {
         const markerId = `arrow-begin-${arrowCounter.value++}`;
         const marker = createArrowMarker(svgNS, markerId, getShapeStrokeColor(shape, themeColors, pageContext), true);
         defs.appendChild(marker);
         path.setAttribute('marker-start', `url(#${markerId})`);
       }
-      if (paintStroke && shape.endArrow && shape.endArrow > 0) {
+      if (paintStroke && openPath && shape.endArrow && shape.endArrow > 0) {
         const markerId = `arrow-end-${arrowCounter.value++}`;
         const marker = createArrowMarker(svgNS, markerId, getShapeStrokeColor(shape, themeColors, pageContext), false);
         defs.appendChild(marker);

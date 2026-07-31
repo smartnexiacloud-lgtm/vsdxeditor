@@ -228,12 +228,21 @@ function normalizeLayerText(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+// Visio keeps an unnamed placeholder row for every deleted layer so that layer
+// indexes stay stable. They are bookkeeping, not user-facing layers, so they
+// stay in page.layers (save/prune needs the indexes) but never reach the UI.
+function isRealLayer(layer) {
+  return !layer.placeholder;
+}
+
 function getCurrentLayers() {
-  return currentPages[currentPageIndex]?.layers || [];
+  return (currentPages[currentPageIndex]?.layers || []).filter(isRealLayer);
 }
 
 function getCurrentLayer(layerIndex) {
-  return getCurrentLayers().find(layer => String(layer.index) === String(layerIndex));
+  // Unfiltered on purpose: a shape may still reference a placeholder index.
+  return (currentPages[currentPageIndex]?.layers || [])
+    .find(layer => String(layer.index) === String(layerIndex));
 }
 
 function layerMatchesFilter(layer) {
@@ -738,7 +747,7 @@ function renderShapeContextMenu() {
   }
 
   const currentLayer = String(shape.layerMembers?.[0] || '');
-  const layers = (page.layers || []).filter(layerMatchesContextFilter);
+  const layers = (page.layers || []).filter(isRealLayer).filter(layerMatchesContextFilter);
   shapeContextSubtitle.textContent = `${shape.title || shape.name || `Shape ${shape.id}`} · current layer ${currentLayer || 'none'}`;
   shapeContextList.innerHTML = '';
 
@@ -1021,7 +1030,7 @@ function buildLayerMatrix() {
   let editableRowCount = 0;
 
   for (const page of pages) {
-    const layers = (page.layers || []).filter(layer => layerMatchesMatrixFilter(page, layer));
+    const layers = (page.layers || []).filter(isRealLayer).filter(layer => layerMatchesMatrixFilter(page, layer));
     if (!layers.length) {
       const row = document.createElement('tr');
       row.appendChild(createTextCell(page.name || 'Page'));
