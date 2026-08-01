@@ -6,13 +6,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.3] — 2026-08-01
+
 ### Added
+- **Additional Visio formats** — open drawings (`.vsdx`, `.vsdm`, `.vsd`),
+  templates (`.vstx`, `.vstm`, `.vst`), and stencils (`.vssx`, `.vssm`,
+  `.vss`). XML stencil masters and binary stencil masters where available are
+  exposed as read-only sheets. XML drawings and templates remain editable,
+  retain macro/package contents, and keep their original extension when saved
+  or embedded in an SVG export.
 - **Layer Matrix page filter** — the matrix can now be narrowed to a single
   page (or shown across all pages); *Replace all* respects the filter.
 - The **Named views** section of the layers sidebar now explains where views
   are stored (inside the .vsdx on **Save VSDX**).
+- **Named views in the Layer Matrix** — create, apply, update, and delete view
+  presets without returning to the Layers sidebar.
+- **Sheet tab controls** — delete sheets with the tab's **×**, drag tabs to
+  reorder sheets, and right-click for rename, close-left, close-right,
+  close-others, and close-this actions.
 
 ### Changed
+- **Search discovery metadata** — the GitHub Pages site now publishes canonical
+  URLs, page-specific descriptions, social metadata, SoftwareApplication
+  structured data, and an XML sitemap.
+- **Named views now preserve complete layer state**, including visibility,
+  print, active, lock, snap, and glue settings. Existing visibility-only views
+  remain compatible.
+- Sheet renames, ordering, and deletions are persisted into saved/exported
+  VSDX documents, including relationship and named-view cleanup.
 - **Website / front page** on GitHub Pages: a landing page (`index.html`) with a
   features overview and links, plus rendered **How-to**, **Changelog**, and
   **Download** pages sharing a common nav. The app itself moved to `app.html`.
@@ -61,5 +82,6 @@ First tagged release.
 - Test suites for the diff engine and diff view (`npm test`).
 - Automatic GitHub Pages deployment.
 
+[0.0.3]: https://github.com/smartnexiacloud-lgtm/vsdxeditor/releases/tag/v0.0.3
 [0.0.2]: https://github.com/smartnexiacloud-lgtm/vsdxeditor/releases/tag/v0.0.2
 [0.0.1]: https://github.com/smartnexiacloud-lgtm/vsdxeditor/releases/tag/v0.0.1

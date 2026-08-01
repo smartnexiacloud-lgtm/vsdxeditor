@@ -64,6 +64,8 @@ const connectorCheckbox = () =>
   [...window.document.querySelectorAll('#layers-list .layer-item')]
     .map(item => ({ item, name: item.querySelector('.layer-name')?.textContent }))
     .find(x => x.name === 'Connector')?.item.querySelector('input[type=checkbox]');
+const connectorMatrixFlag = (prop) =>
+  window.document.querySelector(`#layer-matrix-body input[aria-label="Connector ${prop}"]`);
 
 const fixture = process.argv[2] || 'test-files/test4_connectors.vsdx';
 console.log(`── in-app named views: ${fixture} ──`);
@@ -73,9 +75,15 @@ await dropFile(new window.File([new Uint8Array(readFileSync(fixture))], 'views.v
 check('app booted and rendered', !!window.document.querySelector('#svg-container svg'),
   'error: ' + $('error-box')?.textContent);
 check('named-views panel visible for vsdx', $('layers-views')?.style.display !== 'none');
+$('btn-layer-matrix').click();
+check('named-view controls visible in layer matrix', $('layer-matrix-views')?.style.display !== 'none');
 
 const cb = connectorCheckbox();
 check('found the Connector layer checkbox', !!cb);
+connectorMatrixFlag('print').click();
+connectorMatrixFlag('lock').click();
+check('matrix changed Connector print and lock',
+  connectorMatrixFlag('print').checked === false && connectorMatrixFlag('lock').checked === true);
 
 // 2. With Connector ON, save view "All on".
 promptReply = 'All on';
@@ -87,11 +95,15 @@ check('view "All on" added to dropdown',
 // 3. Hide Connector, save view "Hide connectors".
 if (cb.checked) { cb.click(); await sleep(50); }
 check('Connector now hidden', !connectorCheckbox().checked);
+connectorMatrixFlag('print').click();
+connectorMatrixFlag('lock').click();
 promptReply = 'Hide connectors';
 $('btn-view-save').click();
 await sleep(50);
 check('two views in dropdown',
   [...$('view-select').options].filter(o => o.value !== '').length === 2);
+check('matrix named-view dropdown stays synchronized',
+  [...$('layer-matrix-view-select').options].filter(o => o.value !== '').length === 2);
 
 // 4. Save VSDX and inspect the downloaded bytes.
 $('btn-save-vsdx').click();
@@ -117,12 +129,14 @@ check('both views restored after reopen',
 check('reopened drawing reflects saved (Connector hidden)', !connectorCheckbox().checked);
 
 // 6. Select "All on" from the dropdown → Connector should become visible again.
-const sel = $('view-select');
+const sel = $('layer-matrix-view-select');
 const allOnIdx = [...sel.options].find(o => o.textContent === 'All on').value;
 sel.value = allOnIdx;
 sel.dispatchEvent(new window.Event('change'));
 await sleep(50);
 check('applying "All on" re-shows Connector', connectorCheckbox().checked === true);
+check('applying "All on" restores print and lock',
+  connectorMatrixFlag('print').checked === false && connectorMatrixFlag('lock').checked === true);
 
 // 7. Apply "Hide connectors" → Connector hidden again.
 const hideIdx = [...sel.options].find(o => o.textContent === 'Hide connectors').value;

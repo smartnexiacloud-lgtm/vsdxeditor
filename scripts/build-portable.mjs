@@ -56,7 +56,7 @@ How to open it
   * Windows: double-click "Open VSDX Editor.bat"  (or just open vsdxeditor.html)
   * Linux:   run "./open-vsdx-editor.sh"           (or just open vsdxeditor.html)
 
-Then drag a .vsd/.vsdx file onto the window, or click Open.
+Then drag a supported Visio drawing, template, or stencil onto the window, or click Open.
 
 Live version, docs and source:
   https://smartnexiacloud-lgtm.github.io/vsdxeditor/

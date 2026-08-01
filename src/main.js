@@ -8,6 +8,7 @@ const dropZone = document.getElementById('drop-zone');
 const fileInput = document.getElementById('file-input');
 const viewer = document.getElementById('viewer');
 const pageTabs = document.getElementById('page-tabs');
+const pageTabContextMenu = document.getElementById('page-tab-context-menu');
 const svgContainer = document.getElementById('svg-container');
 const zoomInfo = document.getElementById('zoom-info');
 const fileName = document.getElementById('file-name');
@@ -29,6 +30,11 @@ const layerMatrixReplace = document.getElementById('layer-matrix-replace');
 const layerMatrixReplaceAll = document.getElementById('layer-matrix-replace-all');
 const layerMatrixReplaceStatus = document.getElementById('layer-matrix-replace-status');
 const layerMatrixPage = document.getElementById('layer-matrix-page');
+const layerMatrixViews = document.getElementById('layer-matrix-views');
+const layerMatrixViewSelect = document.getElementById('layer-matrix-view-select');
+const btnMatrixViewSave = document.getElementById('btn-matrix-view-save');
+const btnMatrixViewUpdate = document.getElementById('btn-matrix-view-update');
+const btnMatrixViewDelete = document.getElementById('btn-matrix-view-delete');
 const saveVsdxButton = document.getElementById('btn-save-vsdx');
 const removeNonSelectedButton = document.getElementById('btn-remove-non-selected');
 const removeNonVisibleButton = document.getElementById('btn-remove-non-visible');
@@ -63,7 +69,12 @@ let hiddenLayers = new Set();
 let focusedLayerIndex = null;
 let currentFileBuffer = null;
 let currentFileType = null;
+let currentFileExtension = '.vsdx';
+let currentPackageEditable = false;
 let viewTemplates = [];
+let selectedViewIndex = null;
+let draggedPageId = null;
+let contextPageId = null;
 let contextShapeId = null;
 let selectedShapeId = null;
 let editingShapeId = null;
@@ -72,6 +83,20 @@ const hiddenShapeIdsByPage = new Map();
 const collapsedShapeIdsByPage = new Map();
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 2000;
+const XML_VISIO_EXTENSIONS = new Set(['.vsdx', '.vsdm', '.vstx', '.vstm', '.vssx', '.vssm']);
+const BINARY_VISIO_EXTENSIONS = new Set(['.vsd', '.vst', '.vss']);
+
+function getFileExtension(name) {
+  const match = String(name || '').toLowerCase().match(/\.[^.]+$/);
+  return match ? match[0] : '';
+}
+
+function getVisioFormat(name) {
+  const extension = getFileExtension(name);
+  if (XML_VISIO_EXTENSIONS.has(extension)) return { family: 'xml', extension };
+  if (BINARY_VISIO_EXTENSIONS.has(extension)) return { family: 'binary', extension };
+  return null;
+}
 
 async function applyUpdatedVsdxBuffer(buffer, pageId = null) {
   const result = await parseVsdx(buffer);
@@ -141,27 +166,197 @@ function renderCurrentPage() {
   renderShapeTree();
 }
 
+function activatePage(page) {
+  const index = currentPages.indexOf(page);
+  if (index < 0) return;
+  currentPageIndex = index;
+  buildPageTabs();
+  hiddenLayers = getInitialHiddenLayers();
+  focusedLayerIndex = null;
+  selectedShapeId = null;
+  editingShapeId = null;
+  buildLayersSidebar();
+  resetView();
+  renderCurrentPage();
+}
+
+function closePages(pages) {
+  const foregroundPages = currentPages.filter(page => !page.isBackground);
+  const closeIds = new Set((pages || []).filter(page => !page.isBackground).map(page => String(page.id)));
+  const closingPages = foregroundPages.filter(page => closeIds.has(String(page.id)));
+  if (!closingPages.length || foregroundPages.length - closingPages.length < 1) return;
+
+  const activePage = currentPages[currentPageIndex];
+  const activePageClosed = closeIds.has(String(activePage?.id));
+  const firstClosedIndex = Math.min(...closingPages.map(page => foregroundPages.indexOf(page)));
+  currentPages = currentPages.filter(page => !closeIds.has(String(page.id)));
+
+  for (const pageId of closeIds) {
+    hiddenShapeIdsByPage.delete(pageId);
+    collapsedShapeIdsByPage.delete(pageId);
+  }
+  for (const view of viewTemplates) {
+    view.pages = (view.pages || []).filter(page => !closeIds.has(String(page.id)));
+  }
+
+  if (activePageClosed) {
+    const remaining = currentPages.filter(page => !page.isBackground);
+    const nextPage = remaining[Math.min(firstClosedIndex, remaining.length - 1)];
+    currentPageIndex = currentPages.indexOf(nextPage);
+  } else {
+    currentPageIndex = currentPages.indexOf(activePage);
+  }
+
+  hidePageTabContextMenu();
+  hiddenLayers = getInitialHiddenLayers();
+  focusedLayerIndex = null;
+  selectedShapeId = null;
+  editingShapeId = null;
+  buildPageTabs();
+  buildLayersSidebar();
+  refreshViewsUI();
+  if (layerMatrixModal.classList.contains('visible')) buildLayerMatrix();
+  resetView();
+  renderCurrentPage();
+}
+
+function reorderPage(sourcePage, targetPage, placeAfter) {
+  if (!sourcePage || !targetPage || sourcePage === targetPage) return;
+  const activePage = currentPages[currentPageIndex];
+  const foregroundPages = currentPages.filter(page => !page.isBackground);
+  const sourceIndex = foregroundPages.indexOf(sourcePage);
+  if (sourceIndex < 0) return;
+  foregroundPages.splice(sourceIndex, 1);
+  const targetIndex = foregroundPages.indexOf(targetPage);
+  foregroundPages.splice(targetIndex + (placeAfter ? 1 : 0), 0, sourcePage);
+
+  let foregroundIndex = 0;
+  currentPages = currentPages.map(page => page.isBackground ? page : foregroundPages[foregroundIndex++]);
+  currentPageIndex = currentPages.indexOf(activePage);
+  buildPageTabs();
+  if (layerMatrixModal.classList.contains('visible')) buildLayerMatrix();
+}
+
+function renamePage(page) {
+  if (!page) return;
+  const name = (window.prompt('Rename sheet:', page.name || '') || '').trim();
+  if (!name || name === page.name) return;
+  page.name = name;
+  for (const view of viewTemplates) {
+    const snapshot = (view.pages || []).find(candidate => String(candidate.id) === String(page.id));
+    if (snapshot) snapshot.name = name;
+  }
+  buildPageTabs();
+  buildLayersSidebar();
+  if (layerMatrixModal.classList.contains('visible')) buildLayerMatrix();
+}
+
+function hidePageTabContextMenu() {
+  if (!pageTabContextMenu) return;
+  pageTabContextMenu.style.display = 'none';
+  contextPageId = null;
+}
+
+function showPageTabContextMenu(page, x, y) {
+  if (!pageTabContextMenu) return;
+  const foregroundPages = currentPages.filter(candidate => !candidate.isBackground);
+  const pageIndex = foregroundPages.indexOf(page);
+  contextPageId = String(page.id);
+  pageTabContextMenu.querySelector('[data-tab-action="close"]').disabled = foregroundPages.length <= 1;
+  pageTabContextMenu.querySelector('[data-tab-action="close-left"]').disabled = pageIndex <= 0;
+  pageTabContextMenu.querySelector('[data-tab-action="close-right"]').disabled = pageIndex >= foregroundPages.length - 1;
+  pageTabContextMenu.querySelector('[data-tab-action="close-others"]').disabled = foregroundPages.length <= 1;
+  pageTabContextMenu.style.display = 'block';
+  const rect = pageTabContextMenu.getBoundingClientRect();
+  pageTabContextMenu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - rect.width - 8))}px`;
+  pageTabContextMenu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - rect.height - 8))}px`;
+}
+
 function buildPageTabs() {
   pageTabs.innerHTML = '';
-  const foregroundPages = currentPages.filter(p => !p.isBackground);
-  foregroundPages.forEach((page, i) => {
-    const btn = document.createElement('button');
-    btn.textContent = page.name;
-    btn.className = 'page-tab' + (currentPages.indexOf(page) === currentPageIndex ? ' active' : '');
-    btn.addEventListener('click', () => {
-      currentPageIndex = currentPages.indexOf(page);
-      buildPageTabs();
-      hiddenLayers = getInitialHiddenLayers();
-      focusedLayerIndex = null;
-      selectedShapeId = null;
-      editingShapeId = null;
-      buildLayersSidebar();
-      resetView();
-      renderCurrentPage();
+  const foregroundPages = currentPages.filter(page => !page.isBackground);
+  for (const page of foregroundPages) {
+    const tab = document.createElement('div');
+    tab.className = 'page-tab' + (currentPages.indexOf(page) === currentPageIndex ? ' active' : '');
+    tab.dataset.pageId = String(page.id);
+    tab.draggable = true;
+    tab.setAttribute('role', 'tab');
+
+    const label = document.createElement('button');
+    label.type = 'button';
+    label.className = 'page-tab-label';
+    label.textContent = page.name;
+    label.title = page.name;
+    label.addEventListener('click', () => activatePage(page));
+
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'page-tab-close';
+    close.innerHTML = '&times;';
+    close.title = `Delete ${page.name}`;
+    close.setAttribute('aria-label', `Delete sheet ${page.name}`);
+    close.addEventListener('click', (event) => {
+      event.stopPropagation();
+      closePages([page]);
     });
-    pageTabs.appendChild(btn);
-  });
+
+    tab.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      showPageTabContextMenu(page, event.clientX, event.clientY);
+    });
+    tab.addEventListener('dragstart', (event) => {
+      draggedPageId = String(page.id);
+      tab.classList.add('dragging');
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', draggedPageId);
+    });
+    tab.addEventListener('dragover', (event) => {
+      if (draggedPageId === null || draggedPageId === String(page.id)) return;
+      event.preventDefault();
+      const placeAfter = event.clientX >= tab.getBoundingClientRect().left + tab.offsetWidth / 2;
+      tab.classList.toggle('drop-before', !placeAfter);
+      tab.classList.toggle('drop-after', placeAfter);
+    });
+    tab.addEventListener('dragleave', () => tab.classList.remove('drop-before', 'drop-after'));
+    tab.addEventListener('drop', (event) => {
+      event.preventDefault();
+      const sourcePage = currentPages.find(candidate => String(candidate.id) === draggedPageId);
+      const placeAfter = event.clientX >= tab.getBoundingClientRect().left + tab.offsetWidth / 2;
+      reorderPage(sourcePage, page, placeAfter);
+    });
+    tab.addEventListener('dragend', () => {
+      draggedPageId = null;
+      for (const candidate of pageTabs.querySelectorAll('.page-tab')) {
+        candidate.classList.remove('dragging', 'drop-before', 'drop-after');
+      }
+    });
+
+    tab.append(label, close);
+    pageTabs.appendChild(tab);
+  }
 }
+
+pageTabContextMenu?.addEventListener('click', (event) => {
+  const action = event.target.closest('[data-tab-action]')?.dataset.tabAction;
+  const foregroundPages = currentPages.filter(page => !page.isBackground);
+  const page = foregroundPages.find(candidate => String(candidate.id) === contextPageId);
+  const pageIndex = foregroundPages.indexOf(page);
+  if (!action || !page || pageIndex < 0) return;
+  if (action === 'rename') {
+    hidePageTabContextMenu();
+    renamePage(page);
+  } else if (action === 'close') closePages([page]);
+  else if (action === 'close-left') closePages(foregroundPages.slice(0, pageIndex));
+  else if (action === 'close-right') closePages(foregroundPages.slice(pageIndex + 1));
+  else if (action === 'close-others') closePages(foregroundPages.filter(candidate => candidate !== page));
+});
+document.addEventListener('click', (event) => {
+  if (!pageTabContextMenu?.contains(event.target)) hidePageTabContextMenu();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') hidePageTabContextMenu();
+});
 
 function buildLayersSidebar() {
   layersList.innerHTML = '';
@@ -680,8 +875,8 @@ function hideShapeXmlEditor() {
 }
 
 async function openShapeXmlEditor(shapeId) {
-  if (currentFileType !== 'vsdx' || !currentFileBuffer) {
-    showError('Shape XML editing is only available for .vsdx files');
+  if (!currentPackageEditable || !currentFileBuffer) {
+    showError('Shape XML editing is only available for editable XML Visio packages');
     return;
   }
 
@@ -702,7 +897,7 @@ async function openShapeXmlEditor(shapeId) {
 }
 
 async function applyShapeXmlEditor() {
-  if (editingShapeXmlId === null || currentFileType !== 'vsdx' || !currentFileBuffer) return;
+  if (editingShapeXmlId === null || !currentPackageEditable || !currentFileBuffer) return;
   const page = findPageForShape(editingShapeXmlId);
   if (!page) return;
 
@@ -1124,29 +1319,37 @@ async function loadFile(file) {
       showError('This SVG has no embedded VSDX data (only SVGs exported by this app can be re-opened)');
       return;
     }
-    const embeddedName = /\.vsdx?$/i.test(embedded.name)
+    const embeddedName = getVisioFormat(embedded.name)
       ? embedded.name
       : file.name.replace(/\.svg$/i, '') + '.vsdx';
     file = new File([embedded.buffer], embeddedName);
     name = embeddedName.toLowerCase();
   }
-  if (!name.endsWith('.vsdx') && !name.endsWith('.vsd')) {
-    showError('Please select a .vsd, .vsdx, or exported .svg file');
+  const format = getVisioFormat(name);
+  if (!format) {
+    showError('Please select a supported Visio drawing, template, stencil, or exported SVG file');
     return;
   }
   try {
     fileName.textContent = file.name;
     const buffer = await file.arrayBuffer();
     currentFileBuffer = buffer;
-    currentFileType = name.endsWith('.vsdx') ? 'vsdx' : 'vsd';
+    currentFileType = format.family === 'xml' ? 'vsdx' : 'vsd';
+    currentFileExtension = format.extension;
     const result = currentFileType === 'vsd' ? await parseVsd(buffer) : await parseVsdx(buffer);
+    if (!result.pages?.length) throw new Error(`No renderable pages or masters found in ${currentFileExtension}`);
+    currentPackageEditable = currentFileType === 'vsdx' && result.hasPagesPart !== false;
     currentPages = result.pages;
     viewTemplates = Array.isArray(result.viewTemplates) ? result.viewTemplates : [];
+    selectedViewIndex = null;
     hiddenShapeIdsByPage.clear();
     collapsedShapeIdsByPage.clear();
-    saveVsdxButton.disabled = currentFileType !== 'vsdx';
-    removeNonSelectedButton.disabled = currentFileType !== 'vsdx';
-    removeNonVisibleButton.disabled = currentFileType !== 'vsdx';
+    saveVsdxButton.disabled = !currentPackageEditable;
+    saveVsdxButton.textContent = currentPackageEditable
+      ? `Save ${currentFileExtension.slice(1).toUpperCase()}`
+      : 'Save Visio';
+    removeNonSelectedButton.disabled = !currentPackageEditable;
+    removeNonVisibleButton.disabled = !currentPackageEditable;
     compareButton.disabled = currentFileType !== 'vsdx';
     // Default to first foreground page
     const firstFg = currentPages.findIndex(p => !p.isBackground);
@@ -1164,7 +1367,7 @@ async function loadFile(file) {
     renderCurrentPage();
   } catch (e) {
     console.error(e);
-    showError('Failed to parse VSDX file: ' + e.message);
+    showError('Failed to parse Visio file: ' + e.message);
   }
 }
 
@@ -1305,10 +1508,28 @@ function captureCurrentView(name) {
       .map(page => ({
         id: String(page.id),
         name: page.name || '',
-        layers: page.layers.map(layer => ({ name: layer.name, visible: layer.visible !== false })),
+        layers: page.layers.map(layer => ({
+          name: layer.name,
+          visible: layer.visible !== false,
+          print: layer.print !== false,
+          active: layer.active === true,
+          lock: layer.lock === true,
+          snap: layer.snap !== false,
+          glue: layer.glue !== false,
+        })),
       })),
   };
 }
+
+const VIEW_LAYER_BOOL_PROPS = ['visible', 'print', 'active', 'lock', 'snap', 'glue'];
+const VIEW_LAYER_CELL_NAMES = {
+  visible: 'Visible',
+  print: 'Print',
+  active: 'Active',
+  lock: 'Lock',
+  snap: 'Snap',
+  glue: 'Glue',
+};
 
 function applyView(view) {
   if (!view) return;
@@ -1317,9 +1538,16 @@ function applyView(view) {
     const page = pageById.get(String(snapshot.id))
       || currentPages.find(p => (p.name || '') === snapshot.name);
     if (!page) continue;
-    const wanted = new Map((snapshot.layers || []).map(l => [l.name, l.visible !== false]));
+    const wanted = new Map((snapshot.layers || []).map(layer => [layer.name, layer]));
     for (const layer of (page.layers || [])) {
-      if (wanted.has(layer.name)) layer.visible = wanted.get(layer.name);
+      const savedLayer = wanted.get(layer.name);
+      if (!savedLayer) continue;
+      for (const prop of VIEW_LAYER_BOOL_PROPS) {
+        if (!Object.prototype.hasOwnProperty.call(savedLayer, prop)) continue;
+        layer[prop] = savedLayer[prop];
+        layer.cells = layer.cells || {};
+        layer.cells[VIEW_LAYER_CELL_NAMES[prop]] = savedLayer[prop] ? '1' : '0';
+      }
     }
   }
   hiddenLayers = getInitialHiddenLayers();
@@ -1329,76 +1557,93 @@ function applyView(view) {
 }
 
 function refreshViewsUI() {
-  // Only meaningful for .vsdx (the store can't be persisted into a .vsd).
-  const enabled = currentFileType === 'vsdx';
+  // Only meaningful for writable OPC/XML packages.
+  const enabled = currentPackageEditable;
   if (layersViews) layersViews.style.display = enabled ? '' : 'none';
-  if (!viewSelect) return;
-  const prev = viewSelect.value;
-  viewSelect.innerHTML = '<option value="">— Select a view —</option>';
-  viewTemplates.forEach((view, i) => {
-    const opt = document.createElement('option');
-    opt.value = String(i);
-    opt.textContent = view.name;
-    viewSelect.appendChild(opt);
-  });
-  viewSelect.value = (prev && Number(prev) < viewTemplates.length) ? prev : '';
+  if (layerMatrixViews) layerMatrixViews.style.display = enabled ? '' : 'none';
+  if (selectedViewIndex !== null && selectedViewIndex >= viewTemplates.length) selectedViewIndex = null;
+  for (const select of [viewSelect, layerMatrixViewSelect]) {
+    if (!select) continue;
+    select.innerHTML = '<option value="">— Select a view —</option>';
+    viewTemplates.forEach((view, i) => {
+      const opt = document.createElement('option');
+      opt.value = String(i);
+      opt.textContent = view.name;
+      select.appendChild(opt);
+    });
+    select.value = selectedViewIndex === null ? '' : String(selectedViewIndex);
+  }
   updateViewButtons();
 }
 
 function updateViewButtons() {
-  const hasSelection = viewSelect && viewSelect.value !== '';
-  if (btnViewUpdate) btnViewUpdate.disabled = !hasSelection;
-  if (btnViewDelete) btnViewDelete.disabled = !hasSelection;
+  const hasSelection = selectedViewIndex !== null;
+  for (const button of [btnViewUpdate, btnViewDelete, btnMatrixViewUpdate, btnMatrixViewDelete]) {
+    if (button) button.disabled = !hasSelection;
+  }
 }
 
-if (viewSelect) {
-  viewSelect.addEventListener('change', () => {
-    updateViewButtons();
-    if (viewSelect.value !== '') applyView(viewTemplates[Number(viewSelect.value)]);
-  });
+function changeSelectedView(value) {
+  selectedViewIndex = value === '' ? null : Number(value);
+  for (const select of [viewSelect, layerMatrixViewSelect]) {
+    if (select) select.value = selectedViewIndex === null ? '' : String(selectedViewIndex);
+  }
+  updateViewButtons();
+  if (selectedViewIndex !== null) applyView(viewTemplates[selectedViewIndex]);
 }
-if (btnViewSave) {
-  btnViewSave.addEventListener('click', () => {
-    if (currentFileType !== 'vsdx') return;
-    const name = (window.prompt('Name this view (captures the current layer visibility):') || '').trim();
-    if (!name) return;
-    const view = captureCurrentView(name);
-    const existing = viewTemplates.findIndex(v => v.name === name);
-    if (existing >= 0) viewTemplates[existing] = view;
-    else viewTemplates.push(view);
-    refreshViewsUI();
-    viewSelect.value = String(viewTemplates.findIndex(v => v.name === name));
-    updateViewButtons();
-  });
+
+for (const select of [viewSelect, layerMatrixViewSelect]) {
+  if (select) select.addEventListener('change', () => changeSelectedView(select.value));
 }
-if (btnViewUpdate) {
-  btnViewUpdate.addEventListener('click', () => {
-    if (viewSelect.value === '') return;
-    const i = Number(viewSelect.value);
-    viewTemplates[i] = captureCurrentView(viewTemplates[i].name);
-  });
+
+function saveNamedView() {
+  if (!currentPackageEditable) return;
+  const name = (window.prompt('Name this view (captures the current layer settings):') || '').trim();
+  if (!name) return;
+  const view = captureCurrentView(name);
+  const existing = viewTemplates.findIndex(v => v.name === name);
+  if (existing >= 0) viewTemplates[existing] = view;
+  else viewTemplates.push(view);
+  selectedViewIndex = viewTemplates.findIndex(v => v.name === name);
+  refreshViewsUI();
 }
-if (btnViewDelete) {
-  btnViewDelete.addEventListener('click', () => {
-    if (viewSelect.value === '') return;
-    viewTemplates.splice(Number(viewSelect.value), 1);
-    refreshViewsUI();
-  });
+
+function updateNamedView() {
+  if (selectedViewIndex === null) return;
+  viewTemplates[selectedViewIndex] = captureCurrentView(viewTemplates[selectedViewIndex].name);
+}
+
+function deleteNamedView() {
+  if (selectedViewIndex === null) return;
+  viewTemplates.splice(selectedViewIndex, 1);
+  selectedViewIndex = null;
+  refreshViewsUI();
+}
+
+for (const button of [btnViewSave, btnMatrixViewSave]) {
+  if (button) button.addEventListener('click', saveNamedView);
+}
+for (const button of [btnViewUpdate, btnMatrixViewUpdate]) {
+  if (button) button.addEventListener('click', updateNamedView);
+}
+for (const button of [btnViewDelete, btnMatrixViewDelete]) {
+  if (button) button.addEventListener('click', deleteNamedView);
 }
 
 saveVsdxButton.addEventListener('click', async () => {
-  if (currentFileType !== 'vsdx' || !currentFileBuffer) {
-    showError('Save VSDX is only available for .vsdx files');
+  if (!currentPackageEditable || !currentFileBuffer) {
+    showError('Saving is only available for Visio XML drawings and templates');
     return;
   }
 
   try {
     const output = await saveVsdxLayerPermissions(currentFileBuffer, currentPages, viewTemplates);
-    const blob = new Blob([output], { type: 'application/vnd.ms-visio.drawing.main+xml' });
+    const blob = new Blob([output], { type: 'application/octet-stream' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = (fileName.textContent || 'diagram.vsdx').replace(/\.vsdx$/i, '') + '-layers.vsdx';
+    const sourceName = fileName.textContent || `diagram${currentFileExtension}`;
+    a.download = sourceName.replace(/\.[^.]+$/i, '') + `-edited${currentFileExtension}`;
     a.click();
     URL.revokeObjectURL(url);
   } catch (e) {
@@ -1407,8 +1652,8 @@ saveVsdxButton.addEventListener('click', async () => {
   }
 });
 removeNonSelectedButton.addEventListener('click', async () => {
-  if (currentFileType !== 'vsdx' || !currentFileBuffer) {
-    showError('Remove non-selected is only available for .vsdx files');
+  if (!currentPackageEditable || !currentFileBuffer) {
+    showError('Remove non-selected is only available for editable Visio XML packages');
     return;
   }
 
@@ -1444,8 +1689,8 @@ removeNonSelectedButton.addEventListener('click', async () => {
   }
 });
 removeNonVisibleButton.addEventListener('click', async () => {
-  if (currentFileType !== 'vsdx' || !currentFileBuffer) {
-    showError('Remove non-visible is only available for .vsdx files');
+  if (!currentPackageEditable || !currentFileBuffer) {
+    showError('Remove non-visible is only available for editable Visio XML packages');
     return;
   }
 
@@ -1601,7 +1846,7 @@ document.getElementById('btn-export').addEventListener('click', async () => {
     if (currentFileBuffer) {
       // Embed what "Save VSDX" would produce, so layer edits and named views
       // round-trip too.
-      const source = currentFileType === 'vsdx'
+      const source = currentPackageEditable
         ? await saveVsdxLayerPermissions(currentFileBuffer, currentPages, viewTemplates)
         : currentFileBuffer;
       svgStr = embedVsdxInSvg(svgStr, source, fileName.textContent || 'diagram.vsdx');
@@ -1613,7 +1858,7 @@ document.getElementById('btn-export').addEventListener('click', async () => {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = (fileName.textContent || 'diagram').replace('.vsdx', '') + '.svg';
+  a.download = (fileName.textContent || 'diagram').replace(/\.[^.]+$/i, '') + '.svg';
   a.click();
   URL.revokeObjectURL(url);
 });

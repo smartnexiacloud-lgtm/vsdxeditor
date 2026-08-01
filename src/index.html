@@ -3,7 +3,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>VSDX Viewer</title>
+  <title>VSDX Editor — Edit and compare Visio files online</title>
+  <meta name="description" content="Open, edit, compare, and export Microsoft Visio VSDX and VSD files locally in your browser. Files never leave your device.">
+  <link rel="canonical" href="https://smartnexiacloud-lgtm.github.io/vsdxeditor/app.html">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="VSDX Viewer">
+  <meta property="og:title" content="VSDX Editor — Edit and compare Visio files online">
+  <meta property="og:description" content="Open, edit, compare, and export Microsoft Visio VSDX and VSD files locally in your browser.">
+  <meta property="og:url" content="https://smartnexiacloud-lgtm.github.io/vsdxeditor/app.html">
+  <meta name="twitter:card" content="summary">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -112,7 +120,8 @@
       flex-shrink: 0;
     }
     .page-tab {
-      padding: 8px 20px;
+      display: flex;
+      align-items: stretch;
       background: transparent;
       color: #e0e0e0;
       border: none;
@@ -122,6 +131,28 @@
       white-space: nowrap;
       transition: all 0.15s;
     }
+    .page-tab-label,
+    .page-tab-close {
+      border: 0;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      font: inherit;
+    }
+    .page-tab-label {
+      padding: 8px 7px 8px 16px;
+    }
+    .page-tab-close {
+      width: 28px;
+      padding: 0 8px 1px 5px;
+      color: #8f98b8;
+      font-size: 17px;
+      line-height: 1;
+    }
+    .page-tab-close:hover {
+      color: #fff;
+      background: rgba(233, 69, 96, 0.32);
+    }
     .page-tab:hover {
       background: rgba(83, 52, 131, 0.3);
     }
@@ -129,6 +160,45 @@
       border-bottom-color: #e94560;
       color: #e94560;
       font-weight: 600;
+    }
+    .page-tab.dragging {
+      opacity: 0.4;
+    }
+    .page-tab.drop-before {
+      box-shadow: inset 3px 0 #e94560;
+    }
+    .page-tab.drop-after {
+      box-shadow: inset -3px 0 #e94560;
+    }
+    .page-tab-context-menu {
+      position: fixed;
+      z-index: 1200;
+      display: none;
+      min-width: 210px;
+      padding: 5px;
+      border: 1px solid #35518c;
+      border-radius: 7px;
+      background: #16213e;
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.48);
+    }
+    .page-tab-context-menu button {
+      display: block;
+      width: 100%;
+      padding: 8px 10px;
+      border: 0;
+      border-radius: 4px;
+      background: transparent;
+      color: #e0e0e0;
+      text-align: left;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .page-tab-context-menu button:hover:not(:disabled) {
+      background: #24345f;
+    }
+    .page-tab-context-menu button:disabled {
+      color: #68708d;
+      cursor: default;
     }
 
     /* Main content area: sidebar + viewport */
@@ -422,6 +492,28 @@
     }
     .matrix-body {
       overflow: auto;
+    }
+    .matrix-view-tools {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-bottom: 1px solid rgba(53, 81, 140, 0.7);
+      background: rgba(15, 23, 48, 0.72);
+    }
+    .matrix-view-tools .matrix-view-label {
+      color: #b8c0df;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .matrix-view-tools select {
+      min-width: 190px;
+    }
+    .matrix-view-tools .matrix-view-hint {
+      color: #8888aa;
+      font-size: 11px;
     }
     .layer-matrix {
       width: 100%;
@@ -857,10 +949,10 @@
 <body>
   <div id="drop-zone">
     <div class="drop-icon">&#128196;</div>
-    <div class="drop-text">Drop a .vsd, .vsdx, or exported .svg file here</div>
+    <div class="drop-text">Drop a Visio drawing, template, stencil, or exported .svg here</div>
     <div class="drop-hint">or click to browse</div>
   </div>
-  <input type="file" id="file-input" accept=".vsd,.vsdx,.svg">
+  <input type="file" id="file-input" accept=".vsd,.vsdx,.vsdm,.vst,.vstx,.vstm,.vss,.vssx,.vssm,.svg">
 
   <div id="viewer">
     <div class="toolbar">
@@ -873,13 +965,13 @@
       <button id="btn-layer-matrix">Layer Matrix</button>
       <button id="btn-remove-non-selected" disabled>Remove Non-selected</button>
       <button id="btn-remove-non-visible" disabled>Remove Non-visible</button>
-      <button id="btn-save-vsdx" disabled>Save VSDX</button>
+      <button id="btn-save-vsdx" disabled>Save Visio</button>
       <button id="btn-export">Export SVG</button>
       <button id="btn-compare" disabled>Compare…</button>
       <span id="zoom-info">100%</span>
       <a id="link-help" href="usage.html" target="_blank" rel="noopener">Help</a>
     </div>
-    <input type="file" id="compare-input" accept=".vsdx" style="display:none">
+    <input type="file" id="compare-input" accept=".vsdx,.vsdm,.vstx,.vstm,.vssx,.vssm" style="display:none">
     <div id="page-tabs"></div>
     <div id="content-area">
       <div id="layers-sidebar">
@@ -909,11 +1001,11 @@
             <option value="">— Select a view —</option>
           </select>
           <div class="views-actions">
-            <button id="btn-view-save" type="button" title="Save the current layer visibility as a named view">Save view…</button>
-            <button id="btn-view-update" type="button" title="Overwrite the selected view with the current layer visibility" disabled>Update</button>
+            <button id="btn-view-save" type="button" title="Save the current layer settings as a named view">Save view…</button>
+            <button id="btn-view-update" type="button" title="Overwrite the selected view with the current layer settings" disabled>Update</button>
             <button id="btn-view-delete" type="button" title="Delete the selected view" disabled>Delete</button>
           </div>
-          <div class="views-hint">Views are stored inside the .vsdx — they persist when you click <strong>Save VSDX</strong>.</div>
+          <div class="views-hint">Views are stored inside the Visio XML package and persist when you save it.</div>
         </div>
         <div id="layers-list" tabindex="0" role="listbox" aria-label="Layers"></div>
       </div>
@@ -935,7 +1027,7 @@
     <div id="layer-matrix-modal" class="matrix-modal" role="dialog" aria-modal="true" aria-labelledby="layer-matrix-title">
     <div class="matrix-panel">
       <div class="matrix-header">
-        <div id="layer-matrix-title" class="matrix-title">Layer Visibility Matrix</div>
+        <div id="layer-matrix-title" class="matrix-title">Layer Matrix</div>
         <div class="matrix-tools">
           <select id="layer-matrix-page" class="matrix-page-filter" aria-label="Filter matrix by page"></select>
           <input id="layer-matrix-search" class="matrix-search" type="search" placeholder="Search matrix (Ctrl+F)" aria-label="Search layer matrix">
@@ -945,11 +1037,28 @@
           <button id="layer-matrix-close" class="matrix-close" type="button" aria-label="Close layer matrix">&times;</button>
         </div>
       </div>
+      <div id="layer-matrix-views" class="matrix-view-tools">
+        <span class="matrix-view-label">Named views</span>
+        <select id="layer-matrix-view-select" class="matrix-page-filter" aria-label="Named views in layer matrix">
+          <option value="">— Select a view —</option>
+        </select>
+        <button id="btn-matrix-view-save" class="matrix-replace-action" type="button" title="Save the current layer settings as a named view">Save view…</button>
+        <button id="btn-matrix-view-update" class="matrix-replace-action" type="button" title="Overwrite the selected view with the current layer settings" disabled>Update</button>
+        <button id="btn-matrix-view-delete" class="matrix-replace-action" type="button" title="Delete the selected view" disabled>Delete</button>
+        <span class="matrix-view-hint">Views include visibility, print, active, lock, snap, and glue.</span>
+      </div>
       <div id="layer-matrix-body" class="matrix-body"></div>
     </div>
   </div>
 
   <div id="error-box"></div>
+  <div id="page-tab-context-menu" class="page-tab-context-menu" role="menu">
+    <button type="button" role="menuitem" data-tab-action="rename">Rename sheet…</button>
+    <button type="button" role="menuitem" data-tab-action="close">Close this tab</button>
+    <button type="button" role="menuitem" data-tab-action="close-right">Close tabs to the right</button>
+    <button type="button" role="menuitem" data-tab-action="close-left">Close tabs to the left</button>
+    <button type="button" role="menuitem" data-tab-action="close-others">Close all other tabs</button>
+  </div>
   <div id="shape-context-menu" class="shape-context-menu">
     <div class="shape-context-header">
       <div class="shape-context-title">Send Object To Layer</div>

@@ -20,6 +20,8 @@ const outDir = join(root, 'dist');
 mkdirSync(outDir, { recursive: true });
 
 const GITHUB = 'https://github.com/smartnexiacloud-lgtm/vsdxeditor';
+const SITE = 'https://smartnexiacloud-lgtm.github.io/vsdxeditor/';
+const DEFAULT_DESCRIPTION = 'Open, inspect, edit, compare, and version-control Microsoft Visio VSDX and VSD drawings directly in your browser.';
 
 // Nav shown on every page. `key` marks the active item.
 const NAV = [
@@ -95,13 +97,32 @@ function rewriteLinks(html) {
   });
 }
 
-function page({ title, active, body }) {
+function escapeAttribute(value) {
+  return String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function page({ title, active, body, path = 'index.html', description = DEFAULT_DESCRIPTION, structuredData = null }) {
+  const canonical = path === 'index.html' ? SITE : SITE + path;
+  const schema = structuredData
+    ? `<script type="application/ld+json">${JSON.stringify(structuredData).replace(/</g, '\\u003c')}</script>`
+    : '';
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${title}</title>
+<meta name="description" content="${escapeAttribute(description)}">
+<link rel="canonical" href="${canonical}">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="VSDX Viewer">
+<meta property="og:title" content="${escapeAttribute(title)}">
+<meta property="og:description" content="${escapeAttribute(description)}">
+<meta property="og:url" content="${canonical}">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="${escapeAttribute(title)}">
+<meta name="twitter:description" content="${escapeAttribute(description)}">
+${schema}
 <style>${SHARED_STYLE}</style>
 </head>
 <body>
@@ -122,14 +143,21 @@ ${body}
 function renderMarkdownPage({ src, out, title, active }) {
   const md = readFileSync(join(root, src), 'utf8');
   const body = rewriteLinks(marked.parse(md, { gfm: true }));
-  writeFileSync(join(outDir, out), page({ title, active, body }));
+  const descriptions = {
+    'usage.html': 'Learn how to view, edit, compare, export, and manage layers and sheets in Microsoft Visio VSDX and VSD drawings.',
+    'changelog.html': 'Release notes and recent improvements for the open-source browser-based VSDX Viewer and editor.',
+    'download.html': 'Download the portable offline VSDX Viewer for Windows or Linux, with no installation or file uploads required.',
+    'vsdx-with-git.html': 'Use readable diffs, visual comparison, and three-way merging to version-control Microsoft Visio VSDX files with Git.',
+    'visio-roundtrip.html': 'Understand how named views and custom data survive round trips between VSDX Viewer and Microsoft Visio.',
+  };
+  writeFileSync(join(outDir, out), page({ title, active, body, path: out, description: descriptions[out] }));
   return out;
 }
 
 // ---- Landing / front page --------------------------------------------------
 
 const FEATURES = [
-  ['🗂️', 'Open & render', 'View <code>.vsdx</code> and legacy <code>.vsd</code> files, each page drawn to crisp SVG with multi-page tabs, zoom and pan.'],
+  ['🗂️', 'Open & render', 'View Visio drawings, templates, and stencils in modern XML or legacy binary formats, rendered to crisp SVG.'],
   ['🧬', 'Layers & views', 'Toggle layers, bulk-edit them in the Layer Visibility Matrix, and save named layer presets that travel inside the file.'],
   ['✏️', 'Edit', 'Inspect the shape tree and inherited style, edit a shape’s raw XML, move shapes between layers, and prune the drawing.'],
   ['🔍', 'Visual diff', 'Overlay + side-by-side comparison of two files, highlighting added, removed, moved and modified shapes and layer changes.'],
@@ -180,14 +208,41 @@ function landing() {
 
 <h2>Get started</h2>
 <ol>
-  <li><a href="app.html">Open the app</a> and drag a <code>.vsd</code>/<code>.vsdx</code> file onto it (or click <strong>Open</strong>).</li>
+  <li><a href="app.html">Open the app</a> and drag a Visio drawing, template, or stencil onto it (or click <strong>Open</strong>).</li>
   <li>Explore with the page tabs, zoom, and <strong>Layers</strong> controls; right-click a shape to edit it.</li>
   <li>Click <strong>Compare…</strong> to visually diff two files, then <strong>Export SVG</strong> or <strong>Save VSDX</strong>.</li>
 </ol>
 <p>Prefer to work offline? <a href="download.html">Download a portable build</a> for Windows or Linux — a single self-contained HTML file.
 Want to version-control <code>.vsdx</code> files in git? See the <a href="vsdx-with-git.html">git guide</a>.</p>`;
 
-  const html = page({ title: 'VSDX Viewer — Visio .vsdx/.vsd viewer, editor & differ', active: 'home', body })
+  const description = 'Free, open-source browser editor and visual diff tool for Microsoft Visio VSDX and VSD files. Files stay on your device.';
+  const structuredData = {
+    '@context': 'https://schema.org',
+    '@type': 'SoftwareApplication',
+    name: 'VSDX Viewer',
+    applicationCategory: 'DesignApplication',
+    operatingSystem: 'Any',
+    url: SITE,
+    codeRepository: GITHUB,
+    license: 'https://www.gnu.org/licenses/gpl-3.0.html',
+    description,
+    browserRequirements: 'Requires a modern web browser with JavaScript enabled',
+    offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+    featureList: [
+      'Open and render Microsoft Visio VSDX and VSD files',
+      'Edit layers, sheets, shapes, and named views',
+      'Visual comparison of two VSDX files',
+      'Export SVG and save edited VSDX files',
+      'Git diff and three-way merge tooling for VSDX files',
+    ],
+  };
+  const html = page({
+    title: 'VSDX Viewer — Visio .vsdx/.vsd viewer, editor & differ',
+    active: 'home',
+    body,
+    description,
+    structuredData,
+  })
     // inject the landing-only styles just before </style> of the shared block
     .replace('</style>', `${HERO_STYLE}</style>`);
   writeFileSync(join(outDir, 'index.html'), html);
@@ -203,5 +258,18 @@ written.push(renderMarkdownPage({ src: 'CHANGELOG.md', out: 'changelog.html', ti
 written.push(renderMarkdownPage({ src: 'docs/download.md', out: 'download.html', title: 'VSDX Viewer — Download', active: 'download' }));
 written.push(renderMarkdownPage({ src: 'docs/vsdx-with-git.md', out: 'vsdx-with-git.html', title: 'VSDX Viewer — Using .vsdx with git', active: 'git' }));
 written.push(renderMarkdownPage({ src: 'docs/visio-roundtrip.md', out: 'visio-roundtrip.html', title: 'VSDX Viewer — Visio round-trip', active: null }));
+
+const sitemapPages = ['index.html', 'app.html', ...written.filter((path) => path !== 'index.html')];
+const lastModified = new Date().toISOString().slice(0, 10);
+const sitemap = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${sitemapPages.map((path) => `  <url>
+    <loc>${path === 'index.html' ? SITE : SITE + path}</loc>
+    <lastmod>${lastModified}</lastmod>
+  </url>`).join('\n')}
+</urlset>
+`;
+writeFileSync(join(outDir, 'sitemap.xml'), sitemap);
+written.push('sitemap.xml');
 
 console.log(`build-docs: wrote ${written.map((w) => `dist/${w}`).join(', ')}`);

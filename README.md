@@ -1,7 +1,7 @@
 # VSDX Viewer
 
 A browser-based **viewer, editor, and visual differ** for Microsoft Visio
-`.vsdx` (and legacy `.vsd`) drawings — plus a deterministic **git diff/merge
+drawings, templates, and stencils — plus a deterministic **git diff/merge
 toolchain** that makes `.vsdx` files behave like text in version control.
 
 Everything runs client-side: files never leave your machine.
@@ -19,7 +19,8 @@ portable offline builds.
 
 ## Features
 
-- **Open & render** `.vsdx` and `.vsd` files, drawing each page to SVG.
+- **Open & render** `.vsdx`, `.vsdm`, `.vstx`, `.vstm`, `.vssx`, `.vssm`,
+  `.vsd`, `.vst`, and `.vss` files, drawing each page or stencil master to SVG.
 - **Multi-page** documents with page tabs.
 - **Zoom** (in / out / fit-to-window) and pan.
 - **Layers** — toggle layer visibility from a sidebar, or open the full

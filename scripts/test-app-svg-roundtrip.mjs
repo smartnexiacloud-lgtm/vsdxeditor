@@ -67,7 +67,7 @@ console.log(`── in-app svg export round-trip: ${fixture} ──`);
 
 // 1. Load a real vsdx through the app's own drop handler.
 const srcBytes = new Uint8Array(readFileSync(fixture));
-await dropFile(new window.File([srcBytes], 'roundtrip.vsdx'));
+await dropFile(new window.File([srcBytes], 'roundtrip.vsdm'));
 check('app booted and rendered the vsdx',
   !!window.document.querySelector('#svg-container svg'),
   'error-box: ' + window.document.getElementById('error-box')?.textContent);
@@ -93,7 +93,7 @@ const reRendered = window.document.querySelector('#svg-container svg');
 check('exported .svg re-opens and renders the drawing', !!reRendered,
   'error-box: ' + window.document.getElementById('error-box')?.textContent);
 check('file name restored from embedded metadata',
-  /\.vsdx$/i.test(window.document.getElementById('file-name').textContent),
+  /\.vsdm$/i.test(window.document.getElementById('file-name').textContent),
   window.document.getElementById('file-name').textContent);
 
 console.log(`\napp-svg-roundtrip: ${pass} passed, ${fail} failed`);

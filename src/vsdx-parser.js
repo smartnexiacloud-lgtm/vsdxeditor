@@ -1257,22 +1257,71 @@ export async function parseVsdx(arrayBuffer) {
       const target = rId ? mastersRels[rId] : null;
 
       let masterShapes = { shapes: [], shapesById: new Map() };
+      let masterDoc = null;
+      let masterPath = null;
       if (target) {
-        const masterPath = 'visio/masters/' + target;
+        masterPath = 'visio/masters/' + target;
         const masterContent = await readFile(masterPath);
         if (masterContent) {
-          const masterDoc = parseXml(masterContent);
+          masterDoc = parseXml(masterContent);
           masterShapes = parseMasterShapes(masterDoc);
         }
       }
-      masters.set(id, { id, name, ...masterShapes });
+      masters.set(id, { id, name, document: masterDoc, path: masterPath, ...masterShapes });
     }
   }
 
   // Parse pages
   const pages = [];
   const pagesXml = await readFile('visio/pages/pages.xml');
-  if (!pagesXml) return { pages: [], masters };
+  if (!pagesXml) {
+    // Stencil packages have masters but no drawing pages. Expose every master
+    // as a synthetic, read-only page so .vssx/.vssm files are useful in the
+    // viewer without pretending those pages can be written back as drawings.
+    for (const master of masters.values()) {
+      if (!master.document) continue;
+      const root = master.document.documentElement;
+      const pageSheet = getDirectChildren(root, 'PageSheet')[0];
+      const shapesElement = getDirectChildren(root, 'Shapes')[0];
+      const masterRels = master.path ? await parseRels(master.path) : {};
+      const shapes = shapesElement
+        ? getDirectChildren(shapesElement, 'Shape').map(shapeEl => parseShape(
+          shapeEl,
+          masters,
+          null,
+          themeColors,
+          { pageRels: masterRels, media, colorPalette, styleSheets }
+        ))
+        : [];
+      pages.push({
+        id: `master-${master.id}`,
+        name: master.name || `Master ${master.id}`,
+        width: pageSheet ? (getCellFloat(pageSheet, 'PageWidth') || 8.5) : 8.5,
+        height: pageSheet ? (getCellFloat(pageSheet, 'PageHeight') || 11) : 11,
+        drawingUnitInInches: 1,
+        drawingScale: 1,
+        isBackground: false,
+        backPage: null,
+        layers: [],
+        shapes,
+        connects: [],
+        themeColors,
+        colorPalette,
+        styleSheets,
+        isStencilMaster: true,
+      });
+    }
+    return {
+      pages,
+      masters,
+      themeColors,
+      colorPalette,
+      styleSheets,
+      viewTemplates: [],
+      hasPagesPart: false,
+      isStencil: true,
+    };
+  }
 
   const pagesDoc = parseXml(pagesXml);
   const pagesRels = await parseRels('visio/pages/pages.xml');
@@ -1437,7 +1486,7 @@ export async function parseVsdx(arrayBuffer) {
 
   const viewTemplates = await readViewTemplatesFromZip(zip);
 
-  return { pages, masters, themeColors, colorPalette, styleSheets, viewTemplates };
+  return { pages, masters, themeColors, colorPalette, styleSheets, viewTemplates, hasPagesPart: true, isStencil: false };
 }
 
 // ── Named view templates ("layer presets") ────────────────────────────────
@@ -1472,6 +1521,7 @@ function decodeUtf8Base64(b64) {
 
 function sanitizeViewTemplates(views) {
   if (!Array.isArray(views)) return [];
+  const boolProps = ['print', 'active', 'lock', 'snap', 'glue'];
   return views
     .filter(v => v && typeof v.name === 'string' && Array.isArray(v.pages))
     .map(v => ({
@@ -1483,7 +1533,13 @@ function sanitizeViewTemplates(views) {
           name: String(p.name ?? ''),
           layers: p.layers
             .filter(l => l && typeof l.name === 'string')
-            .map(l => ({ name: l.name, visible: l.visible !== false })),
+            .map(l => {
+              const layer = { name: l.name, visible: l.visible !== false };
+              for (const prop of boolProps) {
+                if (typeof l[prop] === 'boolean') layer[prop] = l[prop];
+              }
+              return layer;
+            }),
         })),
     }));
 }
@@ -1692,7 +1748,7 @@ async function patchVsdxLayerPermissions(zip, pages) {
 
   for (let i = 0; i < pageEls.length; i++) {
     const pageEl = pageEls[i];
-    const page = pageById.get(String(pageEl.getAttribute('ID'))) || pages[i];
+    const page = pageById.get(String(pageEl.getAttribute('ID')));
     if (!page?.layers?.length) continue;
 
     const layersByIndex = new Map(page.layers.map(layer => [String(layer.index), layer]));
@@ -1725,6 +1781,69 @@ async function patchVsdxLayerPermissions(zip, pages) {
 
   const xml = new XMLSerializer().serializeToString(doc);
   zip.file('visio/pages/pages.xml', xml);
+}
+
+async function reconcileVsdxPages(zip, pages) {
+  if (!Array.isArray(pages)) return;
+  const pagesPath = 'visio/pages/pages.xml';
+  const pagesXml = await readZipText(zip, pagesPath);
+  if (!pagesXml) throw new Error('VSDX package is missing visio/pages/pages.xml');
+
+  const pagesDoc = parseXml(pagesXml);
+  const pageEls = [...byTag(pagesDoc, 'Page')];
+  const wantedIds = new Set(pages.map(page => String(page.id)));
+  const pageElById = new Map(pageEls.map(pageEl => [String(pageEl.getAttribute('ID')), pageEl]));
+  const removedPageEls = pageEls.filter(pageEl => !wantedIds.has(String(pageEl.getAttribute('ID'))));
+
+  const relsPath = 'visio/pages/_rels/pages.xml.rels';
+  const relsXml = await readZipText(zip, relsPath);
+  const relsDoc = relsXml ? parseXml(relsXml) : null;
+  const relationshipEls = relsDoc ? [...byTag(relsDoc, 'Relationship')] : [];
+  const relationshipById = new Map(relationshipEls.map(rel => [rel.getAttribute('Id'), rel]));
+  const removedPartNames = new Set();
+
+  for (const pageEl of removedPageEls) {
+    const relEl = byTag(pageEl, 'Rel')[0];
+    const rId = relEl ? (relEl.getAttribute('r:id') || relEl.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id')) : null;
+    const relationship = rId ? relationshipById.get(rId) : null;
+    const pagePath = resolveZipTarget(pagesPath, relationship?.getAttribute('Target'));
+    if (pagePath) {
+      zip.remove(pagePath);
+      zip.remove(pagePath.replace(/([^/]*)$/, '_rels/$1.rels'));
+      removedPartNames.add('/' + pagePath.toLowerCase());
+    }
+    if (relationship?.parentNode) relationship.parentNode.removeChild(relationship);
+    if (pageEl.parentNode) pageEl.parentNode.removeChild(pageEl);
+  }
+
+  const pagesParent = pageEls.find(pageEl => pageEl.parentNode)?.parentNode;
+  if (pagesParent) {
+    for (const page of pages) {
+      const pageEl = pageElById.get(String(page.id));
+      if (pageEl?.parentNode) {
+        if (page.name) pageEl.setAttribute('Name', String(page.name));
+        pagesParent.appendChild(pageEl);
+      }
+    }
+  }
+
+  if (relsDoc && removedPageEls.length) {
+    zip.file(relsPath, new XMLSerializer().serializeToString(relsDoc));
+  }
+  if (removedPartNames.size) {
+    const contentTypesPath = '[Content_Types].xml';
+    const contentTypesXml = await readZipText(zip, contentTypesPath);
+    if (contentTypesXml) {
+      const contentTypesDoc = parseXml(contentTypesXml);
+      for (const override of [...byTag(contentTypesDoc, 'Override')]) {
+        if (removedPartNames.has(String(override.getAttribute('PartName')).toLowerCase())) {
+          override.parentNode.removeChild(override);
+        }
+      }
+      zip.file(contentTypesPath, new XMLSerializer().serializeToString(contentTypesDoc));
+    }
+  }
+  zip.file(pagesPath, new XMLSerializer().serializeToString(pagesDoc));
 }
 
 function indexShapesById(shapes, index = new Map()) {
@@ -1788,6 +1907,7 @@ async function patchVsdxShapeAssignments(zip, pages) {
 
 export async function saveVsdxLayerPermissions(arrayBuffer, pages, viewTemplates) {
   const zip = await JSZip.loadAsync(arrayBuffer);
+  await reconcileVsdxPages(zip, pages);
   await patchVsdxLayerPermissions(zip, pages);
   await patchVsdxShapeAssignments(zip, pages);
   // Only touch the view-template store when the caller passes the arg, so

@@ -2056,6 +2056,7 @@ export async function parseVsd(arrayBuffer) {
 
   // Build the masters table: stencilPtrIdx -> Map(shapeId -> masterShape).
   const mastersMap = new Map();
+  const stencilPages = [];
   for (const [stencilPtrIdx, bucket] of stencilChunksByPage) {
     const masterPages = buildShapesFromChunks(bucket, { isMasterStream: true, stylesById });
     const shapeIndex = new Map();
@@ -2068,6 +2069,17 @@ export async function parseVsd(arrayBuffer) {
     }
     for (const mp of masterPages) indexShapes(mp.shapes);
     mastersMap.set(stencilPtrIdx, shapeIndex);
+    for (let i = 0; i < masterPages.length; i++) {
+      const masterPage = masterPages[i];
+      stencilPages.push({
+        ...masterPage,
+        id: `stencil-${stencilPtrIdx}-${i}`,
+        name: masterPage.name && !/^Page \d+$/i.test(masterPage.name)
+          ? masterPage.name
+          : `Master ${stencilPtrIdx}${masterPages.length > 1 ? `-${i + 1}` : ''}`,
+        isStencilMaster: true,
+      });
+    }
   }
 
   // Build pages with master lookup available.
@@ -2075,6 +2087,9 @@ export async function parseVsd(arrayBuffer) {
 
   // If no pages found, return empty
   if (pages.length === 0) {
+    if (stencilPages.length > 0) {
+      return { pages: stencilPages, masters: mastersMap, isStencil: true };
+    }
     return { pages: [{ id: '0', name: 'Page 1', width: 8.5, height: 11, isBackground: false, layers: [], shapes: [], connects: [] }], masters: mastersMap };
   }
 
@@ -2091,5 +2106,5 @@ export async function parseVsd(arrayBuffer) {
     page.shapes = page.shapes.filter(isKeepable);
   }
 
-  return { pages, masters: mastersMap };
+  return { pages, masters: mastersMap, isStencil: false };
 }
