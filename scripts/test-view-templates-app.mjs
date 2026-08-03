@@ -173,5 +173,41 @@ sel.dispatchEvent(new window.Event('change'));
 await sleep(50);
 check('applying "Hide connectors" hides Connector', connectorCheckbox().checked === false);
 
+// 8. A referenced layer row without a name remains controllable instead of
+// disappearing as if it were an unused Visio placeholder.
+const unnamedZip = await JSZip.loadAsync(readFileSync(fixture));
+const unnamedPagesXml = await unnamedZip.file(pagesPath).async('string');
+let unnamedLayerIndex = null;
+const withUnnamedLayer = unnamedPagesXml.replace(/<Row\b[^>]*>[\s\S]*?<\/Row>/g, (row) => {
+  if (!/<Cell\b(?=[^>]*\bN=["']Name["'])(?=[^>]*\bV=["']Connector["'])[^>]*\/?\s*>/.test(row)) return row;
+  unnamedLayerIndex = row.match(/\bIX=["']([^"']+)/)?.[1] ?? null;
+  return row.replace(
+    /(<Cell\b(?=[^>]*\bN=["'](?:Name|NameUniv)["'])[^>]*\bV=["'])[^"']*/g,
+    (_match, prefix) => prefix
+  );
+});
+if (unnamedLayerIndex === null) throw new Error('Could not create unnamed layer fixture');
+unnamedZip.file(pagesPath, withUnnamedLayer);
+const unnamedFixture = await unnamedZip.generateAsync({ type: 'uint8array' });
+await dropFile(new window.File([unnamedFixture], 'unnamed-layer.vsdx'));
+const unnamedItem = [...window.document.querySelectorAll('#layers-list .layer-item')]
+  .find(item => item.dataset.layerIndex === unnamedLayerIndex);
+check('referenced unnamed layer is shown as a muted placeholder',
+  unnamedItem?.classList.contains('unnamed-layer')
+    && unnamedItem.querySelector('.layer-name')?.textContent === `Layer ${unnamedLayerIndex}`);
+const unlayeredItem = [...window.document.querySelectorAll('#layers-list .layer-item')]
+  .find(item => item.dataset.layerIndex === '__vsdxeditor_unlayered__');
+const unlayeredGroups = [...window.document.querySelectorAll('#svg-container g[data-shape-id]:not([data-layers])')];
+check('editor-only Unlayered layer represents shapes without Visio membership',
+  unlayeredItem?.classList.contains('virtual-layer')
+    && unlayeredItem.querySelector('.layer-name')?.textContent === 'Unlayered'
+    && unlayeredGroups.length > 0);
+$('layers-deselect-all').click();
+const layeredGroups = [...window.document.querySelectorAll('#svg-container g[data-layers]')];
+check('deselect all hides shapes on named and unnamed layers',
+  layeredGroups.length > 0 && layeredGroups.every(group => group.style.display === 'none'));
+check('deselect all also hides editor-only unlayered shapes',
+  unlayeredGroups.every(group => group.style.display === 'none'));
+
 console.log(`\nview-templates-app: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

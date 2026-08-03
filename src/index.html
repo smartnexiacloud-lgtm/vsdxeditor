@@ -386,6 +386,14 @@
       opacity: 0.4;
       text-decoration: line-through;
     }
+    .layer-item.unnamed-layer .layer-name {
+      color: #8888aa;
+      font-style: italic;
+    }
+    .layer-item.virtual-layer .layer-name {
+      color: #287c78;
+      font-weight: 700;
+    }
     .toolbar button.active {
       background: #533483;
       border-color: #7b52b9;
@@ -579,6 +587,14 @@
       outline: none;
       border-color: #e94560;
       box-shadow: 0 0 0 2px rgba(233, 69, 96, 0.18);
+    }
+    .layer-matrix .matrix-unnamed-layer .matrix-text-input,
+    .layer-matrix .matrix-unnamed-layer .matrix-text-input::placeholder {
+      color: #8888aa;
+      font-style: italic;
+    }
+    .layer-matrix .matrix-virtual-layer td {
+      background: rgba(40, 124, 120, 0.07);
     }
     .shape-context-menu {
       position: fixed;

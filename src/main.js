@@ -123,9 +123,11 @@ async function applyUpdatedVsdxBuffer(buffer, pageId = null) {
 }
 
 function getInitialHiddenLayers(page = currentPages[currentPageIndex]) {
-  return new Set((page?.layers || [])
+  const hidden = new Set((page?.layers || [])
     .filter(layer => layer.visible === false)
     .map(layer => layer.index));
+  if (page?._unlayeredLayer?.visible === false) hidden.add(UNLAYERED_LAYER_INDEX);
+  return hidden;
 }
 
 function showError(msg) {
@@ -361,12 +363,9 @@ document.addEventListener('keydown', (event) => {
 function buildLayersSidebar() {
   layersList.innerHTML = '';
   if (!currentPages.length) return;
-  const page = currentPages[currentPageIndex];
-  const layers = page.layers || [];
+  const layers = getCurrentLayers();
 
   if (layers.length === 0) {
-    // Collect implicit layers from shapes that have layerMembers
-    // but no layer definitions (shouldn't happen, but handle gracefully)
     layersSidebar.classList.remove('visible');
     document.getElementById('btn-layers').classList.remove('active');
     return;
@@ -386,18 +385,24 @@ function buildLayersSidebar() {
     item.setAttribute('aria-selected', layer.index === focusedLayerIndex ? 'true' : 'false');
     if (hiddenLayers.has(layer.index)) item.classList.add('disabled');
     if (layer.index === focusedLayerIndex) item.classList.add('focused');
+    if (isUnnamedLayer(layer)) item.classList.add('unnamed-layer');
+    if (isVirtualLayer(layer)) item.classList.add('virtual-layer');
+
+    const displayName = getLayerDisplayName(layer);
 
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.checked = !hiddenLayers.has(layer.index);
     checkbox.id = `layer-cb-${layer.index}`;
     checkbox.tabIndex = -1;
-    checkbox.setAttribute('aria-label', layer.name);
+    checkbox.setAttribute('aria-label', displayName);
 
     const name = document.createElement('span');
     name.className = 'layer-name';
-    name.textContent = layer.name;
-    name.title = layer.name;
+    name.textContent = displayName;
+    name.title = isVirtualLayer(layer)
+      ? 'Editor-only layer for shapes with no Visio layer membership'
+      : (isUnnamedLayer(layer) ? `${displayName} (unnamed layer)` : displayName);
 
     checkbox.addEventListener('change', () => {
       setLayerSelected(layer.index, checkbox.checked);
@@ -423,15 +428,80 @@ function normalizeLayerText(value) {
   return String(value || '').trim().toLowerCase();
 }
 
-// Visio keeps an unnamed placeholder row for every deleted layer so that layer
-// indexes stay stable. They are bookkeeping, not user-facing layers, so they
-// stay in page.layers (save/prune needs the indexes) but never reach the UI.
+// Visio keeps unnamed placeholder rows for deleted layers so indexes remain
+// stable. Only surface a placeholder when a shape still references it; this
+// avoids resurrecting historical tombstones while keeping every live layer
+// controllable.
 function isRealLayer(layer) {
   return !layer.placeholder;
 }
 
+const UNLAYERED_LAYER_INDEX = '__vsdxeditor_unlayered__';
+
+function isVirtualLayer(layer) {
+  return layer?.virtual === true;
+}
+
+function hasUnlayeredShapes(shapes) {
+  for (const shape of shapes || []) {
+    if (!(shape.layerMembers || []).length) return true;
+    if (hasUnlayeredShapes(shape.subShapes)) return true;
+  }
+  return false;
+}
+
+function getUnlayeredLayer(page) {
+  if (!page._unlayeredLayer) {
+    page._unlayeredLayer = {
+      index: UNLAYERED_LAYER_INDEX,
+      name: UNLAYERED_LAYER_INDEX,
+      nameUniv: UNLAYERED_LAYER_INDEX,
+      virtual: true,
+      visible: true,
+      print: true,
+      active: false,
+      lock: false,
+      snap: true,
+      glue: true,
+    };
+  }
+  return page._unlayeredLayer;
+}
+
+function collectReferencedLayerIndexes(shapes, indexes = new Set()) {
+  for (const shape of shapes || []) {
+    for (const index of shape.layerMembers || []) indexes.add(String(index));
+    collectReferencedLayerIndexes(shape.subShapes, indexes);
+  }
+  return indexes;
+}
+
+function getUiLayers(page) {
+  if (!page) return [];
+  const declaredLayers = page.layers || [];
+  const referenced = collectReferencedLayerIndexes(page.shapes);
+  const layers = declaredLayers.filter(layer => isRealLayer(layer) || referenced.has(String(layer.index)));
+  const declaredIndexes = new Set(declaredLayers.map(layer => String(layer.index)));
+  for (const index of referenced) {
+    if (!declaredIndexes.has(index)) {
+      layers.push({ index, name: '', nameUniv: null, placeholder: true, implicit: true, visible: true });
+    }
+  }
+  if (hasUnlayeredShapes(page.shapes)) layers.push(getUnlayeredLayer(page));
+  return layers;
+}
+
 function getCurrentLayers() {
-  return (currentPages[currentPageIndex]?.layers || []).filter(isRealLayer);
+  return getUiLayers(currentPages[currentPageIndex]);
+}
+
+function isUnnamedLayer(layer) {
+  return !String(layer?.name || layer?.nameUniv || '').trim();
+}
+
+function getLayerDisplayName(layer) {
+  if (isVirtualLayer(layer)) return 'Unlayered';
+  return isUnnamedLayer(layer) ? `Layer ${layer.index}` : layer.name;
 }
 
 function getCurrentLayer(layerIndex) {
@@ -444,7 +514,7 @@ function layerMatchesFilter(layer) {
   const needle = normalizeLayerText(layerFilterText.value);
   if (!needle) return true;
 
-  const haystack = normalizeLayerText(layer.name);
+  const haystack = normalizeLayerText(getLayerDisplayName(layer));
   switch (layerFilterMode.value) {
     case 'starts':
       return haystack.startsWith(needle);
@@ -480,6 +550,7 @@ function updateLayerBulkButtons(visibleCount) {
 function setLayerSelected(layerIndex, selected) {
   const layer = getCurrentLayer(layerIndex);
   if (layer) layer.visible = selected;
+  if (layerIndex === UNLAYERED_LAYER_INDEX) getUnlayeredLayer(currentPages[currentPageIndex]).visible = selected;
 
   if (selected) {
     hiddenLayers.delete(layerIndex);
@@ -505,6 +576,7 @@ function toggleLayer(layerIndex) {
 function setLayerSelection(layers, selected) {
   for (const layer of layers) {
     layer.visible = selected;
+    if (isVirtualLayer(layer)) getUnlayeredLayer(currentPages[currentPageIndex]).visible = selected;
     if (selected) hiddenLayers.delete(layer.index);
     else hiddenLayers.add(layer.index);
   }
@@ -1088,6 +1160,7 @@ function escapeRegExp(value) {
 }
 
 function setLayerName(layer, name) {
+  if (isVirtualLayer(layer)) return;
   layer.name = name;
   layer.nameUniv = name;
   layer.cells = layer.cells || {};
@@ -1178,7 +1251,7 @@ function layerMatchesMatrixFilter(page, layer) {
 
   const haystack = [
     page.name || 'Page',
-    layer.name || `Layer ${layer.index}`,
+    getLayerDisplayName(layer),
     layer.nameUniv || '',
     layer.index,
     layer.color || '',
@@ -1225,7 +1298,7 @@ function buildLayerMatrix() {
   let editableRowCount = 0;
 
   for (const page of pages) {
-    const layers = (page.layers || []).filter(isRealLayer).filter(layer => layerMatchesMatrixFilter(page, layer));
+    const layers = getUiLayers(page).filter(layer => layerMatchesMatrixFilter(page, layer));
     if (!layers.length) {
       const row = document.createElement('tr');
       row.appendChild(createTextCell(page.name || 'Page'));
@@ -1240,13 +1313,20 @@ function buildLayerMatrix() {
       const isCurrentPage = currentPages.indexOf(page) === currentPageIndex;
       const displayedNow = isCurrentPage ? !hiddenLayers.has(layer.index) : layer.visible !== false;
       const row = document.createElement('tr');
+      if (isUnnamedLayer(layer)) row.classList.add('matrix-unnamed-layer');
+      if (isVirtualLayer(layer)) row.classList.add('matrix-virtual-layer');
       const matrixRow = editableRowCount++;
       row.appendChild(createTextCell(page.name || 'Page'));
-      row.appendChild(createEditableTextCell(page, layer, 'name', `Layer ${layer.index}`, matrixRow, 0, () => {
-        if (isCurrentPage) buildLayersSidebar();
-        buildLayerMatrix();
-      }));
-      row.appendChild(createTextCell(String(layer.index)));
+      if (isVirtualLayer(layer)) {
+        row.appendChild(createTextCell('Unlayered'));
+        row.appendChild(createTextCell('Editor only', 'matrix-muted'));
+      } else {
+        row.appendChild(createEditableTextCell(page, layer, 'name', `Layer ${layer.index}`, matrixRow, 0, () => {
+          if (isCurrentPage) buildLayersSidebar();
+          buildLayerMatrix();
+        }));
+        row.appendChild(createTextCell(String(layer.index)));
+      }
       row.appendChild(createEditableBoolCell(page, layer, 'visible', true, matrixRow, 1, (selected) => {
         if (isCurrentPage) {
           if (selected) hiddenLayers.delete(layer.index);
@@ -1305,6 +1385,15 @@ function applyLayerVisibility() {
       // renderShape uses the SVG presentation attribute for the initial file
       // state. Removing only the CSS property leaves that attribute active,
       // so a layer hidden on load can otherwise never be revealed live.
+      g.removeAttribute('display');
+    }
+  }
+  const unlayeredHidden = hiddenLayers.has(UNLAYERED_LAYER_INDEX);
+  for (const g of svg.querySelectorAll('g[data-shape-id]:not([data-layers])')) {
+    if (unlayeredHidden) {
+      g.style.display = 'none';
+    } else {
+      g.style.removeProperty('display');
       g.removeAttribute('display');
     }
   }
@@ -1505,6 +1594,9 @@ function commitCurrentPageVisibility() {
   for (const layer of (page?.layers || [])) {
     layer.visible = !hiddenLayers.has(layer.index);
   }
+  if (page && hasUnlayeredShapes(page.shapes)) {
+    getUnlayeredLayer(page).visible = !hiddenLayers.has(UNLAYERED_LAYER_INDEX);
+  }
 }
 
 function captureCurrentView(name) {
@@ -1512,11 +1604,11 @@ function captureCurrentView(name) {
   return {
     name,
     pages: currentPages
-      .filter(page => (page.layers || []).length)
+      .filter(page => getUiLayers(page).length)
       .map(page => ({
         id: String(page.id),
         name: page.name || '',
-        layers: page.layers.map(layer => ({
+        layers: getUiLayers(page).map(layer => ({
           name: layer.name,
           visible: layer.visible !== false,
           print: layer.print !== false,
@@ -1547,14 +1639,16 @@ function applyView(view) {
       || currentPages.find(p => (p.name || '') === snapshot.name);
     if (!page) continue;
     const wanted = new Map((snapshot.layers || []).map(layer => [layer.name, layer]));
-    for (const layer of (page.layers || [])) {
+    for (const layer of getUiLayers(page)) {
       const savedLayer = wanted.get(layer.name);
       if (!savedLayer) continue;
       for (const prop of VIEW_LAYER_BOOL_PROPS) {
         if (!Object.prototype.hasOwnProperty.call(savedLayer, prop)) continue;
         layer[prop] = savedLayer[prop];
-        layer.cells = layer.cells || {};
-        layer.cells[VIEW_LAYER_CELL_NAMES[prop]] = savedLayer[prop] ? '1' : '0';
+        if (!isVirtualLayer(layer)) {
+          layer.cells = layer.cells || {};
+          layer.cells[VIEW_LAYER_CELL_NAMES[prop]] = savedLayer[prop] ? '1' : '0';
+        }
       }
     }
   }

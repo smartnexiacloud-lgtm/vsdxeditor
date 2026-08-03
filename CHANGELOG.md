@@ -6,7 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-08-03
+
 ### Fixed
+- Referenced unnamed layer rows are shown as muted italic `Layer <index>`
+  entries instead of being discarded with unused Visio placeholders, so bulk
+  layer hiding also affects their shapes.
+- Added an editor-only `Unlayered` layer for controlling shapes without Visio
+  layer membership. Its settings can be captured in named views without adding
+  a synthetic layer to the Visio document.
 - Layers hidden in the original Visio file can now be revealed immediately in
   the live viewer; clearing the runtime CSS state also removes the SVG
   `display="none"` presentation attribute created during initial rendering.
