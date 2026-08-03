@@ -1298,7 +1298,15 @@ function applyLayerVisibility() {
     const shapeLayers = g.getAttribute('data-layers').split(',');
     // Hide if ALL of the shape's layers are hidden
     const allHidden = shapeLayers.every(l => hiddenLayers.has(l));
-    g.style.display = allHidden ? 'none' : '';
+    if (allHidden) {
+      g.style.display = 'none';
+    } else {
+      g.style.removeProperty('display');
+      // renderShape uses the SVG presentation attribute for the initial file
+      // state. Removing only the CSS property leaves that attribute active,
+      // so a layer hidden on load can otherwise never be revealed live.
+      g.removeAttribute('display');
+    }
   }
 }
 

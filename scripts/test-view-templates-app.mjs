@@ -70,8 +70,23 @@ const connectorMatrixFlag = (prop) =>
 const fixture = process.argv[2] || 'test-files/test4_connectors.vsdx';
 console.log(`── in-app named views: ${fixture} ──`);
 
-// 1. Load the drawing.
-await dropFile(new window.File([new Uint8Array(readFileSync(fixture))], 'views.vsdx'));
+// 1. Load the drawing with Connector hidden in its initial file state.
+const fixtureZip = await JSZip.loadAsync(readFileSync(fixture));
+const pagesPath = 'visio/pages/pages.xml';
+const pagesXml = await fixtureZip.file(pagesPath).async('string');
+let connectorLayerFound = false;
+const hiddenPagesXml = pagesXml.replace(/<Row\b[^>]*>[\s\S]*?<\/Row>/g, (row) => {
+  if (!/<Cell\b(?=[^>]*\bN=["']Name["'])(?=[^>]*\bV=["']Connector["'])[^>]*\/?\s*>/.test(row)) return row;
+  connectorLayerFound = true;
+  return row.replace(
+    /(<Cell\b(?=[^>]*\bN=["']Visible["'])[^>]*\bV=["'])[^"']*/,
+    (_match, prefix) => prefix + '0'
+  );
+});
+if (!connectorLayerFound) throw new Error('Could not find Connector layer in fixture');
+fixtureZip.file(pagesPath, hiddenPagesXml);
+const hiddenFixture = await fixtureZip.generateAsync({ type: 'uint8array' });
+await dropFile(new window.File([hiddenFixture], 'views.vsdx'));
 check('app booted and rendered', !!window.document.querySelector('#svg-container svg'),
   'error: ' + $('error-box')?.textContent);
 check('named-views panel visible for vsdx', $('layers-views')?.style.display !== 'none');
@@ -80,6 +95,19 @@ check('named-view controls visible in layer matrix', $('layer-matrix-views')?.st
 
 const cb = connectorCheckbox();
 check('found the Connector layer checkbox', !!cb);
+const connectorLayerIndex = cb?.closest('.layer-item')?.dataset.layerIndex;
+const connectorSvgGroups = () => [...window.document.querySelectorAll('#svg-container g[data-layers]')]
+  .filter(group => group.getAttribute('data-layers').split(',').includes(connectorLayerIndex));
+const initialConnectorGroups = connectorSvgGroups();
+check('Connector starts hidden from file state',
+  cb?.checked === false && initialConnectorGroups.length > 0
+    && initialConnectorGroups.every(group => group.getAttribute('display') === 'none'));
+if (!cb.checked) { cb.click(); await sleep(50); }
+const visibleConnectorGroups = connectorSvgGroups();
+check('Connector becomes visible live without re-rendering',
+  visibleConnectorGroups.length === initialConnectorGroups.length
+    && visibleConnectorGroups.every((group, index) => group === initialConnectorGroups[index])
+    && visibleConnectorGroups.every(group => group.style.display === '' && group.getAttribute('display') === null));
 connectorMatrixFlag('print').click();
 connectorMatrixFlag('lock').click();
 check('matrix changed Connector print and lock',

@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- Layers hidden in the original Visio file can now be revealed immediately in
+  the live viewer; clearing the runtime CSS state also removes the SVG
+  `display="none"` presentation attribute created during initial rendering.
+
 ## [0.0.3] — 2026-08-01
 
 ### Added
