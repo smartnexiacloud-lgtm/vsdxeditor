@@ -27,7 +27,24 @@ function inToPx(inches) {
   return inches * DPI;
 }
 
+// Visio stores LineWeight 0 as a *hairline*: the thinnest line the device can
+// draw. Its own SVG export renders those at 0.25pt. Everything we emit lives in
+// the drawing's unit space (inches × 96 × the drawing scale), so a constant
+// minimum is meaningless there - a 1:100 floor plan emits 9600 units per inch,
+// where the old floor of 0.5 units is 1/19200 of an inch and vanishes. Express
+// the minimum in points and scale it like every other line weight.
+const HAIRLINE_PT = 0.25;
+function hairlineStroke(strokeScale) {
+  return inToPx(HAIRLINE_PT / 72) * (strokeScale || 1);
+}
+
 export { geometryToPath };
+
+// Width of a page in the coordinate units renderPage emits, so a caller can
+// work out how many units one device pixel covers before rendering.
+export function pageCoordinateWidth(page) {
+  return inToPx(page?.width || 0);
+}
 
 function isLightColor(color) {
   if (!color || !/^#[0-9A-F]{6}$/i.test(color)) return false;
@@ -349,18 +366,52 @@ function geometryToPath(rows, width, height, options = {}) {
   return d.trim();
 }
 
-// Build stroke-dasharray from Visio LinePattern
+// Visio's built-in line patterns, as dash/gap runs measured in *line weights*
+// - that is how Visio scales them, so a 0.25pt and a 0.72pt dashed line keep
+// the same rhythm. The three marked "verified" were read straight out of a
+// Visio 16 SVG export (pattern 2 → "1.75,1.25" at width 0.25, pattern 4 →
+// "1.75,1.25,0,1.25", pattern 23 → "0.24,0.48" at width 0.24); the rest follow
+// the same dash/dot families at Visio's coarse, medium and fine spacings.
+// A zero-length run is a dot and needs a round cap to show up.
+const LINE_PATTERNS = {
+  2: [7, 5], // verified: dash
+  3: [0, 4], // dot
+  4: [7, 5, 0, 5], // verified: dash-dot
+  5: [7, 5, 0, 5, 0, 5], // dash-dot-dot
+  6: [14, 5], // long dash
+  7: [14, 5, 0, 5],
+  8: [14, 5, 0, 5, 0, 5],
+  9: [3, 3],
+  10: [0, 3],
+  11: [3, 3, 0, 3],
+  12: [3, 3, 0, 3, 0, 3],
+  13: [7, 3],
+  14: [7, 3, 0, 3],
+  15: [7, 3, 0, 3, 0, 3],
+  16: [11, 5],
+  17: [0, 5],
+  18: [11, 5, 0, 5],
+  19: [11, 5, 0, 5, 0, 5],
+  20: [23, 5],
+  21: [23, 5, 11, 5],
+  22: [23, 5, 11, 5, 11, 5],
+  23: [1, 2] // verified: fine dot
+};
+
+// Build stroke-dasharray from Visio LinePattern. Returns '' for a solid line,
+// null when the shape draws no line at all.
 function getDashArray(linePattern, lineWeight) {
-  const w = Math.max(lineWeight, 1);
-  switch (Math.round(linePattern)) {
-    case 0: return null; // no line
-    case 1: return ''; // solid
-    case 2: return `${w * 6} ${w * 3}`; // dash
-    case 3: return `${w} ${w * 3}`; // dot
-    case 4: return `${w * 6} ${w * 3} ${w} ${w * 3}`; // dash-dot
-    case 5: return `${w * 6} ${w * 3} ${w} ${w * 3} ${w} ${w * 3}`; // dash-dot-dot
-    default: return '';
-  }
+  const pattern = Math.round(linePattern);
+  if (pattern === 0) return null; // no line
+  const runs = LINE_PATTERNS[pattern];
+  if (!runs) return ''; // solid, and anything we don't have a definition for
+  const w = lineWeight > 0 ? lineWeight : 1;
+  return runs.map((run) => run * w).join(' ');
+}
+
+// A dash array with a zero-length run only paints if the cap is round.
+function dashNeedsRoundCap(dashArray) {
+  return typeof dashArray === 'string' && /(^|\s)0(\s|$)/.test(dashArray);
 }
 
 function getFallbackFill(shape, themeColors) {
@@ -474,9 +525,116 @@ function createGradientDef(svgNS, id, shape) {
   return gradient;
 }
 
-function getFillPaint(shape, svgNS, defs, themeColors, layerInfo = null) {
+// Visio's built-in hatches, drawn as vector geometry rather than the 8×8 raster
+// tile its own SVG export embeds. Visio lays them out as a 6pt square tile with
+// a 64-unit viewBox holding an 8×8 image, so one "cell" is an eighth of the
+// tile - these definitions use those same 8×8 cell coordinates.
+//
+// Patterns 2-7, 11 and 24 were decoded from the tiles in a Visio 16 export and
+// match it cell for cell. Visio has no published table for the rest; those
+// reuse the same six motifs at a finer spacing, which keeps a hatched shape
+// reading as hatched instead of as a solid block.
+const HATCH_TILE_PT = 6;
+const HATCH_CELLS = 8;
+
+// lines: [x1, y1, x2, y2] in cell coordinates; dots: [x, y] one-cell squares.
+const HATCH_PATTERNS = {
+  2: { lines: [[0, 8, 8, 0], [-1, 1, 1, -1], [7, 9, 9, 7]] }, // "/" verified
+  3: { lines: [[0, 0.5, 8, 0.5], [0.5, 0, 0.5, 8]] }, // grid, verified
+  4: { lines: [[0, 0, 8, 8], [0, 8, 8, 0], [-1, 7, 1, 9], [7, -1, 9, 1], [-1, 1, 1, -1], [7, 9, 9, 7]] }, // "X" verified
+  5: { lines: [[0, 0, 8, 8], [-1, 7, 1, 9], [7, -1, 9, 1]] }, // "\" verified
+  6: { lines: [[0, 0.5, 8, 0.5]] }, // horizontal, verified
+  7: { lines: [[0.5, 0, 0.5, 8]] }, // vertical, verified
+  11: { dots: [[0, 0], [4, 0], [2, 2], [6, 2], [0, 4], [4, 4], [2, 6], [6, 6]] }, // verified
+  24: {
+    dots: [[3, 0], [7, 0], [0, 1], [2, 1], [4, 1], [6, 1], [1, 2], [5, 2], [0, 3], [2, 3], [4, 3], [6, 3],
+      [3, 4], [7, 4], [0, 5], [2, 5], [4, 5], [6, 5], [1, 6], [5, 6], [0, 7], [2, 7], [4, 7], [6, 7]]
+  } // fine dither, verified
+};
+
+// The six coarse motifs repeated at half the tile size for the indices Visio
+// does not document (8-10, 12-23). Approximate on purpose - see above.
+function getHatchDefinition(pattern) {
+  const known = HATCH_PATTERNS[pattern];
+  if (known) return { def: known, repeat: 1 };
+  const motif = [2, 3, 4, 5, 6, 7][(pattern - 2) % 6];
+  return { def: HATCH_PATTERNS[motif], repeat: pattern >= 14 ? 4 : 2 };
+}
+
+function isHatchPattern(fillPattern) {
+  const pattern = Math.round(fillPattern);
+  return pattern >= 2 && pattern <= 24;
+}
+
+function createHatchPattern(svgNS, id, pattern, foreground, background, opacities, strokeScale) {
+  const { def, repeat } = getHatchDefinition(pattern);
+  const tile = inToPx(HATCH_TILE_PT / 72) * (strokeScale || 1) / repeat;
+  const cell = tile / HATCH_CELLS;
+
+  const el = document.createElementNS(svgNS, 'pattern');
+  el.setAttribute('id', id);
+  el.setAttribute('patternUnits', 'userSpaceOnUse');
+  el.setAttribute('width', String(tile));
+  el.setAttribute('height', String(tile));
+
+  if (background) {
+    const bg = document.createElementNS(svgNS, 'rect');
+    bg.setAttribute('x', '0');
+    bg.setAttribute('y', '0');
+    bg.setAttribute('width', String(tile));
+    bg.setAttribute('height', String(tile));
+    bg.setAttribute('fill', background);
+    if (opacities.background < 1) bg.setAttribute('fill-opacity', String(opacities.background));
+    el.appendChild(bg);
+  }
+
+  for (const [x1, y1, x2, y2] of def.lines || []) {
+    const line = document.createElementNS(svgNS, 'line');
+    line.setAttribute('x1', String(x1 * cell));
+    line.setAttribute('y1', String(y1 * cell));
+    line.setAttribute('x2', String(x2 * cell));
+    line.setAttribute('y2', String(y2 * cell));
+    line.setAttribute('stroke', foreground);
+    line.setAttribute('stroke-width', String(cell));
+    if (opacities.foreground < 1) line.setAttribute('stroke-opacity', String(opacities.foreground));
+    el.appendChild(line);
+  }
+  for (const [x, y] of def.dots || []) {
+    const dot = document.createElementNS(svgNS, 'rect');
+    dot.setAttribute('x', String(x * cell));
+    dot.setAttribute('y', String(y * cell));
+    dot.setAttribute('width', String(cell));
+    dot.setAttribute('height', String(cell));
+    dot.setAttribute('fill', foreground);
+    if (opacities.foreground < 1) dot.setAttribute('fill-opacity', String(opacities.foreground));
+    el.appendChild(dot);
+  }
+  return el;
+}
+
+function getHatchPaint(shape, svgNS, defs, foreground, strokeScale) {
+  const pattern = Math.round(shape.fillPattern);
+  const background = shape.fillBackground || '#FFFFFF';
+  const opacities = {
+    foreground: clampOpacityFromTransparency(shape.fillForegroundTrans, 0),
+    background: clampOpacityFromTransparency(shape.fillBackgroundTrans, 0)
+  };
+  const key = `hatch_${pattern}_${foreground}_${background}_${opacities.foreground}_${opacities.background}_${Math.round((strokeScale || 1) * 1000)}`;
+  const id = key.replace(/[^A-Za-z0-9_-]/g, '_');
+  if (!defs._hatchIds) defs._hatchIds = new Set();
+  if (!defs._hatchIds.has(id)) {
+    defs.appendChild(createHatchPattern(svgNS, id, pattern, foreground, background, opacities, strokeScale));
+    defs._hatchIds.add(id);
+  }
+  return `url(#${id})`;
+}
+
+function getFillPaint(shape, svgNS, defs, themeColors, layerInfo = null, strokeScale = 1) {
   if (layerInfo?.monochromeColor) return '#FFFFFF';
   const fillColor = getFallbackFill(shape, themeColors);
+  if (isHatchPattern(shape.fillPattern) && fillColor) {
+    return getHatchPaint(shape, svgNS, defs, fillColor, strokeScale);
+  }
   if (shape.fillPattern >= 25 && shape.fillPattern <= 40 && shape.fillBackground && fillColor) {
     if (shape.fillBackground.toUpperCase() === fillColor.toUpperCase()) return fillColor;
     if (!defs._gradientIds) defs._gradientIds = new Set();
@@ -793,6 +951,10 @@ function appendShapeMetadata(target, shape, svgNS) {
 
 function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, fontScale, themeColors = {}, pageContext = null) {
   if (fontScale === undefined) fontScale = strokeScale;
+  // Thinnest line this render may draw, in the emitted coordinate space. The
+  // caller can raise it (see renderPage's minStrokeWidth) so hairlines stay
+  // visible at the zoom the page is being viewed at.
+  const minStroke = pageContext?.minStroke ?? hairlineStroke(strokeScale);
   const g = document.createElementNS(svgNS, 'g');
   if (shape.id) {
     const safeId = String(shape.id).replace(/[^A-Za-z0-9_-]/g, '_');
@@ -829,11 +991,14 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
       path.setAttribute('d', pathData);
       path.setAttribute('fill', 'none');
       const strokeColor = shape.linePattern === 0 ? 'none' : getShapeStrokeColor(shape, themeColors, pageContext);
-      const effectiveWeight = Math.max(inToPx(shape.lineWeight || 0.01) * strokeScale, 1.5);
+      const effectiveWeight = Math.max(inToPx(shape.lineWeight || 0) * strokeScale, minStroke);
       path.setAttribute('stroke', strokeColor);
       path.setAttribute('stroke-width', String(effectiveWeight));
       const dashArray = getDashArray(shape.linePattern || 1, effectiveWeight);
-      if (dashArray) path.setAttribute('stroke-dasharray', dashArray);
+      if (dashArray) {
+        path.setAttribute('stroke-dasharray', dashArray);
+        if (dashNeedsRoundCap(dashArray)) path.setAttribute('stroke-linecap', 'round');
+      }
       path.setAttribute('stroke-linejoin', 'round');
       if (shape.beginArrow && shape.beginArrow > 0) {
         const markerId = `arrow-begin-${arrowCounter.value++}`;
@@ -880,7 +1045,7 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
       path.setAttribute('d', pathData);
 
       // Fill
-      const fillColor = getFillPaint(shape, svgNS, defs, themeColors, layerInfo);
+      const fillColor = getFillPaint(shape, svgNS, defs, themeColors, layerInfo, strokeScale);
       if (!paintFill || geo.noFill || !fillColor || shape.fillPattern === 0) {
         path.setAttribute('fill', 'none');
       } else {
@@ -901,11 +1066,12 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
         path.setAttribute('stroke', 'none');
       } else {
         path.setAttribute('stroke', getShapeStrokeColor(shape, themeColors, pageContext));
-        const effectiveWeight = inToPx(shape.lineWeight) * strokeScale;
-        path.setAttribute('stroke-width', String(Math.max(effectiveWeight, 0.5)));
+        const effectiveWeight = Math.max(inToPx(shape.lineWeight) * strokeScale, minStroke);
+        path.setAttribute('stroke-width', String(effectiveWeight));
         const dashArray = getDashArray(shape.linePattern, effectiveWeight);
         if (dashArray) {
           path.setAttribute('stroke-dasharray', dashArray);
+          if (dashNeedsRoundCap(dashArray)) path.setAttribute('stroke-linecap', 'round');
         }
       }
 
@@ -961,7 +1127,7 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
       });
 
       const noEffectiveLine = geo.noLine || shape.linePattern === 0;
-      const hasPaintedFill = !geo.noFill && shape.fillPattern !== 0 && getFillPaint(shape, svgNS, defs, themeColors, layerInfo);
+      const hasPaintedFill = !geo.noFill && shape.fillPattern !== 0 && getFillPaint(shape, svgNS, defs, themeColors, layerInfo, strokeScale);
       const fillPathData = hasPaintedFill
         ? geometryToPath(geo.rows, shape.width, shape.height, { connectInternalMoves: true })
         : strokePathData;
@@ -1002,7 +1168,7 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
     rect.setAttribute('y', '0');
     rect.setAttribute('width', String(inToPx(shape.width)));
     rect.setAttribute('height', String(inToPx(shape.height)));
-    const rectFill = getFillPaint(shape, svgNS, defs, themeColors, layerInfo);
+    const rectFill = getFillPaint(shape, svgNS, defs, themeColors, layerInfo, strokeScale);
     if (rectFill && shape.fillPattern !== 0) {
       rect.setAttribute('fill', rectFill);
       const fillOpacity = getFillOpacity(shape, rectFill, layerInfo);
@@ -1011,7 +1177,7 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
       rect.setAttribute('fill', 'none');
     }
     rect.setAttribute('stroke', shape.linePattern === 0 ? 'none' : getShapeStrokeColor(shape, themeColors, pageContext));
-    rect.setAttribute('stroke-width', String(Math.max(inToPx(shape.lineWeight) * strokeScale, 0.5)));
+    rect.setAttribute('stroke-width', String(Math.max(inToPx(shape.lineWeight) * strokeScale, minStroke)));
     if (shape.rounding > 0) {
       rect.setAttribute('rx', String(inToPx(shape.rounding)));
       rect.setAttribute('ry', String(inToPx(shape.rounding)));
@@ -1054,7 +1220,13 @@ function createArrowMarker(svgNS, id, color, isStart) {
   return marker;
 }
 
-export function renderPage(page, container) {
+// options.minStrokeWidth raises the thinnest line the render may draw, in the
+// page's own coordinate units. Left out, lines keep their true Visio weights
+// (LineWeight 0 becoming Visio's 0.25pt hairline), which is what an export or a
+// print wants. A viewer that scales the SVG down can pass the size of one
+// device pixel instead, so hairlines stay on screen at that zoom - it has to
+// re-render to change it, since the value is baked into the SVG.
+export function renderPage(page, container, options = {}) {
   const svgNS = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(svgNS, 'svg');
   svg.setAttributeNS(XMLNS_NS, 'xmlns:v', VISIO_NS);
@@ -1086,8 +1258,10 @@ export function renderPage(page, container) {
   const strokeScale = page.drawingScale || (page.drawingUnitInInches ? (1 / page.drawingUnitInInches) : 1);
   const fontScale = strokeScale;
   const themeColors = page.themeColors || {};
+  const requestedMin = Number.isFinite(options.minStrokeWidth) ? options.minStrokeWidth : 0;
   const pageContext = {
-    layersByIndex: new Map((page.layers || []).map((layer) => [String(layer.index), layer]))
+    layersByIndex: new Map((page.layers || []).map((layer) => [String(layer.index), layer])),
+    minStroke: Math.max(hairlineStroke(strokeScale), requestedMin)
   };
 
   for (const shape of page.shapes) {

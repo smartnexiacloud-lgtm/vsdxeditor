@@ -27,6 +27,26 @@ switch pages.
 | Drag on empty canvas | Pan |
 | `zoom-info` readout | Shows the current zoom percentage |
 
+### Thin lines (hairlines)
+
+Visio stores a `LineWeight` of 0 as a *hairline*: the thinnest line the output
+device can draw. On a scaled drawing — a 1:100 floor plan, say — that is a
+fraction of a millimetre on paper, so it can disappear entirely when the page is
+scaled down to fit a window. The **Hairlines** control in the toolbar decides
+what happens to those lines:
+
+| Setting | What you get |
+| --- | --- |
+| **Fit zoom** (default) | No line is drawn thinner than one screen pixel at the zoom the page was rendered for, so hairline detail (raised-floor grids, hatching, construction lines) stays visible |
+| **True size** | Every line keeps its real Visio weight, with hairlines drawn at Visio's own 0.25 pt |
+
+The minimum is baked into the SVG when the page is drawn, so changing the zoom
+does not change it — following the zoom live would mean re-rendering the whole
+drawing on every wheel tick. Instead, **⟳ Update** re-renders the page for the
+current zoom, and lights up once you have zoomed away from the zoom the drawing
+on screen was rendered for. **Export SVG** exports what is on screen, so switch
+to **True size** first if you want an export with untouched line weights.
+
 ## Layers
 
 Click **Layers** to open the layers sidebar. Each layer has a visibility toggle;

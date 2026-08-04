@@ -1,7 +1,7 @@
 import { parseVsdx, saveVsdxLayerPermissions, saveVsdxWithoutHiddenLayers, saveVsdxWithoutNonSelectedLayers, saveVsdxWithoutNonVisibleData, getVsdxShapeXmlSnippet, replaceVsdxShapeXmlSnippet, normalizeLayerTags, normalizeTagColor } from './vsdx-parser.js';
 import { embedVsdxInSvg, extractVsdxFromSvg } from './svg-vsdx-embed.js';
 import { parseVsd } from './vsd-parser.js';
-import { renderPage } from './svg-renderer.js';
+import { renderPage, pageCoordinateWidth } from './svg-renderer.js';
 import { openDiffView } from './diff-view.js';
 
 const dropZone = document.getElementById('drop-zone');
@@ -11,6 +11,8 @@ const pageTabs = document.getElementById('page-tabs');
 const pageTabContextMenu = document.getElementById('page-tab-context-menu');
 const svgContainer = document.getElementById('svg-container');
 const zoomInfo = document.getElementById('zoom-info');
+const strokeModeSelect = document.getElementById('stroke-mode');
+const rerenderButton = document.getElementById('btn-rerender');
 const fileName = document.getElementById('file-name');
 const errorBox = document.getElementById('error-box');
 const layersSidebar = document.getElementById('layers-sidebar');
@@ -66,6 +68,12 @@ const shapeXmlTextarea = document.getElementById('shape-xml-textarea');
 let currentPages = [];
 let currentPageIndex = 0;
 let zoom = 1;
+// 'screen' keeps Visio hairlines at least one device pixel wide at the zoom the
+// page was rendered for; 'true' draws every line at its real Visio weight.
+// Either way the minimum is baked into the SVG, so changing zoom does not
+// change it until the page is re-rendered - hence the Update button.
+let strokeMode = 'screen';
+let renderedZoom = 1;
 let panX = 0, panY = 0;
 let isPanning = false;
 let panStartX, panStartY;
@@ -151,6 +159,42 @@ function showViewer() {
 function updateTransform() {
   svgContainer.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
   zoomInfo.textContent = `${Math.round(zoom * 100)}%`;
+  updateRerenderState();
+}
+
+// Page coordinate units per device pixel at the current zoom. Measured off the
+// SVG on screen (its box already includes the container's scale) so it stays
+// right whatever the layout does, but only when that SVG is the same page we
+// are about to draw; otherwise the container shows a page at 1 unit per CSS
+// pixel and the zoom factor is the whole story.
+function unitsPerDevicePixel(page) {
+  const svg = svgContainer.querySelector('svg');
+  const viewBox = svg?.getAttribute('viewBox')?.split(/[\s,]+/);
+  const width = svg?.getBoundingClientRect().width;
+  if (viewBox && viewBox.length === 4 && width > 0) {
+    const units = parseFloat(viewBox[2]);
+    const expected = pageCoordinateWidth(page);
+    if (Number.isFinite(units) && units > 0 && Math.abs(units - expected) < Math.max(1, expected * 0.01)) {
+      return units / width;
+    }
+  }
+  return 1 / Math.max(zoom, 0.0001);
+}
+
+function currentMinStrokeWidth(page) {
+  return strokeMode === 'screen' ? unitsPerDevicePixel(page) : 0;
+}
+
+// The Update button lights up once the view has been zoomed away from the zoom
+// the SVG was rendered for, since that is when hairlines are off.
+function updateRerenderState() {
+  if (!rerenderButton) return;
+  const stale = strokeMode === 'screen' && currentPages.length > 0
+    && Math.abs(Math.log(zoom / renderedZoom)) > 0.1;
+  rerenderButton.classList.toggle('stale', stale);
+  rerenderButton.title = stale
+    ? `Re-render for ${Math.round(zoom * 100)}% (drawn for ${Math.round(renderedZoom * 100)}%)`
+    : 'Re-render this page for the current zoom';
 }
 
 function renderCurrentPage() {
@@ -167,7 +211,9 @@ function renderCurrentPage() {
     }
   }
 
-  renderPage(renderedPage, svgContainer);
+  renderPage(renderedPage, svgContainer, { minStrokeWidth: currentMinStrokeWidth(renderedPage) });
+  renderedZoom = zoom;
+  updateRerenderState();
   applyLayerVisibility();
   applyShapeVisibility();
   syncSelectedShapeHighlight();
@@ -1787,6 +1833,16 @@ document.getElementById('btn-zoom-out').addEventListener('click', () => {
 });
 document.getElementById('btn-zoom-fit').addEventListener('click', () => {
   resetView();
+});
+// Thin-line handling is deliberately not applied live: the minimum is part of
+// the SVG, so following the zoom would mean re-rendering the whole page on
+// every wheel tick. Re-render on demand instead.
+strokeModeSelect.addEventListener('change', () => {
+  strokeMode = strokeModeSelect.value === 'true' ? 'true' : 'screen';
+  renderCurrentPage();
+});
+rerenderButton.addEventListener('click', () => {
+  renderCurrentPage();
 });
 document.getElementById('btn-open').addEventListener('click', () => {
   fileInput.click();

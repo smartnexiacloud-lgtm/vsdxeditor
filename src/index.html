@@ -102,6 +102,20 @@
       margin-left: 8px;
       color: #e94560;
     }
+    #stroke-mode {
+      background: #0f3460;
+      color: #e0e0e0;
+      border: 1px solid #1b4b8a;
+      border-radius: 4px;
+      padding: 5px 6px;
+      font-size: 12px;
+    }
+    /* Highlighted while the drawing on screen was rendered for a different
+       zoom than the one being viewed - clicking re-renders for this zoom. */
+    #btn-rerender.stale {
+      background: #e94560;
+      color: #fff;
+    }
     #zoom-info {
       margin-left: auto;
       font-size: 13px;
@@ -1073,6 +1087,11 @@
       <button id="btn-save-vsdx" disabled>Save Visio</button>
       <button id="btn-export">Export SVG</button>
       <button id="btn-compare" disabled>Compare…</button>
+      <select id="stroke-mode" aria-label="Thin line rendering" title="How thin lines (Visio hairlines) are drawn">
+        <option value="screen">Hairlines: fit zoom</option>
+        <option value="true">Hairlines: true size</option>
+      </select>
+      <button id="btn-rerender" title="Re-render this page for the current zoom">&#8635; Update</button>
       <span id="zoom-info">100%</span>
       <a id="link-help" href="usage.html" target="_blank" rel="noopener">Help</a>
     </div>

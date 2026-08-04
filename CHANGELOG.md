@@ -6,7 +6,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **Hairlines no longer vanish on scaled drawings.** Visio's `LineWeight 0`
+  (hairline) was floored at a constant 0.5 units, which is meaningless in a
+  scaled drawing's coordinate space — on a 1:100 plan that is 1/19200 of an
+  inch, so whole layers drawn with hairlines (raised-floor grids, construction
+  lines) rendered as nothing. The floor is now Visio's own 0.25 pt, scaled with
+  the drawing.
+- **Hatch fills are drawn as hatches.** `FillPattern` 2–24 were painted as an
+  opaque solid in the fill's foreground colour, turning stippled squares into
+  black blocks and flooding shaded areas. They are now emitted as vector SVG
+  `<pattern>` definitions (Visio's 6 pt tile, 8×8 cells), honouring the fill's
+  background colour and both transparencies. Patterns 2–7, 11 and 24 match a
+  Visio 16 export cell for cell.
+- **Dashed lines are dashed.** `getDashArray` only knew `LinePattern` 1–5 and
+  drew everything else solid; all 23 built-in patterns are now defined, with
+  dash runs measured in line weights as Visio does, and a round cap so
+  dash-dot patterns show their dots.
+
 ### Added
+- **Hairlines toolbar control** — choose between *Fit zoom* (no line thinner
+  than a screen pixel at the rendered zoom, the default) and *True size* (real
+  Visio weights), plus an **⟳ Update** button that re-renders the page for the
+  current zoom. The minimum is baked into the SVG, so it is applied on demand
+  rather than on every wheel tick; the button highlights when the view has been
+  zoomed away from the render.
 - **Layer tags** — assign free-form, comma-separated tags to layers from the
   Layers sidebar (🏷 on a layer row) or the new **Tags** column in the Layer
   Matrix. Tags are per page, trimmed, and de-duplicated case-insensitively.

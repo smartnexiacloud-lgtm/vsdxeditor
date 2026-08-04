@@ -22,7 +22,10 @@ portable offline builds.
 - **Open & render** `.vsdx`, `.vsdm`, `.vstx`, `.vstm`, `.vssx`, `.vssm`,
   `.vsd`, `.vst`, and `.vss` files, drawing each page or stencil master to SVG.
 - **Multi-page** documents with page tabs.
-- **Zoom** (in / out / fit-to-window) and pan.
+- **Zoom** (in / out / fit-to-window) and pan, with a **Hairlines** control that
+  either keeps Visio's hairlines at least a pixel wide at the current zoom or
+  draws every line at its true Visio weight (**⟳ Update** re-renders for the
+  zoom you are at).
 - **Layers** — toggle layer visibility from a sidebar, or open the full
   **Layer Visibility Matrix** to bulk-edit which layers each page shows,
   filter by page, search/filter layers, and rename layers with *Replace all*.
