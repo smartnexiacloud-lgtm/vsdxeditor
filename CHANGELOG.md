@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Layer tags** — assign free-form, comma-separated tags to layers from the
+  Layers sidebar (🏷 on a layer row) or the new **Tags** column in the Layer
+  Matrix. Tags are per page, trimmed, and de-duplicated case-insensitively.
+- **Tag colours** — each tag gets a document-wide colour (derived from its name
+  until you pick one) shown on the sidebar chips; recolour it from the swatch in
+  the **Tags** legend of the sidebar or the Layer Matrix.
+- **Filter by tag** — the layer search box now matches tags as well as layer
+  names, and `tag:<name>` restricts matching to tags, so **Select filter** /
+  **Deselect filter** can show or hide everything carrying a tag at once.
+  Clicking a tag in the legend fills the box.
+- Tags and their colours are stored inside the drawing in Visio's Solution XML
+  store, the channel that survives a Microsoft Visio open+save (see
+  `docs/visio-roundtrip.md`), keyed by layer name so they outlive layer
+  renumbering. Every save path (save, prune, SVG export) carries them along.
+
 ## [0.0.4] - 2026-08-03
 
 ### Fixed

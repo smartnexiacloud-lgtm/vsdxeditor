@@ -1318,6 +1318,8 @@ export async function parseVsdx(arrayBuffer) {
       colorPalette,
       styleSheets,
       viewTemplates: [],
+      layerTags: [],
+      layerTagColors: {},
       hasPagesPart: false,
       isStencil: true,
     };
@@ -1485,8 +1487,13 @@ export async function parseVsdx(arrayBuffer) {
   }
 
   const viewTemplates = await readViewTemplatesFromZip(zip);
+  const { pages: layerTags, tagColors: layerTagColors } = await readLayerTagsFromZip(zip);
+  applyLayerTagsToPages(pages, layerTags);
 
-  return { pages, masters, themeColors, colorPalette, styleSheets, viewTemplates, hasPagesPart: true, isStencil: false };
+  return {
+    pages, masters, themeColors, colorPalette, styleSheets, viewTemplates,
+    layerTags, layerTagColors, hasPagesPart: true, isStencil: false,
+  };
 }
 
 // ── Named view templates ("layer presets") ────────────────────────────────
@@ -1545,18 +1552,8 @@ function sanitizeViewTemplates(views) {
 }
 
 async function readViewTemplatesFromZip(zip) {
-  const file = zip.file(VIEWS_PART);
-  if (!file) return [];
-  try {
-    const doc = parseXml(await file.async('string'));
-    const el = byTag(doc, 'SolutionXML')[0] || doc.documentElement;
-    const payload = (el && el.textContent || '').trim();
-    if (!payload) return [];
-    const json = JSON.parse(decodeUtf8Base64(payload));
-    return sanitizeViewTemplates(json && json.views);
-  } catch {
-    return [];
-  }
+  const json = await readSolutionPayload(zip, VIEWS_PART);
+  return sanitizeViewTemplates(json && json.views);
 }
 
 export async function readVsdxViewTemplates(arrayBuffer) {
@@ -1564,30 +1561,34 @@ export async function readVsdxViewTemplates(arrayBuffer) {
   return readViewTemplatesFromZip(zip);
 }
 
-async function ensureViewsRelationship(zip) {
+// The Solution XML store is reached through a relationship off
+// visio/document.xml.rels; without that relationship Visio treats the part as
+// unreachable and drops it on save. Both the named views and the layer tags
+// below ride this same channel.
+async function ensureSolutionRelationship(zip, { relId, relTarget }) {
   const file = zip.file(VIEWS_RELS_PATH);
   if (!file) return; // no document relationships part — nothing to hang it off
   const doc = parseXml(await file.async('string'));
   const relsEl = byTag(doc, 'Relationships')[0];
   if (!relsEl) return;
   const already = [...byTag(doc, 'Relationship')].some(r =>
-    r.getAttribute('Target') === VIEWS_REL_TARGET || r.getAttribute('Id') === VIEWS_REL_ID);
+    r.getAttribute('Target') === relTarget || r.getAttribute('Id') === relId);
   if (already) return;
   const rel = doc.createElementNS(relsEl.namespaceURI, 'Relationship');
-  rel.setAttribute('Id', VIEWS_REL_ID);
+  rel.setAttribute('Id', relId);
   rel.setAttribute('Type', VIEWS_REL_TYPE);
-  rel.setAttribute('Target', VIEWS_REL_TARGET);
+  rel.setAttribute('Target', relTarget);
   relsEl.appendChild(rel);
   zip.file(VIEWS_RELS_PATH, new XMLSerializer().serializeToString(doc));
 }
 
-async function removeViewsRelationship(zip) {
+async function removeSolutionRelationship(zip, { relId, relTarget }) {
   const file = zip.file(VIEWS_RELS_PATH);
   if (!file) return;
   const doc = parseXml(await file.async('string'));
   let changed = false;
   for (const r of [...byTag(doc, 'Relationship')]) {
-    if (r.getAttribute('Target') === VIEWS_REL_TARGET || r.getAttribute('Id') === VIEWS_REL_ID) {
+    if (r.getAttribute('Target') === relTarget || r.getAttribute('Id') === relId) {
       r.parentNode.removeChild(r);
       changed = true;
     }
@@ -1595,18 +1596,184 @@ async function removeViewsRelationship(zip) {
   if (changed) zip.file(VIEWS_RELS_PATH, new XMLSerializer().serializeToString(doc));
 }
 
-async function writeViewTemplatesToZip(zip, viewTemplates) {
-  const views = sanitizeViewTemplates(viewTemplates);
-  if (views.length === 0) {
-    zip.remove(VIEWS_PART);
-    await removeViewsRelationship(zip);
+// Reads the base64 JSON payload out of a `<SolutionXML>` part; returns null for
+// a missing or unreadable part so callers can fall back to "no data".
+async function readSolutionPayload(zip, part) {
+  const file = zip.file(part);
+  if (!file) return null;
+  try {
+    const doc = parseXml(await file.async('string'));
+    const el = byTag(doc, 'SolutionXML')[0] || doc.documentElement;
+    const payload = (el && el.textContent || '').trim();
+    if (!payload) return null;
+    return JSON.parse(decodeUtf8Base64(payload));
+  } catch {
+    return null;
+  }
+}
+
+async function writeSolutionPayload(zip, { part, relId, relTarget, ns, name }, data) {
+  if (data === null) {
+    zip.remove(part);
+    await removeSolutionRelationship(zip, { relId, relTarget });
     return;
   }
-  const payload = encodeUtf8Base64(JSON.stringify({ app: 'vsdxeditor', version: 1, views }));
+  const payload = encodeUtf8Base64(JSON.stringify({ app: 'vsdxeditor', version: 1, ...data }));
   const xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-    `<SolutionXML xmlns="${VIEWS_NS}" Name="vsdxeditor-views" encoding="base64">${payload}</SolutionXML>`;
-  zip.file(VIEWS_PART, xml);
-  await ensureViewsRelationship(zip);
+    `<SolutionXML xmlns="${ns}" Name="${name}" encoding="base64">${payload}</SolutionXML>`;
+  zip.file(part, xml);
+  await ensureSolutionRelationship(zip, { relId, relTarget });
+}
+
+const VIEWS_SLOT = {
+  part: VIEWS_PART,
+  relId: VIEWS_REL_ID,
+  relTarget: VIEWS_REL_TARGET,
+  ns: VIEWS_NS,
+  name: 'vsdxeditor-views',
+};
+
+async function writeViewTemplatesToZip(zip, viewTemplates) {
+  const views = sanitizeViewTemplates(viewTemplates);
+  await writeSolutionPayload(zip, VIEWS_SLOT, views.length === 0 ? null : { views });
+}
+
+// ── Layer tags ────────────────────────────────────────────────────────────
+// Free-form labels on a layer ("electrical", "draft", "as-built") so a drawing
+// can be filtered by concern instead of by layer name. Visio's layer object
+// model has no tag slot, and an extra Cell in a Layer row would be dropped the
+// moment Visio re-serializes the page — so the labels ride the same Solution
+// XML channel as named views, the one extensibility store Visio preserves
+// across an open+save (see docs/visio-roundtrip.md).
+//
+// Shape:  { pages: [ { id, name, layers: [ { name, tags: [string] } ] } ] }
+// Layers are matched by name (not index) so tags survive Visio renumbering
+// layers, exactly like named views do.
+const TAGS_PART = 'visio/solutions/vsdxeditor-layer-tags.xml';
+const TAGS_REL_ID = 'rIdVsdxLayerTags';
+const TAGS_NS = 'urn:vsdxeditor:layertags';
+const TAGS_REL_TARGET = 'solutions/vsdxeditor-layer-tags.xml';
+const TAGS_SLOT = {
+  part: TAGS_PART,
+  relId: TAGS_REL_ID,
+  relTarget: TAGS_REL_TARGET,
+  ns: TAGS_NS,
+  name: 'vsdxeditor-layer-tags',
+};
+const MAX_TAG_LENGTH = 64;
+
+// A layer's key in the tag store: its name, or `#<index>` for the unnamed
+// placeholder rows Visio keeps around.
+function layerTagKey(layer) {
+  const name = String(layer?.name ?? '').trim();
+  return name || `#${layer?.index ?? ''}`;
+}
+
+// Commas separate tags in the UI, so they can never appear inside one. Tags are
+// trimmed, length-capped, and de-duplicated case-insensitively (first casing
+// wins) so "Draft" and "draft" don't both stick to the same layer.
+export function normalizeLayerTags(tags) {
+  const list = Array.isArray(tags) ? tags : String(tags ?? '').split(',');
+  const seen = new Set();
+  const out = [];
+  for (const raw of list) {
+    for (const piece of String(raw ?? '').split(',')) {
+      const tag = piece.trim().replace(/\s+/g, ' ').slice(0, MAX_TAG_LENGTH);
+      if (!tag) continue;
+      const key = tag.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(tag);
+    }
+  }
+  return out;
+}
+
+// Tag colours are document-wide (a "draft" chip looks the same on every page),
+// so they live beside the per-page tag lists as { <lowercased tag>: '#rrggbb' }.
+export function normalizeTagColor(value) {
+  const raw = String(value ?? '').trim();
+  const short = /^#?([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(raw);
+  if (short) return `#${short[1]}${short[1]}${short[2]}${short[2]}${short[3]}${short[3]}`.toLowerCase();
+  const long = /^#?([0-9a-f]{6})$/i.exec(raw);
+  return long ? `#${long[1].toLowerCase()}` : null;
+}
+
+function sanitizeTagColors(colors, allowedTags = null) {
+  const out = {};
+  if (!colors || typeof colors !== 'object') return out;
+  for (const [tag, value] of Object.entries(colors)) {
+    const key = String(tag).trim().toLowerCase();
+    if (!key) continue;
+    if (allowedTags && !allowedTags.has(key)) continue;
+    const color = normalizeTagColor(value);
+    if (color) out[key] = color;
+  }
+  return out;
+}
+
+function sanitizeLayerTagStore(pages) {
+  if (!Array.isArray(pages)) return [];
+  return pages
+    .filter(p => p && Array.isArray(p.layers))
+    .map(p => ({
+      id: String(p.id ?? ''),
+      name: String(p.name ?? ''),
+      layers: p.layers
+        .filter(l => l && typeof l.name === 'string')
+        .map(l => ({ name: l.name, tags: normalizeLayerTags(l.tags) }))
+        .filter(l => l.tags.length > 0),
+    }))
+    .filter(p => p.layers.length > 0);
+}
+
+async function readLayerTagsFromZip(zip) {
+  const json = await readSolutionPayload(zip, TAGS_PART);
+  const pages = sanitizeLayerTagStore(json && json.pages);
+  return { pages, tagColors: sanitizeTagColors(json && json.tagColors) };
+}
+
+export async function readVsdxLayerTags(arrayBuffer) {
+  const zip = await JSZip.loadAsync(arrayBuffer);
+  return readLayerTagsFromZip(zip);
+}
+
+// Hangs stored tags onto the freshly parsed page/layer objects, so the rest of
+// the app can treat `layer.tags` as just another layer property.
+function applyLayerTagsToPages(pages, store) {
+  if (!store.length) return;
+  const byPageId = new Map(store.map(entry => [String(entry.id), entry]));
+  const byPageName = new Map(store.map(entry => [String(entry.name), entry]));
+  for (const page of pages) {
+    const entry = byPageId.get(String(page.id)) || byPageName.get(String(page.name));
+    if (!entry) continue;
+    const tagsByKey = new Map(entry.layers.map(l => [l.name, l.tags]));
+    for (const layer of page.layers || []) {
+      const tags = tagsByKey.get(layerTagKey(layer));
+      if (tags && tags.length) layer.tags = [...tags];
+    }
+  }
+}
+
+// Rebuilds the store from the live page objects. Called on every save path, so
+// tags travel with the drawing without each caller having to pass them along.
+// `tagColors` is optional: omitting it keeps whatever palette the package
+// already carries, so prune/export paths never drop a colour they didn't know
+// about.
+async function writeLayerTagsToZip(zip, pages, tagColors) {
+  const store = sanitizeLayerTagStore((pages || []).map(page => ({
+    id: page.id,
+    name: page.name,
+    layers: (page.layers || []).map(layer => ({ name: layerTagKey(layer), tags: layer.tags })),
+  })));
+
+  const existing = tagColors === undefined ? await readSolutionPayload(zip, TAGS_PART) : null;
+  // Colours for tags nobody uses any more are dropped rather than accumulated.
+  const usedTags = new Set(store.flatMap(p => p.layers.flatMap(l => l.tags.map(t => t.toLowerCase()))));
+  const colors = sanitizeTagColors(tagColors === undefined ? existing?.tagColors : tagColors, usedTags);
+
+  const empty = store.length === 0 && Object.keys(colors).length === 0;
+  await writeSolutionPayload(zip, TAGS_SLOT, empty ? null : { pages: store, tagColors: colors });
 }
 
 function getOrCreateCell(doc, row, name) {
@@ -1738,7 +1905,7 @@ export async function replaceVsdxShapeXmlSnippet(arrayBuffer, pageId, shapeId, s
   return zip.generateAsync({ type: 'arraybuffer' });
 }
 
-async function patchVsdxLayerPermissions(zip, pages) {
+async function patchVsdxLayerPermissions(zip, pages, tagColors) {
   const pagesFile = zip.file('visio/pages/pages.xml');
   if (!pagesFile) throw new Error('VSDX package is missing visio/pages/pages.xml');
   const pagesXml = await pagesFile.async('string');
@@ -1781,6 +1948,11 @@ async function patchVsdxLayerPermissions(zip, pages) {
 
   const xml = new XMLSerializer().serializeToString(doc);
   zip.file('visio/pages/pages.xml', xml);
+
+  // Tags have no native cell to live in, so they go to the Solution XML store.
+  // Doing it here (rather than in one caller) means every save path — plain
+  // save, prune, export — carries them along.
+  await writeLayerTagsToZip(zip, pages, tagColors);
 }
 
 async function reconcileVsdxPages(zip, pages) {
@@ -1905,10 +2077,10 @@ async function patchVsdxShapeAssignments(zip, pages) {
   }
 }
 
-export async function saveVsdxLayerPermissions(arrayBuffer, pages, viewTemplates) {
+export async function saveVsdxLayerPermissions(arrayBuffer, pages, viewTemplates, tagColors) {
   const zip = await JSZip.loadAsync(arrayBuffer);
   await reconcileVsdxPages(zip, pages);
-  await patchVsdxLayerPermissions(zip, pages);
+  await patchVsdxLayerPermissions(zip, pages, tagColors);
   await patchVsdxShapeAssignments(zip, pages);
   // Only touch the view-template store when the caller passes the arg, so
   // other save paths leave any existing presets untouched.

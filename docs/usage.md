@@ -39,6 +39,32 @@ Bulk controls:
   with*, *Ends with*).
 - **Select filter** / **Deselect filter** — apply to just the filtered layers.
 
+### Layer tags
+
+Layers can carry free-form **tags** — "electrical", "draft", "as-built" — so a
+drawing can be sliced by concern rather than by layer name.
+
+- **Tag a layer**: click the 🏷 button on its row in the Layers sidebar and type
+  a comma-separated list, or type into the **Tags** column of the
+  [Layer Matrix](#layer-visibility-matrix). Tags are trimmed and
+  de-duplicated case-insensitively, and each page keeps its own tagging.
+- **Colours**: every tag gets a colour — derived from its name until you pick
+  one. Click a tag's swatch in the **Tags** legend (sidebar or matrix) to
+  recolour it; the colour is document-wide, so a tag looks the same everywhere.
+- **Filter by tag**: the layer search box matches tag names as well as layer
+  names, and `tag:electrical` restricts the match to tags only. Combine it with
+  **Select filter** / **Deselect filter** to show or hide everything carrying a
+  tag in one click. Clicking a tag in the legend fills the box for you.
+- The editor-only **Unlayered** row can't be tagged — it isn't a real Visio
+  layer, so there'd be nowhere to store it.
+
+Visio's layer object model has no tag field, so tags and their colours are
+stored in the drawing's Solution XML store — the same channel as named views,
+proven to survive a Microsoft Visio open+save (see
+[visio-roundtrip.md](visio-roundtrip.md)). Layers are matched by name, so tags
+stay attached even if Visio renumbers layers. Like every other edit they live in
+memory until you **Save VSDX** (or **Export SVG**).
+
 ### Sheet tabs
 
 - Click a sheet name to open it or its **×** to delete it.
@@ -58,6 +84,8 @@ you can:
 - **Search matrix** (`Ctrl+F`) to jump to a layer.
 - Rename layers: type into **Replace layer names with** and click **Replace
   all** to rename matching layers in bulk.
+- Edit the **Tags** column (comma-separated) for any layer on any page; the
+  search box matches tags too.
 - Create, apply, update, and delete **Named views** without leaving the matrix.
 
 ### Named views (layer presets)

@@ -394,6 +394,87 @@
       color: #287c78;
       font-weight: 700;
     }
+    .layer-item .layer-tags {
+      display: flex;
+      gap: 4px;
+      flex-shrink: 1;
+      overflow: hidden;
+    }
+    .layer-item .layer-tag {
+      background: rgba(83, 52, 131, 0.55);
+      border: 1px solid #7b52b9;
+      border-radius: 9px;
+      padding: 0 7px;
+      font-size: 11px;
+      line-height: 16px;
+      color: #d8ceff;
+      white-space: nowrap;
+      max-width: 90px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .layer-item.disabled .layer-tag {
+      opacity: 0.4;
+    }
+    #layers-tags {
+      padding: 8px 12px 10px;
+      border-bottom: 1px solid rgba(93, 121, 181, 0.25);
+    }
+    .tag-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 4px 0 6px;
+    }
+    .tag-legend-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      background: rgba(11, 18, 38, 0.6);
+      border: 1px solid rgba(93, 121, 181, 0.45);
+      border-radius: 10px;
+      padding: 1px 7px 1px 2px;
+    }
+    .tag-legend-item input[type="color"] {
+      width: 16px;
+      height: 16px;
+      padding: 0;
+      border: none;
+      background: none;
+      cursor: pointer;
+    }
+    .tag-legend-item .tag-legend-name {
+      background: none;
+      border: none;
+      padding: 0;
+      color: #d8d8e8;
+      font: inherit;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .tag-legend-item .tag-legend-name:hover {
+      color: #fff;
+      text-decoration: underline;
+    }
+    .tag-legend-item .tag-legend-count {
+      font-size: 10px;
+      color: #7d88b5;
+    }
+    .layer-item .layer-tag-edit {
+      flex-shrink: 0;
+      background: none;
+      border: none;
+      padding: 0 2px;
+      font-size: 12px;
+      line-height: 1;
+      cursor: pointer;
+      opacity: 0.35;
+      color: inherit;
+    }
+    .layer-item:hover .layer-tag-edit,
+    .layer-item.focused .layer-tag-edit {
+      opacity: 1;
+    }
     .toolbar button.active {
       background: #533483;
       border-color: #7b52b9;
@@ -551,6 +632,14 @@
       padding-bottom: 0;
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+    .layer-matrix .matrix-layer-tags {
+      padding-top: 0;
+      padding-bottom: 0;
+    }
+    .layer-matrix .matrix-layer-tags .matrix-text-input {
+      min-width: 140px;
+      max-width: 220px;
     }
     .matrix-yes {
       color: #8be58b;
@@ -1023,6 +1112,11 @@
           </div>
           <div class="views-hint">Views are stored inside the Visio XML package and persist when you save it.</div>
         </div>
+        <div id="layers-tags" style="display:none">
+          <div class="views-label">Tags</div>
+          <div id="layers-tag-legend" class="tag-legend"></div>
+          <div class="views-hint">Click a tag to filter, or its swatch to recolour. Tags are stored inside the Visio XML package.</div>
+        </div>
         <div id="layers-list" tabindex="0" role="listbox" aria-label="Layers"></div>
       </div>
       <div id="viewport">
@@ -1062,6 +1156,11 @@
         <button id="btn-matrix-view-update" class="matrix-replace-action" type="button" title="Overwrite the selected view with the current layer settings" disabled>Update</button>
         <button id="btn-matrix-view-delete" class="matrix-replace-action" type="button" title="Delete the selected view" disabled>Delete</button>
         <span class="matrix-view-hint">Views include visibility, print, active, lock, snap, and glue.</span>
+      </div>
+      <div id="layer-matrix-tags" class="matrix-view-tools" style="display:none">
+        <span class="matrix-view-label">Tags</span>
+        <div id="layer-matrix-tag-legend" class="tag-legend"></div>
+        <span class="matrix-view-hint">Type comma-separated tags in the Tags column; click a swatch to recolour.</span>
       </div>
       <div id="layer-matrix-body" class="matrix-body"></div>
     </div>

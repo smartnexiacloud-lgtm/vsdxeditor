@@ -59,7 +59,19 @@ the package from its in-memory document, so:
 
 ## How this app uses it
 
-This finding is not academic — it's what backs the **Named views** feature
+This finding is not academic — it backs two features.
+
+**Layer tags** ([usage.md](usage.md#layer-tags)) attach free-form labels, and a
+colour per label, to layers. Visio's layer object model has no tag slot — an
+extra `Cell` in a `Layer` row is dropped the moment Visio re-serializes the page
+— so the labels go into `visio/solutions/vsdxeditor-layer-tags.xml`, wired with
+the `solutionxml` relationship. Layers are keyed by name rather than index, so
+tags stay attached across Visio renumbering. See `readVsdxLayerTags` and
+`writeLayerTagsToZip` in `src/vsdx-parser.js`; `scripts/test-layer-tags.mjs`
+asserts both the wiring and survival of a package rebuild that keeps only
+relationship-reachable parts.
+
+**Named views**
 ([usage.md](usage.md#named-views-layer-presets)). Each named view is a per-page
 snapshot of layer visibility, and it's persisted into the drawing as a
 `visio/solutions/vsdxeditor-views.xml` part wired with the `solutionxml`

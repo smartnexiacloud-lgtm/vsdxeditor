@@ -1,4 +1,4 @@
-import { parseVsdx, saveVsdxLayerPermissions, saveVsdxWithoutHiddenLayers, saveVsdxWithoutNonSelectedLayers, saveVsdxWithoutNonVisibleData, getVsdxShapeXmlSnippet, replaceVsdxShapeXmlSnippet } from './vsdx-parser.js';
+import { parseVsdx, saveVsdxLayerPermissions, saveVsdxWithoutHiddenLayers, saveVsdxWithoutNonSelectedLayers, saveVsdxWithoutNonVisibleData, getVsdxShapeXmlSnippet, replaceVsdxShapeXmlSnippet, normalizeLayerTags, normalizeTagColor } from './vsdx-parser.js';
 import { embedVsdxInSvg, extractVsdxFromSvg } from './svg-vsdx-embed.js';
 import { parseVsd } from './vsd-parser.js';
 import { renderPage } from './svg-renderer.js';
@@ -39,6 +39,10 @@ const saveVsdxButton = document.getElementById('btn-save-vsdx');
 const removeNonSelectedButton = document.getElementById('btn-remove-non-selected');
 const removeNonVisibleButton = document.getElementById('btn-remove-non-visible');
 const layersViews = document.getElementById('layers-views');
+const layersTags = document.getElementById('layers-tags');
+const layersTagLegend = document.getElementById('layers-tag-legend');
+const layerMatrixTags = document.getElementById('layer-matrix-tags');
+const layerMatrixTagLegend = document.getElementById('layer-matrix-tag-legend');
 const viewSelect = document.getElementById('view-select');
 const btnViewSave = document.getElementById('btn-view-save');
 const btnViewUpdate = document.getElementById('btn-view-update');
@@ -72,6 +76,8 @@ let currentFileType = null;
 let currentFileExtension = '.vsdx';
 let currentPackageEditable = false;
 let viewTemplates = [];
+// Document-wide tag palette: { <lowercased tag>: '#rrggbb' }.
+let layerTagColors = {};
 let selectedViewIndex = null;
 let draggedPageId = null;
 let contextPageId = null;
@@ -102,6 +108,7 @@ async function applyUpdatedVsdxBuffer(buffer, pageId = null) {
   const result = await parseVsdx(buffer);
   currentFileBuffer = buffer;
   currentPages = result.pages;
+  layerTagColors = { ...(result.layerTagColors || {}) };
   hiddenShapeIdsByPage.clear();
   collapsedShapeIdsByPage.clear();
 
@@ -364,6 +371,7 @@ function buildLayersSidebar() {
   layersList.innerHTML = '';
   if (!currentPages.length) return;
   const layers = getCurrentLayers();
+  refreshTagUI();
 
   if (layers.length === 0) {
     layersSidebar.classList.remove('visible');
@@ -417,6 +425,37 @@ function buildLayersSidebar() {
 
     item.appendChild(checkbox);
     item.appendChild(name);
+
+    const tags = document.createElement('span');
+    tags.className = 'layer-tags';
+    for (const tag of getLayerTags(layer)) {
+      const chip = document.createElement('span');
+      chip.className = 'layer-tag';
+      chip.textContent = tag;
+      chip.title = `Tag: ${tag}`;
+      styleTagChip(chip, tag);
+      tags.appendChild(chip);
+    }
+    item.appendChild(tags);
+
+    // Tags need somewhere to be written back to, which only editable XML
+    // packages have.
+    if (!isVirtualLayer(layer) && currentPackageEditable) {
+      const tagButton = document.createElement('button');
+      tagButton.type = 'button';
+      tagButton.className = 'layer-tag-edit';
+      tagButton.textContent = '🏷';
+      tagButton.tabIndex = -1;
+      tagButton.title = `Edit tags for ${displayName}`;
+      tagButton.setAttribute('aria-label', `Edit tags for ${displayName}`);
+      // The row click toggles visibility; tagging must not also flip the layer.
+      tagButton.addEventListener('click', (e) => {
+        e.stopPropagation();
+        promptLayerTags(layer);
+      });
+      item.appendChild(tagButton);
+    }
+
     layersList.appendChild(item);
   }
 
@@ -504,18 +543,180 @@ function getLayerDisplayName(layer) {
   return isUnnamedLayer(layer) ? `Layer ${layer.index}` : layer.name;
 }
 
+// ── Layer tags ────────────────────────────────────────────────────────────
+// Labels a user sticks on a layer ("electrical", "draft"). They are not a Visio
+// concept, so they are persisted into the drawing's Solution XML store, which
+// survives a real Visio open+save (see docs/visio-roundtrip.md).
+function getLayerTags(layer) {
+  return Array.isArray(layer?.tags) ? layer.tags : [];
+}
+
+function setLayerTags(layer, tags) {
+  // The virtual "Unlayered" row is an editor fiction with nowhere to persist to.
+  if (!layer || isVirtualLayer(layer)) return false;
+  const next = normalizeLayerTags(tags);
+  if (next.join(',') === getLayerTags(layer).join(',')) return false;
+  if (next.length) layer.tags = next;
+  else delete layer.tags;
+  return true;
+}
+
+function tagKey(tag) {
+  return String(tag || '').trim().toLowerCase();
+}
+
+// Until someone picks a colour, a tag gets a stable one derived from its name,
+// so chips are already distinguishable on a freshly tagged drawing.
+function defaultTagColor(tag) {
+  const key = tagKey(tag);
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  const hue = hash % 360;
+  const [r, g, b] = hslToRgb(hue / 360, 0.52, 0.55);
+  return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+}
+
+function hslToRgb(h, s, l) {
+  const f = (n) => {
+    const k = (n + h * 12) % 12;
+    const a = s * Math.min(l, 1 - l);
+    return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))));
+  };
+  return [f(0), f(8), f(4)];
+}
+
+function getTagColor(tag) {
+  return layerTagColors[tagKey(tag)] || defaultTagColor(tag);
+}
+
+function setTagColor(tag, color) {
+  const normalized = normalizeTagColor(color);
+  if (!normalized) return;
+  layerTagColors[tagKey(tag)] = normalized;
+}
+
+// Chip text has to stay readable on whatever colour the user picked.
+function contrastTextColor(hex) {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || '');
+  if (!m) return '#f0f0f5';
+  const [r, g, b] = [1, 2, 3].map(i => parseInt(m[i], 16) / 255);
+  const lin = (c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+  const luminance = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+  return luminance > 0.45 ? '#141a2e' : '#f4f2ff';
+}
+
+function styleTagChip(chip, tag) {
+  const color = getTagColor(tag);
+  chip.style.background = color;
+  chip.style.borderColor = color;
+  chip.style.color = contrastTextColor(color);
+}
+
+// Every tag in use on the current page, with how many layers carry it.
+function getPageTagUsage(page = currentPages[currentPageIndex]) {
+  const usage = new Map();
+  for (const layer of getUiLayers(page)) {
+    for (const tag of getLayerTags(layer)) {
+      const key = tagKey(tag);
+      const entry = usage.get(key) || { tag, count: 0 };
+      entry.count += 1;
+      usage.set(key, entry);
+    }
+  }
+  return [...usage.values()].sort((a, b) => a.tag.localeCompare(b.tag));
+}
+
+function getDocumentTagUsage() {
+  const usage = new Map();
+  for (const page of currentPages) {
+    for (const { tag, count } of getPageTagUsage(page)) {
+      const key = tagKey(tag);
+      const entry = usage.get(key) || { tag, count: 0 };
+      entry.count += count;
+      usage.set(key, entry);
+    }
+  }
+  return [...usage.values()].sort((a, b) => a.tag.localeCompare(b.tag));
+}
+
+function buildTagLegend(container, usage, onPick) {
+  container.innerHTML = '';
+  for (const { tag, count } of usage) {
+    const item = document.createElement('span');
+    item.className = 'tag-legend-item';
+
+    const swatch = document.createElement('input');
+    swatch.type = 'color';
+    swatch.value = getTagColor(tag);
+    swatch.title = `Colour for "${tag}"`;
+    swatch.setAttribute('aria-label', `Colour for tag ${tag}`);
+    swatch.addEventListener('input', () => {
+      setTagColor(tag, swatch.value);
+      refreshTagUI();
+    });
+
+    const name = document.createElement('button');
+    name.type = 'button';
+    name.className = 'tag-legend-name';
+    name.textContent = tag;
+    name.title = `Filter layers tagged "${tag}"`;
+    name.addEventListener('click', () => onPick(tag));
+
+    const countEl = document.createElement('span');
+    countEl.className = 'tag-legend-count';
+    countEl.textContent = String(count);
+
+    item.append(swatch, name, countEl);
+    container.appendChild(item);
+  }
+}
+
+function refreshTagUI() {
+  const pageUsage = getPageTagUsage();
+  if (layersTags) layersTags.style.display = pageUsage.length ? '' : 'none';
+  if (layersTagLegend) {
+    buildTagLegend(layersTagLegend, pageUsage, (tag) => {
+      layerFilterMode.value = 'contains';
+      layerFilterText.value = `tag:${tag}`;
+      buildLayersSidebar();
+    });
+  }
+
+  const docUsage = getDocumentTagUsage();
+  if (layerMatrixTags) layerMatrixTags.style.display = docUsage.length ? '' : 'none';
+  if (layerMatrixTagLegend) {
+    buildTagLegend(layerMatrixTagLegend, docUsage, (tag) => {
+      if (!layerMatrixSearch) return;
+      layerMatrixSearch.value = tag;
+      buildLayerMatrix();
+      updateMatrixReplaceState();
+    });
+  }
+
+  // Chips already on screen need the new colour without a full rebuild.
+  for (const chip of layersList.querySelectorAll('.layer-tag')) styleTagChip(chip, chip.textContent);
+}
+
+function promptLayerTags(layer) {
+  if (isVirtualLayer(layer)) return;
+  const answer = window.prompt(
+    `Tags for "${getLayerDisplayName(layer)}" (comma-separated):`,
+    getLayerTags(layer).join(', ')
+  );
+  if (answer === null) return;
+  if (!setLayerTags(layer, answer)) return;
+  buildLayersSidebar();
+  if (layerMatrixModal.classList.contains('visible')) buildLayerMatrix();
+}
+
 function getCurrentLayer(layerIndex) {
   // Unfiltered on purpose: a shape may still reference a placeholder index.
   return (currentPages[currentPageIndex]?.layers || [])
     .find(layer => String(layer.index) === String(layerIndex));
 }
 
-function layerMatchesFilter(layer) {
-  const needle = normalizeLayerText(layerFilterText.value);
-  if (!needle) return true;
-
-  const haystack = normalizeLayerText(getLayerDisplayName(layer));
-  switch (layerFilterMode.value) {
+function needleMatches(haystack, needle, mode) {
+  switch (mode) {
     case 'starts':
       return haystack.startsWith(needle);
     case 'ends':
@@ -523,11 +724,25 @@ function layerMatchesFilter(layer) {
     case 'equals':
       return haystack === needle;
     case 'notContains':
-      return !haystack.includes(needle);
     case 'contains':
     default:
       return haystack.includes(needle);
   }
+}
+
+function layerMatchesFilter(layer) {
+  const raw = String(layerFilterText.value || '').trim();
+  // `tag:foo` narrows the search to tags, so "Deselect filter" can hide every
+  // layer carrying a tag without name collisions getting in the way.
+  const tagsOnly = /^tag:/i.test(raw);
+  const needle = normalizeLayerText(tagsOnly ? raw.slice(4) : raw);
+  if (!needle) return true;
+
+  const tags = getLayerTags(layer).map(normalizeLayerText);
+  const haystacks = tagsOnly ? tags : [normalizeLayerText(getLayerDisplayName(layer)), ...tags];
+  const mode = layerFilterMode.value;
+  const hit = haystacks.some(haystack => needleMatches(haystack, needle, mode));
+  return mode === 'notContains' ? !hit : hit;
 }
 
 function getFilteredLayers() {
@@ -1151,6 +1366,30 @@ function createEditableTextCell(page, layer, prop, fallbackValue = '', matrixRow
   return cell;
 }
 
+function createLayerTagsCell(page, layer, matrixRow = null, matrixCol = null, onChange = null) {
+  const cell = document.createElement('td');
+  cell.className = 'matrix-layer-tags';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'matrix-text-input';
+  input.value = getLayerTags(layer).join(', ');
+  input.placeholder = 'tags…';
+  input.disabled = !currentPackageEditable;
+  // Page-qualified: the matrix lists the same layer name once per page.
+  input.setAttribute('aria-label', `${page.name || 'Page'} ${getLayerDisplayName(layer)} tags`);
+  if (matrixRow !== null && matrixCol !== null) {
+    input.dataset.matrixRow = String(matrixRow);
+    input.dataset.matrixCol = String(matrixCol);
+  }
+  input.addEventListener('change', () => {
+    const changed = setLayerTags(layer, input.value);
+    input.value = getLayerTags(layer).join(', ');
+    if (changed && onChange) onChange();
+  });
+  cell.appendChild(input);
+  return cell;
+}
+
 function normalizeMatrixText(value) {
   return String(value || '').toLowerCase();
 }
@@ -1255,7 +1494,8 @@ function layerMatchesMatrixFilter(page, layer) {
     layer.nameUniv || '',
     layer.index,
     layer.color || '',
-    layer.colorTrans || ''
+    layer.colorTrans || '',
+    ...getLayerTags(layer)
   ].map(normalizeMatrixText).join(' ');
 
   return haystack.includes(needle);
@@ -1285,7 +1525,7 @@ function buildLayerMatrix() {
 
   const head = document.createElement('thead');
   const headerRow = document.createElement('tr');
-  ['Page', 'Layer', 'Index', 'File Visible', 'Displayed Now', 'Print', 'Active', 'Lock', 'Snap', 'Glue', 'Color', 'Transparency'].forEach(label => {
+  ['Page', 'Layer', 'Tags', 'Index', 'File Visible', 'Displayed Now', 'Print', 'Active', 'Lock', 'Snap', 'Glue', 'Color', 'Transparency'].forEach(label => {
     const th = document.createElement('th');
     th.textContent = label;
     headerRow.appendChild(th);
@@ -1303,7 +1543,7 @@ function buildLayerMatrix() {
       const row = document.createElement('tr');
       row.appendChild(createTextCell(page.name || 'Page'));
       const emptyCell = createTextCell(layerMatrixSearch?.value ? 'No matching layers' : 'No layers', 'matrix-muted');
-      emptyCell.colSpan = 11;
+      emptyCell.colSpan = 12;
       row.appendChild(emptyCell);
       body.appendChild(row);
       continue;
@@ -1319,15 +1559,20 @@ function buildLayerMatrix() {
       row.appendChild(createTextCell(page.name || 'Page'));
       if (isVirtualLayer(layer)) {
         row.appendChild(createTextCell('Unlayered'));
+        row.appendChild(createTextCell('-', 'matrix-muted'));
         row.appendChild(createTextCell('Editor only', 'matrix-muted'));
       } else {
         row.appendChild(createEditableTextCell(page, layer, 'name', `Layer ${layer.index}`, matrixRow, 0, () => {
           if (isCurrentPage) buildLayersSidebar();
           buildLayerMatrix();
         }));
+        row.appendChild(createLayerTagsCell(page, layer, matrixRow, 1, () => {
+          if (isCurrentPage) buildLayersSidebar();
+          else refreshTagUI();
+        }));
         row.appendChild(createTextCell(String(layer.index)));
       }
-      row.appendChild(createEditableBoolCell(page, layer, 'visible', true, matrixRow, 1, (selected) => {
+      row.appendChild(createEditableBoolCell(page, layer, 'visible', true, matrixRow, 2, (selected) => {
         if (isCurrentPage) {
           if (selected) hiddenLayers.delete(layer.index);
           else hiddenLayers.add(layer.index);
@@ -1337,11 +1582,11 @@ function buildLayerMatrix() {
         buildLayerMatrix();
       }));
       row.appendChild(createBoolCell(displayedNow, true));
-      row.appendChild(createEditableBoolCell(page, layer, 'print', true, matrixRow, 2));
-      row.appendChild(createEditableBoolCell(page, layer, 'active', false, matrixRow, 3));
-      row.appendChild(createEditableBoolCell(page, layer, 'lock', false, matrixRow, 4));
-      row.appendChild(createEditableBoolCell(page, layer, 'snap', true, matrixRow, 5));
-      row.appendChild(createEditableBoolCell(page, layer, 'glue', true, matrixRow, 6));
+      row.appendChild(createEditableBoolCell(page, layer, 'print', true, matrixRow, 3));
+      row.appendChild(createEditableBoolCell(page, layer, 'active', false, matrixRow, 4));
+      row.appendChild(createEditableBoolCell(page, layer, 'lock', false, matrixRow, 5));
+      row.appendChild(createEditableBoolCell(page, layer, 'snap', true, matrixRow, 6));
+      row.appendChild(createEditableBoolCell(page, layer, 'glue', true, matrixRow, 7));
       row.appendChild(createTextCell(layer.color || '-', layer.color ? '' : 'matrix-muted'));
       row.appendChild(createTextCell(layer.colorTrans || '-', layer.colorTrans ? '' : 'matrix-muted'));
       body.appendChild(row);
@@ -1438,6 +1683,7 @@ async function loadFile(file) {
     currentPackageEditable = currentFileType === 'vsdx' && result.hasPagesPart !== false;
     currentPages = result.pages;
     viewTemplates = Array.isArray(result.viewTemplates) ? result.viewTemplates : [];
+    layerTagColors = { ...(result.layerTagColors || {}) };
     selectedViewIndex = null;
     hiddenShapeIdsByPage.clear();
     collapsedShapeIdsByPage.clear();
@@ -1739,7 +1985,7 @@ saveVsdxButton.addEventListener('click', async () => {
   }
 
   try {
-    const output = await saveVsdxLayerPermissions(currentFileBuffer, currentPages, viewTemplates);
+    const output = await saveVsdxLayerPermissions(currentFileBuffer, currentPages, viewTemplates, layerTagColors);
     const blob = new Blob([output], { type: 'application/octet-stream' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1949,7 +2195,7 @@ document.getElementById('btn-export').addEventListener('click', async () => {
       // Embed what "Save VSDX" would produce, so layer edits and named views
       // round-trip too.
       const source = currentPackageEditable
-        ? await saveVsdxLayerPermissions(currentFileBuffer, currentPages, viewTemplates)
+        ? await saveVsdxLayerPermissions(currentFileBuffer, currentPages, viewTemplates, layerTagColors)
         : currentFileBuffer;
       svgStr = embedVsdxInSvg(svgStr, source, fileName.textContent || 'diagram.vsdx');
     }

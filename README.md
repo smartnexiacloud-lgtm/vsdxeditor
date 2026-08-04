@@ -26,6 +26,10 @@ portable offline builds.
 - **Layers** — toggle layer visibility from a sidebar, or open the full
   **Layer Visibility Matrix** to bulk-edit which layers each page shows,
   filter by page, search/filter layers, and rename layers with *Replace all*.
+- **Layer tags** — attach free-form, colour-coded tags to layers ("electrical",
+  "draft") from the sidebar or the matrix, then filter with `tag:<name>` and
+  bulk show/hide everything carrying a tag. Tags and their colours are embedded
+  in the `.vsdx` and survive a Microsoft Visio round-trip.
 - **Named views** — save the current layer visibility as a named preset (a
   per-page snapshot) so a collaborative drawing can flip between the layer sets
   different teams care about. Views are embedded in the `.vsdx` itself — they
