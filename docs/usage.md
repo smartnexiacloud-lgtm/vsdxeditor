@@ -59,6 +59,110 @@ Bulk controls:
   with*, *Ends with*).
 - **Select filter** / **Deselect filter** — apply to just the filtered layers.
 
+### Grouping layers by a delimiter
+
+Visio has no layer hierarchy — a page carries one flat list. What drawings do
+instead is put the hierarchy in the *name*: `Electrical/HV`, `Electrical/LV`,
+`Plumbing/Cold`. Tick **Group by delimiter** in the Layers sidebar to read that
+convention back out and nest the rows accordingly.
+
+- The box next to it is the **delimiter**, and it is yours to choose — `/`, `.`,
+  `::`, anything. It is matched literally, not as a pattern. Emptying it returns
+  the list to flat, as does unticking the box.
+- **▾ / ▸** collapses or expands a group; **Collapse all** / **Expand all** does
+  the lot.
+- A group's **checkbox** shows or hides every layer under it, and reads as
+  half-ticked when only part of the group is showing. Its count (`2/3`) says how
+  many.
+- A layer with no delimiter in its name stays where it is, at the top level. A
+  layer that is *also* a parent — `Electrical` alongside `Electrical/HV` — keeps
+  its own row and gains a twisty for its children.
+
+No group is ever written to the document: the tree is derived from the layer
+names every time, and every layer keeps its own row and index. What *is* saved
+is the setting itself — whether grouping is on, your delimiter, and which groups
+you left collapsed — because a drawing whose layers are named `Electrical/HV` is
+grouped by `/` for everybody, not just for you. It rides the same channel as
+[named views](#named-views-layer-presets) and [layer tags](#layer-tags), so it
+survives a round-trip through the real Visio, and whoever opens the file next
+sees the tree you saw. A drawing that was never grouped opens flat, as before.
+
+#### Moving and renaming — the name *is* the path
+
+Nothing in a `.vsdx` records where a layer sits, because nothing in Visio has a
+place to sit: the tree is derived from the names and nothing else. **So moving a
+layer is renaming it.** Give a layer another group's prefix and that is where it
+appears.
+
+Every row — group or layer — has a **✎** that edits **the full path the row
+stands for**, prefilled so you can retype just the part you want to change:
+
+| On a row for… | Typing… | Does |
+| --- | --- | --- |
+| the layer `Electrical/HV` | `Electrical/EHV` | renames it |
+| the layer `Electrical/HV` | `Plumbing/HV` | **moves** it into `Plumbing` |
+| the layer `Electrical/HV` | `HV` | moves it out to the top level |
+| the group `Electrical` | `Power` | re-prefixes `Electrical/*` → `Power/*` |
+| the group `Electrical` | `Site/Power` | moves the whole subtree under `Site` |
+
+Only the part of each name the row accounts for is replaced, so everything
+nested below keeps its own suffix and travels along: moving the group
+`Electrical` moves `Electrical/HV` and `Electrical/LV` with it, and layers
+outside it are untouched. A row that is both a layer and a parent — `Electrical`
+next to `Electrical/HV` — renames itself and its children together.
+
+Moving a group onto another group's name **merges** the two. That is only a
+clash if it would leave two layers on the page with the same *full* name, which
+is refused for the same reason a duplicate new layer is.
+
+With grouping switched off the same **✎** just renames — there is no path on
+show — but typing a delimiter into the name still files the layer into a group;
+you simply won't see it as one until you tick **Group by delimiter**.
+
+Renames are ordinary layer renames, so — like the Layer Matrix's *Replace all* —
+they live in memory until you **Save VSDX**, and a [named view](#named-views-layer-presets)
+that referred to a layer by its old name no longer matches it.
+
+#### The right-click menu
+
+**Right-click any row** — layer or group — for the same actions by name:
+
+| Menu entry | On a layer row | On a group row |
+| --- | --- | --- |
+| **Rename…** | edits the row's full path (the **✎** above) | re-prefixes every layer under the group |
+| **Move to group…** | asks only *which group*, keeping the layer's own name; blank puts it at the top level | moves the whole subtree, name intact |
+| **Edit tags…** | the row's [tags](#layer-tags) | **adds** the tags you type to every layer under the group, keeping the tags each already has |
+
+**Move to group…** is the same edit as a rename with the last segment held
+fixed — useful when the name is long and only its home is wrong. It works with
+grouping switched off too, where it simply prefixes the name.
+
+### Adding and removing layers
+
+- **+ New layer…** under the bulk controls adds a layer to the page you are on.
+  Names have to be unique on the page — tags and named views identify layers by
+  name, so two layers sharing one would be indistinguishable to both.
+- **🗑** on a layer row deletes it, after telling you how many shapes are on it.
+- **+ New layer…** in a shape's right-click menu creates a layer *and* files
+  that shape onto it — handy right after drawing something with the
+  [pen](#drawing-new-shapes-pen), which lands unlayered.
+
+Deleting a layer is not deleting its drawing. Its shapes stay exactly where they
+are; a shape that was also on another layer simply loses this one, and a shape
+left on no layer at all appears under the editor-only **Unlayered** row, from
+where **Send Object To Layer** can file it somewhere else.
+
+Both buttons need an editable Visio XML package — a read-only binary `.vsd` or a
+stencil has nowhere to write a layer to — and, like every other edit, they only
+change the in-memory document until you **Save VSDX**.
+
+A layer exists in the file as a numbered row, and every shape records its layers
+by *number*, so the numbers are never reused or shuffled: a new layer takes one
+past the highest already present, and deleting a layer leaves its number unused
+rather than renumbering the others (which would move every shape on them). Layer
+creation is a per-page action, so it lives in the sidebar rather than the
+cross-page [Layer Matrix](#layer-visibility-matrix).
+
 ### Layer tags
 
 Layers can carry free-form **tags** — "electrical", "draft", "as-built" — so a
@@ -136,6 +240,14 @@ re-saved in the real Microsoft Visio desktop app — see
 - **Shape Tree** sidebar: select a shape to see its parent group hierarchy and
   the style it inherits.
 - **Right-click a shape** to open its context menu:
+  - **Rename…** — set the shape's Visio name (its `Name`/`NameU`, the same field
+    Visio's own *Shape Name* dialog edits). It is what the Shape Tree, the
+    *Select component* list and the diff report call the shape, so naming the
+    ones you care about — `Feeder cable` rather than `Shape.7` — is worth doing
+    before a drawing gets big. The prompt starts from the name it has now;
+    leaving it blank clears the name and the shape falls back to its text or its
+    `Type.ID`. The same rename is available by double-clicking a row in the
+    Shape Tree.
   - **Edit XML** — open the shape's raw XML in an editor; **Apply XML** to
     commit your change or **Cancel** to discard.
   - **Select component** — every shape whose box covers the point you clicked,
@@ -145,8 +257,66 @@ re-saved in the real Microsoft Visio desktop app — see
     points the rest of the menu at it. Nesting is shown with `›` markers, and
     shapes currently hidden are marked `hidden` — they stay listed, because a
     shape you cannot see is often the one you are looking for.
+  - **Arrange** — see below.
   - **Send Object To Layer** — move the shape onto a different layer (filter the
-    layer list with the search box).
+    layer list with the search box), or **+ New layer…** to create one and file
+    the shape onto it at the same time.
+
+### Selecting several shapes, and arranging them
+
+**Ctrl-click** (⌘-click on a Mac) or **shift-click** a shape to add it to the
+selection, and again to drop it; a plain click selects just that one. Selected
+shapes are outlined on the canvas — solid for the one the Shape Tree and the
+*Send Object To Layer* list are pointed at, dashed for the rest. The same
+ctrl-click works on the rows in *Select component*, the shape search results and
+a layer's object list. Right-clicking a shape that is already selected keeps the
+whole selection; right-clicking anything else selects that shape instead.
+
+The **Arrange** section of the right-click menu then acts on everything
+selected:
+
+| Action | What it does |
+| --- | --- |
+| **Group** | Wraps two or more shapes in a new group, placed where the front-most of them was. Every member's position is rewritten into the group's own coordinate space, so nothing moves. |
+| **Ungroup** | Dissolves a group and puts its shapes back on the page, keeping the place the group held in the z-order. |
+| **Bring to front** | Draws the selected shapes on top of their siblings. |
+| **Send to back** | Draws them behind their siblings. |
+
+Z-order in Visio *is* the order the shapes are written in, so front and back
+move a shape among its own siblings — a shape inside a group is brought to the
+front of that group, not of the page.
+
+Two things are deliberately refused rather than done badly:
+
+- **Grouping a connector.** A connector is drawn in its parent's coordinates
+  rather than its own, so moving one into a group would move it on the page.
+- **Ungrouping a group that came from a master.** Its parts read their size and
+  geometry from that master *through* the group; pulling them out would leave
+  empty shapes behind. Groups you made yourself have no master and ungroup
+  fine. (The button is greyed out with the reason in its tooltip.)
+
+Grouping and ungrouping rewrite the drawing itself, so like every other edit
+they take effect immediately in the editor and land in the file when you
+**Save VSDX**.
+
+### Searching for a shape
+
+The **Find shapes** box in the **Layers** sidebar searches the current page —
+type part of a shape's name or its text and the results appear right below,
+including shapes nested inside groups. **Hovering a result draws a selection
+square around that shape on the canvas**, which is the point of the list: it
+answers *where is it?* without changing anything. Clicking a result selects the
+shape and opens the Shape Tree on it, and **Enter** takes the top match.
+
+- Matching is case-insensitive and matches anywhere in the name or the text.
+- `#7` searches by shape ID instead, on a prefix, so the list narrows as you
+  type.
+- Shapes on hidden layers are still listed, marked `hidden` — a shape you cannot
+  see is often the one you are hunting for.
+- **Esc** or clearing the box closes the results. Searching is per page; the box
+  clears when you switch pages.
+- Long lists stop at the first 300 matches (the title says so) — type more of
+  the name rather than scrolling.
 
 ### Listing every shape on a layer
 
@@ -154,6 +324,8 @@ Each row in the **Layers** sidebar has a **⊙** button that opens the list of
 every shape on that layer, including shapes nested inside groups. Hovering a row
 draws the same selection square on the canvas; clicking selects the shape. The
 button toggles the list, and opening it never changes the layer's visibility.
+The list and the search results share one panel, so opening a layer's objects
+clears the search box and vice versa.
 
 ## Drawing new shapes (Pen)
 
@@ -191,7 +363,8 @@ straight runs stay plain `MoveTo`/`LineTo`. Nothing is fitted or approximated.
 Because Visio has no *absolute* cubic — every curve is a fraction of the shape's
 `Width`/`Height` — the path becomes a shape only when you commit it, which is
 when its bounding box is finally known. The new shape lands on the page
-unlayered; use **Send Object To Layer** to file it.
+unlayered; right-click it and use **Send Object To Layer**, or **+ New layer…**
+if it should go somewhere that does not exist yet.
 
 Drawing edits the in-memory document; use **Save Visio** to persist them.
 

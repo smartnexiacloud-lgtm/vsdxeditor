@@ -26,9 +26,23 @@ portable offline builds.
   either keeps Visio's hairlines at least a pixel wide at the current zoom or
   draws every line at its true Visio weight (**⟳ Update** re-renders for the
   zoom you are at).
-- **Layers** — toggle layer visibility from a sidebar, or open the full
-  **Layer Visibility Matrix** to bulk-edit which layers each page shows,
-  filter by page, search/filter layers, and rename layers with *Replace all*.
+- **Layers** — toggle layer visibility from a sidebar, add a layer or delete
+  one, or open the full **Layer Visibility Matrix** to bulk-edit which layers
+  each page shows, filter by page, search/filter layers, and rename layers with
+  *Replace all*. Deleting a layer keeps its shapes: any left on no layer move to
+  an editor-only **Unlayered** row.
+- **Layer folders** — Visio's layers are flat, but drawings fake a hierarchy in
+  the name (`Electrical/HV`). **Group by delimiter** turns that convention into
+  a collapsible tree on a delimiter you choose, with a per-group checkbox that
+  shows or hides everything under it. Since the name *is* the path, moving a
+  layer is renaming it: every row's **✎** edits the full path it stands for, so
+  retyping `Electrical/HV` as `Plumbing/HV` moves that layer and renaming the
+  `Electrical` group moves everything under it. Right-click any row for the same
+  actions by name — rename, move to a group, edit tags — a group row's entries
+  covering everything beneath it. No group is written to the file (the tree is
+  derived from the names), but the delimiter and grouping settings are, so they
+  survive a Microsoft Visio round-trip and everyone opening the drawing sees the
+  same tree.
 - **Layer tags** — attach free-form, colour-coded tags to layers ("electrical",
   "draft") from the sidebar or the matrix, then filter with `tag:<name>` and
   bulk show/hide everything carrying a tag. Tags and their colours are embedded
@@ -39,17 +53,26 @@ portable offline builds.
   travel with the file and survive a Microsoft Visio round-trip
   (see [docs/visio-roundtrip.md](docs/visio-roundtrip.md)).
 - **Shape Tree** — inspect a shape's group hierarchy and inherited style.
-- **Find a shape** — right-click for **Select component**, which lists every
-  shape under the cursor (topmost first, groups included) so you can reach one
-  buried under another, or open a layer's **⊙** button for every shape on that
-  layer. Hovering a row draws a selection square around that shape on the canvas.
+- **Find a shape** — search the page by name, text, or `#id` from the **Find
+  shapes** box in the Layers sidebar; right-click for **Select component**, which
+  lists every shape under the cursor (topmost first, groups included) so you can
+  reach one buried under another; or open a layer's **⊙** button for every shape
+  on that layer. In all three, hovering a row draws a selection square around
+  that shape on the canvas, and clicking selects it.
 - **Pen tool** — draw new paths onto the drawing: click for a corner, drag to
   pull a bezier handle, with fill and stroke (colour, weight, line pattern,
   opacity) set from a bar above the canvas and previewed as you draw. Curves are
   written as real Visio geometry — `RelCubBezTo` is SVG's cubic `C` command one
   for one — so what you draw is what Visio opens.
-- **Per-shape XML editing** — right-click a shape to *Edit XML*, or send a
-  shape to a different layer.
+- **Per-shape editing** — right-click a shape to *Rename* it (its Visio
+  `Name`/`NameU`, so the Shape Tree and diffs call it `Feeder cable` rather than
+  `Shape.7`), *Edit XML*, or send it to a different layer.
+- **Select several shapes and arrange them** — ctrl-click (or shift-click) to
+  add shapes to the selection, then right-click for **Group**, **Ungroup**,
+  **Bring to front** and **Send to back**. Grouping rewrites each member's
+  `PinX`/`PinY` into the new group's coordinate space, so nothing moves a
+  thousandth of an inch; z-order is the order the shapes are written in, which
+  is what Visio reads it from too.
 - **Prune** the drawing: *Remove Non-visible* or *Remove Non-selected* shapes.
 - **Export SVG** of the current page, or **Save VSDX** with your edits applied.
   Exported SVGs embed the source `.vsdx` as base64 metadata, so dropping an
@@ -174,6 +197,8 @@ npm run test:diff-view    # side-by-side diff rendering
 | `src/vsd-parser.js` | Legacy `.vsd` (OLE compound) parser |
 | `src/svg-renderer.js` | Page → SVG rendering |
 | `src/shape-inheritance.js` | Shape style inheritance resolution |
+| `src/shape-picker.js` | Page-space shape boxes: hit testing, layer listing, search |
+| `src/shape-arrange.js` | Group / ungroup geometry: a shape's cells under a new parent |
 | `src/vsdx-diff.js` / `src/diff-view.js` | Diff engine + diff UI |
 | `scripts/vsdx-serialize.mjs` | Canonical serialize / pack / textconv / merge driver |
 | `scripts/git-difftool-serve.mjs` | `git difftool` server that opens the browser visual diff |

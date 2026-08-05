@@ -997,11 +997,25 @@ function parseShape(shapeEl, masters, parentMaster, themeColors, context = {}) {
     }
   }
 
-  // Layer membership - can be a single index or semicolon-separated list
-  const layerMemberRaw = getCellValue(shapeEl, 'LayerMember') ?? (masterShape ? getCellValue(masterShape.el, 'LayerMember') : null);
+  // Layer membership - can be a single index or semicolon-separated list.
+  // An empty V is meaningful here rather than absent: it is how Visio says
+  // "on no layer", overriding the membership the master would otherwise
+  // supply. getCellValue collapses "" to null, which would fall through to the
+  // master and put a shape straight back on a layer it was taken off, so read
+  // the shape's own cell directly.
+  const ownLayerMemberCell = getCell(shapeEl, 'LayerMember');
+  const ownLayerMember = ownLayerMemberCell ? ownLayerMemberCell.getAttribute('V') : null;
+  const layerMemberRaw = ownLayerMember !== null
+    ? ownLayerMember
+    : (masterShape ? getCellValue(masterShape.el, 'LayerMember') : null);
   const layerMembers = layerMemberRaw
     ? layerMemberRaw.split(';').map(s => s.trim()).filter(Boolean)
     : [];
+  // Remembered so a save knows whether clearing this shape's layers needs an
+  // explicit empty cell to block the master, or whether removing the cell is
+  // enough. Writing the override everywhere would add a cell to shapes that
+  // never had one.
+  const layerMemberInherited = ownLayerMember === null && layerMembers.length > 0;
 
   // Geometry - merge shape geometry with master geometry
   const geometry = mergeGeometry(masterShape?.el ?? null, shapeEl, is1D);
@@ -1055,6 +1069,11 @@ function parseShape(shapeEl, masters, parentMaster, themeColors, context = {}) {
     nameU,
     title,
     masterId,
+    // Which shape inside the master this one takes its unstated cells from.
+    // Set on the children of a group that came from a stencil, and the reason
+    // such a group cannot simply be dissolved: pull the child out and the
+    // master it was reading its size and geometry from is no longer in scope.
+    masterShapeId,
     type,
     pinX, pinY,
     width, height,
@@ -1103,6 +1122,7 @@ function parseShape(shapeEl, masters, parentMaster, themeColors, context = {}) {
     subShapes,
     text: rawText,
     layerMembers,
+    layerMemberInherited,
     propMap,
     userMap,
     customProps,
@@ -1320,6 +1340,7 @@ export async function parseVsdx(arrayBuffer) {
       viewTemplates: [],
       layerTags: [],
       layerTagColors: {},
+      layerTree: null,
       hasPagesPart: false,
       isStencil: true,
     };
@@ -1489,10 +1510,11 @@ export async function parseVsdx(arrayBuffer) {
   const viewTemplates = await readViewTemplatesFromZip(zip);
   const { pages: layerTags, tagColors: layerTagColors } = await readLayerTagsFromZip(zip);
   applyLayerTagsToPages(pages, layerTags);
+  const layerTree = await readLayerTreeFromZip(zip);
 
   return {
     pages, masters, themeColors, colorPalette, styleSheets, viewTemplates,
-    layerTags, layerTagColors, hasPagesPart: true, isStencil: false,
+    layerTags, layerTagColors, layerTree, hasPagesPart: true, isStencil: false,
   };
 }
 
@@ -1776,6 +1798,76 @@ async function writeLayerTagsToZip(zip, pages, tagColors) {
   await writeSolutionPayload(zip, TAGS_SLOT, empty ? null : { pages: store, tagColors: colors });
 }
 
+// ── Layer folder settings ─────────────────────────────────────────────────
+// Visio's layers are flat, but drawings fake a hierarchy in the name
+// ("Electrical/HV"). Which delimiter a drawing uses for that is a property of
+// the drawing rather than of whoever opens it — a document written that way is
+// grouped by "/" for everybody — so the setting rides the same Solution XML
+// channel as views and tags instead of living in one browser's storage, and
+// everyone who opens the file sees the tree its author saw. The groups
+// themselves are still never written: only the delimiter, whether grouping is
+// on, and which groups were left collapsed.
+//
+// Shape:  { enabled, delimiter, collapsed: [path] }
+const LAYER_TREE_PART = 'visio/solutions/vsdxeditor-layer-tree.xml';
+const LAYER_TREE_REL_ID = 'rIdVsdxLayerTree';
+const LAYER_TREE_NS = 'urn:vsdxeditor:layertree';
+const LAYER_TREE_REL_TARGET = 'solutions/vsdxeditor-layer-tree.xml';
+const LAYER_TREE_SLOT = {
+  part: LAYER_TREE_PART,
+  relId: LAYER_TREE_REL_ID,
+  relTarget: LAYER_TREE_REL_TARGET,
+  ns: LAYER_TREE_NS,
+  name: 'vsdxeditor-layer-tree',
+};
+export const DEFAULT_LAYER_DELIMITER = '/';
+// Matches the delimiter input's maxlength: a delimiter is a separator, not a
+// name fragment.
+const MAX_LAYER_DELIMITER_LENGTH = 4;
+// Collapse state is a convenience, not data — a drawing with hundreds of
+// collapsed groups has bigger problems than a truncated list.
+const MAX_COLLAPSED_GROUPS = 500;
+
+export function sanitizeLayerTreeSettings(settings) {
+  const delimiter = String(settings?.delimiter ?? DEFAULT_LAYER_DELIMITER).slice(0, MAX_LAYER_DELIMITER_LENGTH);
+  const collapsed = [];
+  const seen = new Set();
+  for (const raw of Array.isArray(settings?.collapsed) ? settings.collapsed : []) {
+    const key = String(raw ?? '');
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    collapsed.push(key);
+    if (collapsed.length >= MAX_COLLAPSED_GROUPS) break;
+  }
+  // Grouping on an empty delimiter would split nothing, so it is not "on".
+  return { enabled: Boolean(settings?.enabled) && delimiter.length > 0, delimiter, collapsed };
+}
+
+// Saying nothing is said by leaving the part out, so a drawing nobody grouped
+// never grows one, and switching grouping back off at the default delimiter
+// takes it away again.
+function isDefaultLayerTreeSettings(settings) {
+  return !settings.enabled
+    && settings.delimiter === DEFAULT_LAYER_DELIMITER
+    && settings.collapsed.length === 0;
+}
+
+async function readLayerTreeFromZip(zip) {
+  const json = await readSolutionPayload(zip, LAYER_TREE_PART);
+  if (!json) return null;
+  return sanitizeLayerTreeSettings(json.layerTree || json);
+}
+
+export async function readVsdxLayerTree(arrayBuffer) {
+  const zip = await JSZip.loadAsync(arrayBuffer);
+  return readLayerTreeFromZip(zip);
+}
+
+async function writeLayerTreeToZip(zip, settings) {
+  const clean = sanitizeLayerTreeSettings(settings);
+  await writeSolutionPayload(zip, LAYER_TREE_SLOT, isDefaultLayerTreeSettings(clean) ? null : { layerTree: clean });
+}
+
 function getOrCreateCell(doc, row, name) {
   let cell = getCell(row, name);
   if (cell) return cell;
@@ -1959,6 +2051,240 @@ export async function addVsdxShapeToPage(arrayBuffer, pageId, shapeXmlSnippet) {
   return { buffer: await zip.generateAsync({ type: 'arraybuffer' }), shapeId };
 }
 
+// ── Grouping, ungrouping and z-order ─────────────────────────────────────────
+// Visio's z-order *is* document order — the last <Shape> in a <Shapes> is drawn
+// on top — so front and back are a move within the parent. Grouping and
+// ungrouping are a move too, plus the Pin/Angle/Flip cells the caller worked out
+// (src/shape-arrange.js) to keep each shape where it is drawn under its new
+// parent. The geometry lives there; what lives here is the XML.
+
+// A Shape's cells have to come before its <Shapes>, <Text> and Sections, so a
+// cell that does not exist yet cannot simply be appended the way a Layer row's
+// can.
+function setShapeCell(doc, shapeEl, name, value) {
+  let cell = getCell(shapeEl, name);
+  if (!cell) {
+    cell = doc.createElementNS(shapeEl.namespaceURI || VISIO_MAIN_NS, 'Cell');
+    cell.setAttribute('N', name);
+    const firstNonCell = [...shapeEl.childNodes].find(node => node.nodeType === 1 && node.localName !== 'Cell');
+    shapeEl.insertBefore(cell, firstNonCell || null);
+  }
+  cell.setAttribute('V', value);
+  cell.removeAttribute('F');
+}
+
+// Visio writes plain decimals; floating-point noise from a matrix round-trip is
+// not a change worth recording.
+function formatShapeNumber(value) {
+  if (!Number.isFinite(value)) return '0';
+  const rounded = Number(value.toFixed(9));
+  return String(Object.is(rounded, -0) ? 0 : rounded);
+}
+
+function applyShapePlacementCells(doc, shapeEl, cells) {
+  setShapeCell(doc, shapeEl, 'PinX', formatShapeNumber(cells.pinX));
+  setShapeCell(doc, shapeEl, 'PinY', formatShapeNumber(cells.pinY));
+  // Only write the cells that have something to say: a shape with no Angle cell
+  // and no rotation should not grow one.
+  for (const [name, value, isDefault] of [
+    ['Angle', formatShapeNumber(cells.angle), Math.abs(cells.angle || 0) < 1e-9],
+    ['FlipX', cells.flipX ? '1' : '0', !cells.flipX],
+    ['FlipY', cells.flipY ? '1' : '0', !cells.flipY]
+  ]) {
+    if (!isDefault || getCell(shapeEl, name)) setShapeCell(doc, shapeEl, name, value);
+  }
+}
+
+function createGroupShapeElement(doc, root, shapeId, cells, layerMembers) {
+  const ns = root.namespaceURI || VISIO_MAIN_NS;
+  const shapeEl = doc.createElementNS(ns, 'Shape');
+  shapeEl.setAttribute('ID', String(shapeId));
+  shapeEl.setAttribute('NameU', `Group.${shapeId}`);
+  shapeEl.setAttribute('Name', `Group.${shapeId}`);
+  shapeEl.setAttribute('Type', 'Group');
+  shapeEl.setAttribute('LineStyle', '0');
+  shapeEl.setAttribute('FillStyle', '0');
+  shapeEl.setAttribute('TextStyle', '0');
+
+  for (const [name, value] of [
+    ['PinX', formatShapeNumber(cells.pinX)],
+    ['PinY', formatShapeNumber(cells.pinY)],
+    ['Width', formatShapeNumber(cells.width)],
+    ['Height', formatShapeNumber(cells.height)],
+    ['LocPinX', formatShapeNumber(cells.locPinX)],
+    ['LocPinY', formatShapeNumber(cells.locPinY)],
+    ['Angle', '0'],
+    ['FlipX', '0'],
+    ['FlipY', '0'],
+    // Visio's own groups resize their children with the group rather than
+    // scaling them, which is what the renderer here assumes as well.
+    ['ResizeMode', '0'],
+    ['DisplayLevel', '1']
+  ]) {
+    setShapeCell(doc, shapeEl, name, value);
+  }
+  if (layerMembers?.length) setShapeCell(doc, shapeEl, 'LayerMember', layerMembers.join(';'));
+
+  shapeEl.appendChild(doc.createElementNS(ns, 'Shapes'));
+  return shapeEl;
+}
+
+async function withPageDocument(arrayBuffer, pageId, mutate) {
+  const zip = await JSZip.loadAsync(arrayBuffer);
+  const { pagePath } = await resolvePagePart(zip, pageId);
+  const pageXml = await readZipText(zip, pagePath);
+  if (!pageXml) throw new Error(`VSDX package is missing ${pagePath}`);
+
+  const pageDoc = parseXml(pageXml);
+  const result = mutate(pageDoc, pageDoc.documentElement) || {};
+  zip.file(pagePath, new XMLSerializer().serializeToString(pageDoc));
+  return { ...result, buffer: await zip.generateAsync({ type: 'arraybuffer' }) };
+}
+
+// Move shapes to the front or the back of whatever <Shapes> already holds them,
+// keeping their order relative to each other. Shapes inside a group move within
+// that group: z-order is a question about siblings, so nothing changes parent.
+export async function reorderVsdxShapes(arrayBuffer, pageId, shapeIds, place) {
+  if (place !== 'front' && place !== 'back') throw new Error(`Unknown z-order target "${place}"`);
+  return withPageDocument(arrayBuffer, pageId, (doc, root) => {
+    const wanted = new Set((shapeIds || []).map(String));
+    const moving = new Set();
+    for (const id of wanted) {
+      const shapeEl = findShapeElementById(root, id);
+      if (!shapeEl) throw new Error(`Could not find shape ${id} on this page`);
+      moving.add(shapeEl);
+    }
+
+    for (const parent of new Set([...moving].map(shapeEl => shapeEl.parentNode))) {
+      const siblings = getDirectChildren(parent, 'Shape');
+      const ordered = siblings.filter(shapeEl => moving.has(shapeEl));
+      // insertBefore(el, null) appends, which is what "front" wants and also
+      // what "back" degrades to when every sibling is selected.
+      const anchor = place === 'front' ? null : (siblings.find(shapeEl => !moving.has(shapeEl)) || null);
+      for (const shapeEl of ordered) parent.insertBefore(shapeEl, anchor);
+    }
+    return {};
+  });
+}
+
+// Wrap the planned members in a new group. The plan (planGroupShapes) has
+// already decided where the group goes and what each member's cells become.
+export async function groupVsdxShapes(arrayBuffer, pageId, plan) {
+  return withPageDocument(arrayBuffer, pageId, (doc, root) => {
+    const memberEls = plan.members.map(member => {
+      const shapeEl = findShapeElementById(root, member.id);
+      if (!shapeEl) throw new Error(`Could not find shape ${member.id} on this page`);
+      return shapeEl;
+    });
+
+    const parents = new Set(memberEls.map(shapeEl => shapeEl.parentNode));
+    if (parents.size !== 1) throw new Error('Those shapes do not share a parent, so they cannot be grouped');
+    const shapesEl = memberEls[0].parentNode;
+
+    const anchorEl = findShapeElementById(root, plan.anchorId);
+    const shapeId = nextFreeShapeId(root);
+    const groupEl = createGroupShapeElement(doc, root, shapeId, plan.groupCells, plan.layerMembers);
+    shapesEl.insertBefore(groupEl, anchorEl ? anchorEl.nextSibling : null);
+
+    const innerShapes = getDirectChildren(groupEl, 'Shapes')[0];
+    plan.members.forEach((member, index) => {
+      applyShapePlacementCells(doc, memberEls[index], member.cells);
+      innerShapes.appendChild(memberEls[index]);
+    });
+    return { shapeId };
+  });
+}
+
+// Dissolve a group: its children move up into the group's own parent, keeping
+// the place the group held in the z-order, and the group element goes away.
+export async function ungroupVsdxShapes(arrayBuffer, pageId, plan) {
+  return withPageDocument(arrayBuffer, pageId, (doc, root) => {
+    const groupEl = findShapeElementById(root, plan.groupId);
+    if (!groupEl) throw new Error(`Could not find shape ${plan.groupId} on this page`);
+    const parentShapes = groupEl.parentNode;
+    const innerShapes = getDirectChildren(groupEl, 'Shapes')[0];
+    const childEls = innerShapes ? getDirectChildren(innerShapes, 'Shape') : [];
+    if (!childEls.length) throw new Error('That group has no shapes in it');
+    // Checked again here, not only in the plan: a child with MasterShape reads
+    // its size and geometry out of the group's master, and that inheritance
+    // does not survive being lifted out of the group.
+    if (childEls.some(childEl => childEl.getAttribute('MasterShape'))) {
+      throw new Error('This group comes from a master, and its shapes would be emptied by dissolving it');
+    }
+
+    const cellsById = new Map(plan.children.map(child => [String(child.id), child.cells]));
+    const shapeIds = [];
+    for (const childEl of childEls) {
+      const id = String(childEl.getAttribute('ID'));
+      const cells = cellsById.get(id);
+      if (cells) applyShapePlacementCells(doc, childEl, cells);
+      // A child on no layer of its own was showing and hiding with the group;
+      // without the group it would answer to nothing, so it inherits by value.
+      if (plan.layerMembers?.length && !getShapeLayerMembers(childEl).length) {
+        setShapeCell(doc, childEl, 'LayerMember', plan.layerMembers.join(';'));
+      }
+      parentShapes.insertBefore(childEl, groupEl);
+      shapeIds.push(id);
+    }
+
+    parentShapes.removeChild(groupEl);
+    // Anything glued to the group itself has nothing left to point at.
+    removeDanglingConnects(doc, new Set([String(plan.groupId)]));
+    return { shapeIds };
+  });
+}
+
+// A Visio layer exists in exactly one place: a Row in the page's Layer
+// section. So adding or removing a layer is adding or removing a Row here, and
+// the in-memory page is the source of truth — a Row whose IX no longer appears
+// in page.layers was deleted in the editor, and a layer with no Row is new.
+//
+// Deleted rows are dropped without renumbering the survivors, so every
+// remaining layer keeps the index that shapes' LayerMember cells already point
+// at. (The prune paths do renumber, but they remap LayerMember in the same
+// pass; here there is nothing to remap.)
+function reconcileLayerRows(doc, layerSection, layers) {
+  const wanted = new Map((layers || []).map(layer => [String(layer.index), layer]));
+
+  // getDirectChildren returns a snapshot, so removing while iterating is safe.
+  for (const row of getDirectChildren(layerSection, 'Row')) {
+    if (!wanted.has(String(row.getAttribute('IX') ?? ''))) layerSection.removeChild(row);
+  }
+
+  const rowsByIndex = new Map(getDirectChildren(layerSection, 'Row')
+    .map(row => [String(row.getAttribute('IX') ?? ''), row]));
+
+  const paired = [];
+  for (const [index, layer] of wanted) {
+    let row = rowsByIndex.get(index);
+    if (!row) {
+      row = doc.createElementNS(layerSection.namespaceURI || VISIO_MAIN_NS, 'Row');
+      row.setAttribute('IX', index);
+      // Visio writes these on every layer row it creates. Colour 255 is its
+      // "no layer colour" sentinel, which is what a new layer should have.
+      setCellValue(doc, row, 'Color', '255');
+      setCellValue(doc, row, 'Status', '0');
+      setCellValue(doc, row, 'ColorTrans', '0');
+      layerSection.appendChild(row);
+    }
+    paired.push([layer, row]);
+  }
+  return paired;
+}
+
+// A drawing that has never had a layer has no Layer section at all, so the
+// first layer added needs one. Visio puts Sections after the PageSheet's Cells.
+function getOrCreateLayerSection(doc, pageSheet) {
+  const existing = getDirectChildren(pageSheet, 'Section')
+    .find(section => section.getAttribute('N') === 'Layer');
+  if (existing) return existing;
+
+  const section = doc.createElementNS(pageSheet.namespaceURI || VISIO_MAIN_NS, 'Section');
+  section.setAttribute('N', 'Layer');
+  pageSheet.appendChild(section);
+  return section;
+}
+
 async function patchVsdxLayerPermissions(zip, pages, tagColors) {
   const pagesFile = zip.file('visio/pages/pages.xml');
   if (!pagesFile) throw new Error('VSDX package is missing visio/pages/pages.xml');
@@ -1970,19 +2296,21 @@ async function patchVsdxLayerPermissions(zip, pages, tagColors) {
   for (let i = 0; i < pageEls.length; i++) {
     const pageEl = pageEls[i];
     const page = pageById.get(String(pageEl.getAttribute('ID')));
-    if (!page?.layers?.length) continue;
+    // An array is enough of a signal: `[]` means "this page's layers were all
+    // deleted", which still has rows to clear, while a page we never parsed
+    // layers for must be left alone.
+    if (!Array.isArray(page?.layers)) continue;
 
-    const layersByIndex = new Map(page.layers.map(layer => [String(layer.index), layer]));
     const pageSheet = getDirectChildren(pageEl, 'PageSheet')[0];
     if (!pageSheet) continue;
 
-    const layerSection = getDirectChildren(pageSheet, 'Section').find(section => section.getAttribute('N') === 'Layer');
-    if (!layerSection) continue;
+    const hasSection = getDirectChildren(pageSheet, 'Section')
+      .some(section => section.getAttribute('N') === 'Layer');
+    if (!hasSection && !page.layers.length) continue;
 
-    for (const row of getDirectChildren(layerSection, 'Row')) {
-      const layer = layersByIndex.get(String(row.getAttribute('IX')));
-      if (!layer) continue;
+    const layerSection = getOrCreateLayerSection(doc, pageSheet);
 
+    for (const [layer, row] of reconcileLayerRows(doc, layerSection, page.layers)) {
       setCellValue(doc, row, 'Name', String(layer.name || `Layer ${layer.index}`));
       setCellValue(doc, row, 'NameUniv', String(layer.nameUniv || layer.name || `Layer ${layer.index}`));
       setCellValue(doc, row, 'Visible', boolToCellValue(layer.visible, true));
@@ -2093,8 +2421,18 @@ function patchShapeLayerMembers(doc, parentEl, shapesById) {
       else shapeEl.removeAttribute('NameU');
 
       const members = (shape.layerMembers || []).map(value => String(value)).filter(Boolean);
-      if (members.length > 0) setCellValue(doc, shapeEl, 'LayerMember', members.join(';'));
-      else removeCell(shapeEl, 'LayerMember');
+      if (members.length > 0) {
+        setCellValue(doc, shapeEl, 'LayerMember', members.join(';'));
+      } else if (getCell(shapeEl, 'LayerMember') || shape.layerMemberInherited) {
+        // Deleting the cell is not the same as clearing it: LayerMember is
+        // inherited, so a shape stripped of its layers would silently pick its
+        // master's up again. Visio's own "on no layer" value is the empty
+        // string (see the document defaults), so write that as an override.
+        setCellValue(doc, shapeEl, 'LayerMember', '');
+      } else {
+        // Nothing to inherit from, so leave the shape as bare as it was.
+        removeCell(shapeEl, 'LayerMember');
+      }
     }
     for (const shapesEl of getDirectChildren(shapeEl, 'Shapes')) {
       patchShapeLayerMembers(doc, shapesEl, shapesById);
@@ -2131,14 +2469,16 @@ async function patchVsdxShapeAssignments(zip, pages) {
   }
 }
 
-export async function saveVsdxLayerPermissions(arrayBuffer, pages, viewTemplates, tagColors) {
+export async function saveVsdxLayerPermissions(arrayBuffer, pages, viewTemplates, tagColors, layerTree) {
   const zip = await JSZip.loadAsync(arrayBuffer);
   await reconcileVsdxPages(zip, pages);
   await patchVsdxLayerPermissions(zip, pages, tagColors);
   await patchVsdxShapeAssignments(zip, pages);
   // Only touch the view-template store when the caller passes the arg, so
-  // other save paths leave any existing presets untouched.
+  // other save paths leave any existing presets untouched. Same for the layer
+  // folder settings below.
   if (viewTemplates !== undefined) await writeViewTemplatesToZip(zip, viewTemplates);
+  if (layerTree !== undefined) await writeLayerTreeToZip(zip, layerTree);
   return zip.generateAsync({ type: 'arraybuffer' });
 }
 

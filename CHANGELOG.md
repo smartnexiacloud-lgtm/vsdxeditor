@@ -7,6 +7,112 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Group layers into a tree by a delimiter.** Visio's layer model is flat, but
+  drawings fake a hierarchy in the *name* — `Electrical/HV`, `Electrical/LV`.
+  **Group by delimiter** in the Layers sidebar reads that convention back out
+  and nests the rows accordingly, with a collapsible row per prefix, a
+  collapse/expand-all button, and a per-group checkbox that shows or hides
+  everything under it (tri-state when only part of the group is showing). The
+  delimiter is yours to pick — `/`, `.`, `::`, anything — and is matched
+  literally rather than as a pattern; emptying the box just returns the list to
+  flat, as does unticking the box.
+
+  **Moving a layer is renaming it**, because the name *is* the path — nothing in
+  the file records where a layer sits. Every row, group or layer, has a **✎**
+  that edits the full path it stands for: retype `Electrical/HV` as
+  `Plumbing/HV` and the layer moves, as `HV` and it moves out to the top level.
+  On a group row the same edit re-prefixes every layer beneath it, so renaming
+  `Electrical` to `Site/Power` moves the whole subtree; only the part of each
+  name the row accounts for is replaced, so anything nested below keeps its
+  suffix and travels along. Merging one group into another is allowed; a rename
+  that would leave two layers on a page sharing a full name is refused, for the
+  same reason creating a duplicate is. A row that is both a layer and a parent —
+  `Electrical` next to `Electrical/HV` — renames itself and its children
+  together. With grouping off the button is a plain rename, which is also the
+  first way to rename a single layer from the sidebar rather than through the
+  Layer Matrix's *Replace all*.
+
+  No group is written to the file — the tree is derived from the layer names
+  every time, and every layer keeps its own row and index. The *settings* do
+  travel with the drawing: whether grouping is on, the delimiter, and which
+  groups were left collapsed are stored in a
+  `visio/solutions/vsdxeditor-layer-tree.xml` Solution XML part, the same
+  channel the named views and layer tags ride, so they survive a Microsoft Visio
+  open+save and whoever opens the file next sees the tree its author saw. A
+  drawing that was never grouped still opens flat.
+- **Select several shapes, and arrange them.** Ctrl-click (or shift-click) adds
+  a shape to the selection and drops it again — on the canvas, in *Select
+  component*, in the shape search results and in a layer's object list. The
+  selected shapes are outlined, solid for the one the rest of the panels are
+  pointed at and dashed for the others. The right-click menu grows an **Arrange**
+  section acting on the whole selection: **Group**, **Ungroup**, **Bring to
+  front** and **Send to back**.
+
+  Z-order in Visio *is* the order the `<Shape>` elements are written in, so
+  front and back are a move among a shape's own siblings — a shape inside a
+  group comes to the front of that group. Group and ungroup are a move too, but
+  a shape's `PinX`/`PinY` are written in its *parent's* coordinates, so
+  re-parenting one has to rewrite them by exactly the right amount or the
+  drawing comes apart. Each shape's new Pin, Angle and flip flags are read back
+  out of the matrix the renderer itself composes, which is exact rather than
+  approximate: that matrix is only ever a translation, a rotation and a
+  reflection, never a scale or a shear. Rotated and flipped shapes, and groups
+  nested inside groups, come out where they went in.
+
+  Two cases are refused rather than done badly. A **connector** is drawn in its
+  parent's coordinates instead of its own, so grouping one would move it. And a
+  **group that came from a master** cannot be dissolved: its parts read their
+  size and geometry from that master through the group, and pulling them out
+  would leave empty shapes behind — Visio's own ungroup breaks the master link
+  and copies everything down, which is a much larger operation than moving
+  elements about. Groups you made yourself have no master and ungroup fine.
+- **Find shapes by name, text, or ID.** A **Find shapes** box in the Layers
+  sidebar searches the current page — name, `NameU`, shape text, or `#7` to
+  search by ID on a prefix — and lists what it finds, groups and nested shapes
+  included. Hovering a result draws a selection square around that shape on the
+  canvas, which is the actual point: the list answers *where is it?* without
+  changing anything. Clicking selects the shape and opens the Shape Tree on it,
+  **Enter** takes the top match, **Esc** closes.
+
+  The results share the panel a layer's **⊙** button already used, because both
+  answer the same question with the same list, so opening one clears the other.
+  Shapes on hidden layers stay listed and are marked `hidden` — a shape you
+  cannot see is usually the one you are hunting for. Typing is debounced and the
+  list stops at the first 300 matches, since re-walking a large page's shape
+  tree on every keystroke costs more than it tells anyone.
+- **Rename a shape from its right-click menu.** **Rename…** sets the shape's
+  Visio name — its `Name`/`NameU`, the field Visio's own *Shape Name* dialog
+  edits — so the Shape Tree, the *Select component* list and the diff report all
+  call it `Feeder cable` instead of `Shape.7`. The prompt starts from the name
+  it has now, and a blank answer clears it. Renaming was already possible by
+  double-clicking a row in the Shape Tree; the canvas is where you are when you
+  notice the name is wrong, so it is offered there too. Like every other edit,
+  it lives in memory until you **Save VSDX**.
+- **A right-click menu on layer rows.** The row buttons are deliberately faint
+  until hovered, which is fine for the one action a row is mostly used for and
+  poor for the rest — so right-clicking a row (layer or group) names them
+  instead: **Rename…**, **Move to group…**, and **Edit tags…**. *Move to group…*
+  is a rename with the layer's own name held fixed — it asks only which group to
+  put it in, and a blank answer moves it out to the top level. On a group row
+  every entry speaks for the whole subtree, and *Add tags to N layers…* adds the
+  tags you type to each layer under the group without disturbing the tags they
+  already carry.
+- **Add and remove layers.** The Layers sidebar has a **+ New layer…** button,
+  each layer row has a **🗑** to delete it, and a shape's right-click menu can
+  create a layer and file the shape onto it in one step — the common case after
+  drawing something with the pen. Deleting a layer never deletes its drawing:
+  shapes on it stay, and any left on no layer at all show up under the
+  editor-only **Unlayered** row, where *Send Object To Layer* can file them
+  again. The confirm prompt says how many shapes are involved before you commit.
+
+  A layer only exists as a `Row` in the page's `Layer` section, and a shape's
+  membership is that row's *index*, so indexes are never reused or shuffled: a
+  new layer takes one past the highest (including past the unnamed placeholder
+  rows Visio leaves behind when *it* deletes a layer), and deleting one leaves
+  its index unused rather than renumbering the survivors and silently moving
+  every shape. Clearing a shape's membership writes Visio's explicit empty
+  `LayerMember` rather than dropping the cell, because dropping it lets the
+  shape inherit its master's layers and land straight back where it was.
 - **Pen tool — draw new paths onto a drawing.** Click to place a corner, drag to
   pull a bezier handle out of the point you just placed (mirrored on both sides,
   like Illustrator's smooth point). `Enter` or a double-click finishes the path,

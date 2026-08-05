@@ -59,7 +59,7 @@ the package from its in-memory document, so:
 
 ## How this app uses it
 
-This finding is not academic — it backs two features.
+This finding is not academic — it backs three features.
 
 **Layer tags** ([usage.md](usage.md#layer-tags)) attach free-form labels, and a
 colour per label, to layers. Visio's layer object model has no tag slot — an
@@ -80,6 +80,17 @@ re-save, so a team's named views travel with the file and keep working even
 after someone edits the drawing in the real Visio desktop app. The payload is
 base64-encoded JSON inside a `<SolutionXML>` element. See
 `readVsdxViewTemplates` / `saveVsdxLayerPermissions` in `src/vsdx-parser.js`.
+
+**Layer folder settings** ([usage.md](usage.md#grouping-layers-by-a-delimiter)).
+Visio's layers are flat; drawings fake a hierarchy in the name
+(`Electrical/HV`). Which delimiter a drawing uses for that is a fact about the
+drawing rather than a preference of whoever opens it, so the setting — whether
+grouping is on, the delimiter, and which groups were left collapsed — goes into
+`visio/solutions/vsdxeditor-layer-tree.xml` on the same channel, and everyone
+who opens the file sees the tree its author saw. The groups themselves are still
+never written: they are derived from the layer names every time. See
+`readVsdxLayerTree` / `writeLayerTreeToZip` in `src/vsdx-parser.js`, and
+`scripts/test-layer-tree-roundtrip.mjs` for the wiring.
 
 ## Practical guidance
 

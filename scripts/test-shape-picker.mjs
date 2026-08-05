@@ -23,7 +23,7 @@ symlinkSync(join(process.cwd(), 'node_modules'), join(tmp, 'node_modules'), 'dir
 
 const { parseVsdx } = await import(pathToFileURL(join(tmp, 'vsdx-parser.js')));
 const { renderPage } = await import(pathToFileURL(join(tmp, 'svg-renderer.js')));
-const { collectShapeBoxes, shapesAtPoint, shapesOnLayer } =
+const { collectShapeBoxes, shapesAtPoint, shapesOnLayer, searchShapes } =
   await import(pathToFileURL(join(tmp, 'shape-picker.js')));
 
 let pass = 0, fail = 0;
@@ -149,6 +149,41 @@ for (const fixture of FIXTURES) {
   const unlayered = shapesOnLayer(page, '__unlayered__', { unlayeredIndex: '__unlayered__' });
   check('unlayered listing holds only shapes with no layer',
     unlayered.every(e => e.layerMembers.length === 0), `${unlayered.length} shapes`);
+
+  // --- searching by name, text or ID ---------------------------------------
+  check('an empty search matches nothing', searchShapes(page, '   ').length === 0);
+  check('a search nobody wrote matches nothing',
+    searchShapes(page, 'zzz-no-such-shape-zzz').length === 0);
+
+  const byId = searchShapes(page, `#${target.id}`);
+  check('a #ID search finds that shape',
+    byId.some(e => e.id === target.id), `#${target.id} → ${byId.length}`);
+  check('and returns only shapes whose ID starts that way',
+    byId.every(e => e.id.startsWith(String(target.id))), byId.map(e => e.id).join(','));
+  check('a bare # is not a match-everything',
+    searchShapes(page, '#').length === 0);
+
+  // Whatever the row would be labelled with is what a user types.
+  const named = entries.find(e => e.label && !['Shape', 'Group'].includes(e.label));
+  if (named) {
+    // Trimmed, because the search trims too — an unnamed shape's row says
+    // "Shape", so searching "shape" is meant to find it.
+    const needle = named.label.slice(0, Math.min(6, named.label.length)).trim();
+    const hits = searchShapes(page, needle);
+    check(`searching "${needle}" finds the shape labelled "${named.label}"`,
+      hits.some(e => e.id === named.id && e.ancestors.join('/') === named.ancestors.join('/')),
+      `${hits.length} hits`);
+    check('the search is case-insensitive',
+      searchShapes(page, needle.toUpperCase()).length === hits.length);
+    check('every hit really contains the text somewhere',
+      hits.every(e => [e.label, e.shape.name, e.shape.nameU, e.shape.text]
+        .some(v => String(v ?? '').toLowerCase().includes(needle.toLowerCase()))));
+    check('results carry the box the highlight needs',
+      hits.every(e => e.bounds && Number.isFinite(e.bounds.minX) && Number.isFinite(e.bounds.maxY)));
+    if (hits.length > 1) {
+      check('a limit caps the result list', searchShapes(page, needle, { limit: 1 }).length === 1);
+    }
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

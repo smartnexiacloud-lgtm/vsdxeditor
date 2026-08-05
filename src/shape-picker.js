@@ -32,8 +32,10 @@ function apply(m, x, y) {
   return { x: m[0] * x + m[2] * y + m[4], y: m[1] * x + m[3] * y + m[5] };
 }
 
-// The same composition renderShape emits, in the same order.
-function shapeMatrix(shape, parentHeight) {
+// The same composition renderShape emits, in the same order. Exported because
+// regrouping a shape has to reproduce it exactly in reverse: whatever cells it
+// ends up with must feed back through here to the matrix it draws at now.
+export function shapeLocalMatrix(shape, parentHeight) {
   const px = (shape.pinX || 0) * DPI;
   const py = (parentHeight - (shape.pinY || 0)) * DPI;
   const lpx = (shape.locPinX || 0) * DPI;
@@ -84,7 +86,7 @@ export function collectShapeBoxes(page) {
       // path rather than from the shape's own width and height.
       const flatConnector = rendersAsFlatConnector(shape);
       const connectorBox = flatConnector ? connectorRenderBounds(shape, parentHeight) : null;
-      const matrix = connectorBox ? parentMatrix : multiply(parentMatrix, shapeMatrix(shape, parentHeight));
+      const matrix = connectorBox ? parentMatrix : multiply(parentMatrix, shapeLocalMatrix(shape, parentHeight));
 
       const w = (shape.width || 0) * DPI;
       const h = (shape.height || 0) * DPI;
@@ -148,6 +150,29 @@ export function shapesAtPoint(page, x, y, options = {}) {
   // Paint order puts the topmost last; the user expects it first. Ties on a
   // group and its child resolve to the child, which is the more specific pick.
   return hits.sort((a, b) => (b.order - a.order) || (b.depth - a.depth));
+}
+
+// Every shape whose name or text matches, in paint order. Visio's own Find
+// searches shape text, but a drawing's useful handle is often the shape *name*
+// instead ("Feeder cable"), so both count — as does `#7`, which searches by ID
+// and matches on a prefix so the list narrows as you type.
+export function searchShapes(page, query, options = {}) {
+  const needle = String(query ?? '').trim().toLowerCase();
+  if (!needle) return [];
+  const limit = Number.isFinite(options.limit) ? options.limit : Infinity;
+  const byId = needle.startsWith('#') ? needle.slice(1).trim() : null;
+
+  const results = [];
+  for (const entry of collectShapeBoxes(page)) {
+    const hit = byId !== null
+      ? byId.length > 0 && entry.id.toLowerCase().startsWith(byId)
+      : [entry.label, entry.shape.name, entry.shape.nameU, entry.shape.text]
+        .some(value => String(value ?? '').toLowerCase().includes(needle));
+    if (!hit) continue;
+    results.push(entry);
+    if (results.length >= limit) break;
+  }
+  return results;
 }
 
 // Every shape carrying a layer, in paint order. `layerIndex` may be the

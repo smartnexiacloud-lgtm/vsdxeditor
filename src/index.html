@@ -184,7 +184,8 @@
     .page-tab.drop-after {
       box-shadow: inset -3px 0 #e94560;
     }
-    .page-tab-context-menu {
+    .page-tab-context-menu,
+    .layer-context-menu {
       position: fixed;
       z-index: 1200;
       display: none;
@@ -195,7 +196,18 @@
       background: #16213e;
       box-shadow: 0 14px 36px rgba(0, 0, 0, 0.48);
     }
-    .page-tab-context-menu button {
+    .layer-context-title {
+      padding: 6px 10px 7px;
+      margin-bottom: 3px;
+      border-bottom: 1px solid #2a3d66;
+      color: #9fb0d8;
+      font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .page-tab-context-menu button,
+    .layer-context-menu button {
       display: block;
       width: 100%;
       padding: 8px 10px;
@@ -207,10 +219,12 @@
       cursor: pointer;
       font-size: 12px;
     }
-    .page-tab-context-menu button:hover:not(:disabled) {
+    .page-tab-context-menu button:hover:not(:disabled),
+    .layer-context-menu button:hover:not(:disabled) {
       background: #24345f;
     }
-    .page-tab-context-menu button:disabled {
+    .page-tab-context-menu button:disabled,
+    .layer-context-menu button:disabled {
       color: #68708d;
       cursor: default;
     }
@@ -297,6 +311,139 @@
     .layers-actions button:disabled {
       opacity: 0.45;
       cursor: not-allowed;
+    }
+    .layers-manage {
+      display: flex;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .layers-find {
+      display: flex;
+    }
+    .layers-manage button {
+      flex: 1;
+      background: #24345f;
+      color: #f0f0f5;
+      border: 1px solid #35518c;
+      border-radius: 4px;
+      height: 26px;
+      cursor: pointer;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .layers-manage button:hover {
+      background: #304579;
+    }
+    .layers-tree-opts {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 6px;
+      font-size: 11px;
+      color: #b6c0e0;
+    }
+    .layers-tree-opts label {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .layers-tree-opts #layer-tree-delimiter {
+      width: 34px;
+      text-align: center;
+      padding: 0 4px;
+      height: 22px;
+      background: #131c33;
+      color: #f0f0f5;
+      border: 1px solid #35518c;
+      border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .layers-tree-opts button {
+      margin-left: auto;
+      background: #24345f;
+      color: #f0f0f5;
+      border: 1px solid #35518c;
+      border-radius: 4px;
+      height: 22px;
+      padding: 0 8px;
+      cursor: pointer;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .layers-tree-opts button:hover {
+      background: #304579;
+    }
+    .layers-tree-opts input:disabled,
+    .layers-tree-opts button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    /* A grouping row is a view of the layer names, not a Visio layer, so it
+       reads as scaffolding rather than as something you can edit. */
+    .layer-group-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 8px;
+      font-size: 12px;
+      color: #b6c0e0;
+      cursor: default;
+      user-select: none;
+    }
+    .layer-group-item:hover {
+      background: #1b2540;
+    }
+    .layer-group-name {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .layer-group-count {
+      font-size: 10px;
+      color: #7d88b5;
+    }
+    /* Renaming re-prefixes every layer under the row, so it stays out of the
+       way until the row is hovered — same as the per-layer buttons. */
+    .layer-group-rename,
+    .layer-item .layer-rename {
+      flex-shrink: 0;
+      background: none;
+      border: none;
+      padding: 0 2px;
+      color: #8e9ac6;
+      font-size: 11px;
+      line-height: 1;
+      cursor: pointer;
+      opacity: 0;
+    }
+    .layer-group-item:hover .layer-group-rename,
+    .layer-item:hover .layer-rename,
+    .layer-group-rename:focus,
+    .layer-rename:focus {
+      opacity: 1;
+    }
+    .layer-group-rename:hover,
+    .layer-rename:hover { color: #f0f0f5; }
+    .layer-twisty {
+      flex-shrink: 0;
+      width: 14px;
+      background: none;
+      border: none;
+      padding: 0;
+      color: #8e9ac6;
+      font-size: 10px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .layer-twisty:hover { color: #f0f0f5; }
+    .layer-twisty-spacer {
+      flex-shrink: 0;
+      width: 14px;
     }
     .layers-count {
       color: #8888aa;
@@ -475,6 +622,7 @@
       color: #7d88b5;
     }
     .layer-item .layer-objects-btn,
+    .layer-item .layer-delete,
     .layer-item .layer-tag-edit {
       flex-shrink: 0;
       background: none;
@@ -489,10 +637,13 @@
     .layer-item:hover .layer-tag-edit,
     .layer-item.focused .layer-tag-edit,
     .layer-item:hover .layer-objects-btn,
-    .layer-item.focused .layer-objects-btn {
+    .layer-item.focused .layer-objects-btn,
+    .layer-item:hover .layer-delete,
+    .layer-item.focused .layer-delete {
       opacity: 1;
     }
     .layer-item .layer-objects-btn.active { opacity: 1; color: #b79cf0; }
+    .layer-item .layer-delete:hover { color: #ff8f8f; }
     .toolbar button.active {
       background: #533483;
       border-color: #7b52b9;
@@ -977,6 +1128,22 @@
     .shape-context-action:hover {
       background: #304579;
     }
+    .shape-context-action:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+      background: #24345f;
+    }
+    .shape-arrange-section {
+      border-bottom: 1px solid #3a3a5c;
+      padding: 8px 10px 10px;
+    }
+    .shape-arrange-section[hidden] { display: none; }
+    .shape-arrange-section .shape-context-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      margin-top: 6px;
+    }
     .shape-xml-textarea {
       width: 100%;
       min-height: 360px;
@@ -1315,6 +1482,23 @@
             <button id="layers-select-filtered" type="button">Select filter</button>
             <button id="layers-deselect-filtered" type="button">Deselect filter</button>
           </div>
+          <div id="layers-manage" class="layers-manage">
+            <button id="layers-add" type="button" title="Add a layer to this page">+ New layer…</button>
+          </div>
+          <div class="layers-tree-opts">
+            <label for="layer-tree-enable" title="Visio layers are flat; this groups them into a tree by splitting their names on a delimiter">
+              <input type="checkbox" id="layer-tree-enable">
+              Group by delimiter
+            </label>
+            <input id="layer-tree-delimiter" type="text" value="/" maxlength="4" spellcheck="false"
+                   aria-label="Layer name delimiter" title="Delimiter that separates the levels in a layer name">
+            <button id="layer-tree-toggle-all" type="button" title="Collapse or expand every group">Collapse all</button>
+          </div>
+          <div class="layers-find">
+            <input id="shape-search" type="search" placeholder="Find shapes (name, text, #id)"
+                   aria-label="Find shapes on this page"
+                   title="Search this page's shapes by name, text, or #ID — hover a result to highlight it on the canvas">
+          </div>
           <div id="layer-objects" class="layer-objects" hidden>
             <div class="layer-objects-header">
               <span id="layer-objects-title" class="layer-objects-title"></span>
@@ -1398,18 +1582,36 @@
     <button type="button" role="menuitem" data-tab-action="close-left">Close tabs to the left</button>
     <button type="button" role="menuitem" data-tab-action="close-others">Close all other tabs</button>
   </div>
+  <div id="layer-context-menu" class="layer-context-menu" role="menu">
+    <div id="layer-context-title" class="layer-context-title"></div>
+    <button type="button" role="menuitem" data-layer-action="rename">Rename…</button>
+    <button type="button" role="menuitem" data-layer-action="move">Move to group…</button>
+    <button type="button" role="menuitem" data-layer-action="tags">Edit tags…</button>
+  </div>
   <div id="shape-context-menu" class="shape-context-menu">
     <div id="shape-pick-section" class="shape-pick-section">
       <div class="shape-context-title">Select component</div>
       <div id="shape-pick-hint" class="shape-context-subtitle"></div>
       <div id="shape-pick-list" class="shape-pick-list" role="listbox"></div>
     </div>
+    <div id="shape-arrange-section" class="shape-arrange-section">
+      <div class="shape-context-title">Arrange</div>
+      <div id="shape-arrange-hint" class="shape-context-subtitle"></div>
+      <div class="shape-context-actions">
+        <button id="shape-arrange-group" class="shape-context-action" type="button">Group</button>
+        <button id="shape-arrange-ungroup" class="shape-context-action" type="button">Ungroup</button>
+        <button id="shape-arrange-front" class="shape-context-action" type="button">Bring to front</button>
+        <button id="shape-arrange-back" class="shape-context-action" type="button">Send to back</button>
+      </div>
+    </div>
     <div class="shape-context-header">
       <div class="shape-context-title">Send Object To Layer</div>
       <div id="shape-context-subtitle" class="shape-context-subtitle"></div>
       <input id="shape-context-search" class="shape-context-search" type="search" placeholder="Filter layers">
       <div class="shape-context-actions">
+        <button id="shape-context-rename" class="shape-context-action" type="button">Rename…</button>
         <button id="shape-context-edit-xml" class="shape-context-action" type="button">Edit XML</button>
+        <button id="shape-context-new-layer" class="shape-context-action" type="button">+ New layer…</button>
       </div>
     </div>
     <div id="shape-context-list" class="shape-context-list"></div>
