@@ -1,7 +1,9 @@
-import { parseVsdx, saveVsdxLayerPermissions, saveVsdxWithoutHiddenLayers, saveVsdxWithoutNonSelectedLayers, saveVsdxWithoutNonVisibleData, getVsdxShapeXmlSnippet, replaceVsdxShapeXmlSnippet, normalizeLayerTags, normalizeTagColor } from './vsdx-parser.js';
+import { parseVsdx, saveVsdxLayerPermissions, saveVsdxWithoutHiddenLayers, saveVsdxWithoutNonSelectedLayers, saveVsdxWithoutNonVisibleData, getVsdxShapeXmlSnippet, replaceVsdxShapeXmlSnippet, addVsdxShapeToPage, normalizeLayerTags, normalizeTagColor } from './vsdx-parser.js';
 import { embedVsdxInSvg, extractVsdxFromSvg } from './svg-vsdx-embed.js';
 import { parseVsd } from './vsd-parser.js';
 import { renderPage, pageCoordinateWidth } from './svg-renderer.js';
+import { buildPenShapeXml, penPathToSvgD } from './pen-geometry.js';
+import { shapesAtPoint, shapesOnLayer } from './shape-picker.js';
 import { openDiffView } from './diff-view.js';
 
 const dropZone = document.getElementById('drop-zone');
@@ -64,6 +66,27 @@ const shapeXmlClose = document.getElementById('shape-xml-close');
 const shapeXmlCancel = document.getElementById('shape-xml-cancel');
 const shapeXmlSave = document.getElementById('shape-xml-save');
 const shapeXmlTextarea = document.getElementById('shape-xml-textarea');
+const penButton = document.getElementById('btn-pen');
+const penBar = document.getElementById('pen-bar');
+const penStrokeOn = document.getElementById('pen-stroke-on');
+const penStrokeColor = document.getElementById('pen-stroke-color');
+const penStrokeWidth = document.getElementById('pen-stroke-width');
+const penStrokePattern = document.getElementById('pen-stroke-pattern');
+const penFillOn = document.getElementById('pen-fill-on');
+const penFillColor = document.getElementById('pen-fill-color');
+const penFillOpacity = document.getElementById('pen-fill-opacity');
+const penClosePath = document.getElementById('pen-close-path');
+const penFinishButton = document.getElementById('pen-finish');
+const penUndoButton = document.getElementById('pen-undo');
+const penCancelButton = document.getElementById('pen-cancel');
+const penHint = document.getElementById('pen-hint');
+const layerObjectsPanel = document.getElementById('layer-objects');
+const layerObjectsTitle = document.getElementById('layer-objects-title');
+const layerObjectsList = document.getElementById('layer-objects-list');
+const layerObjectsClose = document.getElementById('layer-objects-close');
+const shapePickSection = document.getElementById('shape-pick-section');
+const shapePickHint = document.getElementById('shape-pick-hint');
+const shapePickList = document.getElementById('shape-pick-list');
 
 let currentPages = [];
 let currentPageIndex = 0;
@@ -95,6 +118,21 @@ let editingShapeId = null;
 let editingShapeXmlId = null;
 const hiddenShapeIdsByPage = new Map();
 const collapsedShapeIdsByPage = new Map();
+// Pen tool. penNodes are in page units (inches, Y up from the page bottom) -
+// the space the parser and pen-geometry both speak, so nothing is converted
+// twice. penDrag tracks the handle being pulled out of the node just placed.
+let penActive = false;
+let penNodes = [];
+let penDrag = null;
+let penCursor = null;
+let penCommitting = false;
+// Which layer's object list is open in the sidebar, and the shapes offered by
+// the last right-click, topmost first.
+let layerObjectsIndex = null;
+let contextPickEntries = [];
+// How close (in device pixels) a click has to land to the first anchor to be
+// read as "close the path" rather than "place another point".
+const PEN_CLOSE_PX = 8;
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 2000;
 const XML_VISIO_EXTENSIONS = new Set(['.vsdx', '.vsdm', '.vstx', '.vstm', '.vssx', '.vssm']);
@@ -112,7 +150,23 @@ function getVisioFormat(name) {
   return null;
 }
 
+// Rewriting a shape means rebuilding the package and re-parsing it, and the
+// sidebar is rebuilt from whatever comes back. Anything the user changed that
+// is still only in memory therefore has to be written into the bytes *first* or
+// the re-parse reverts it — which is why a hand-edit of one shape's XML used to
+// reset the layers. The prune paths already fold this in themselves
+// (patchVsdxLayerPermissions); this is the same step for the edit paths.
+async function getPackageBufferWithPendingEdits() {
+  if (!currentFileBuffer) return null;
+  if (!currentPackageEditable) return currentFileBuffer;
+  commitCurrentPageVisibility();
+  return saveVsdxLayerPermissions(currentFileBuffer, currentPages, viewTemplates, layerTagColors);
+}
+
 async function applyUpdatedVsdxBuffer(buffer, pageId = null) {
+  // The "Unlayered" row is an editor-only construct with nowhere to live in the
+  // file, so it cannot survive the round-trip above; carry it across by hand.
+  const unlayeredHidden = hiddenLayers.has(UNLAYERED_LAYER_INDEX);
   const result = await parseVsdx(buffer);
   currentFileBuffer = buffer;
   currentPages = result.pages;
@@ -129,6 +183,11 @@ async function applyUpdatedVsdxBuffer(buffer, pageId = null) {
   }
 
   hiddenLayers = getInitialHiddenLayers();
+  if (unlayeredHidden) {
+    const page = currentPages[currentPageIndex];
+    hiddenLayers.add(UNLAYERED_LAYER_INDEX);
+    if (page && hasUnlayeredShapes(page.shapes)) getUnlayeredLayer(page).visible = false;
+  }
   focusedLayerIndex = null;
   selectedShapeId = null;
   editingShapeId = null;
@@ -219,11 +278,17 @@ function renderCurrentPage() {
   syncSelectedShapeHighlight();
   attachSvgLayerFocusHandlers();
   renderShapeTree();
+  // The overlay lives inside the SVG that was just replaced, and the shape list
+  // may now be stale.
+  renderLayerObjects();
 }
 
 function activatePage(page) {
   const index = currentPages.indexOf(page);
   if (index < 0) return;
+  // A half-drawn path, and a shape list, belong to the page they came from.
+  cancelPenPath();
+  closeLayerObjects();
   currentPageIndex = index;
   buildPageTabs();
   hiddenLayers = getInitialHiddenLayers();
@@ -469,8 +534,22 @@ function buildLayersSidebar() {
 
     item.addEventListener('focus', () => focusLayerRow(layer.index, false));
 
+    const objects = document.createElement('button');
+    objects.type = 'button';
+    objects.className = 'layer-objects-btn';
+    if (String(layer.index) === String(layerObjectsIndex)) objects.classList.add('active');
+    objects.textContent = '⊙';
+    objects.tabIndex = -1;
+    objects.title = `List every shape on ${displayName}`;
+    objects.setAttribute('aria-label', `List shapes on ${displayName}`);
+    objects.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openLayerObjects(layer.index);
+    });
+
     item.appendChild(checkbox);
     item.appendChild(name);
+    item.appendChild(objects);
 
     const tags = document.createElement('span');
     tags.className = 'layer-tags';
@@ -1236,7 +1315,8 @@ async function applyShapeXmlEditor() {
 
   try {
     const editedShapeId = editingShapeXmlId;
-    const buffer = await replaceVsdxShapeXmlSnippet(currentFileBuffer, page.id, editedShapeId, shapeXmlTextarea.value);
+    const base = await getPackageBufferWithPendingEdits();
+    const buffer = await replaceVsdxShapeXmlSnippet(base, page.id, editedShapeId, shapeXmlTextarea.value);
     hideShapeXmlEditor();
     await applyUpdatedVsdxBuffer(buffer, getCurrentPage()?.id || page.id);
     setSelectedShape(editedShapeId);
@@ -1248,6 +1328,8 @@ async function applyShapeXmlEditor() {
 
 function closeShapeContextMenu() {
   contextShapeId = null;
+  contextPickEntries = [];
+  clearShapeHighlight();
   shapeContextMenu.classList.remove('visible');
 }
 
@@ -1308,10 +1390,12 @@ function renderShapeContextMenu() {
   }
 }
 
-function openShapeContextMenu(shapeId, clientX, clientY) {
+function openShapeContextMenu(shapeId, clientX, clientY, pickEntries = []) {
   contextShapeId = String(shapeId);
+  contextPickEntries = pickEntries;
   shapeContextSearch.value = '';
   renderShapeContextMenu();
+  renderShapePickList();
   shapeContextMenu.classList.add('visible');
 
   const margin = 12;
@@ -1323,19 +1407,201 @@ function openShapeContextMenu(shapeId, clientX, clientY) {
   shapeContextSearch.select();
 }
 
+// --- Picking shapes: highlight, the layer object list, the right-click stack --
+// Both surfaces answer the same question — "which shape is this?" — so they
+// share a row renderer and one highlight overlay: hovering a row draws a
+// selection square around that shape on the canvas.
+
+function clearShapeHighlight() {
+  svgContainer.querySelector('#shape-highlight')?.remove();
+}
+
+function highlightShapeBox(entry) {
+  clearShapeHighlight();
+  const svg = svgContainer.querySelector('svg');
+  const page = getCurrentPage();
+  if (!svg || !page || !entry) return;
+
+  const ns = 'http://www.w3.org/2000/svg';
+  const dpi = getPageDpi(page);
+  const unit = unitsPerDevicePixel(page);
+  const box = entry.bounds;
+  const pad = unit * 2;
+  const x = box.minX * dpi - pad;
+  const y = (page.height - box.maxY) * dpi - pad;
+  // A zero-extent shape (a horizontal line) still needs a grabbable box.
+  const w = Math.max((box.maxX - box.minX) * dpi, unit) + pad * 2;
+  const h = Math.max((box.maxY - box.minY) * dpi, unit) + pad * 2;
+
+  const group = document.createElementNS(ns, 'g');
+  group.setAttribute('id', 'shape-highlight');
+  group.setAttribute('pointer-events', 'none');
+
+  const rect = document.createElementNS(ns, 'rect');
+  rect.setAttribute('x', String(x));
+  rect.setAttribute('y', String(y));
+  rect.setAttribute('width', String(w));
+  rect.setAttribute('height', String(h));
+  rect.setAttribute('fill', '#e94560');
+  rect.setAttribute('fill-opacity', '0.12');
+  rect.setAttribute('stroke', '#e94560');
+  rect.setAttribute('stroke-width', String(unit * 1.5));
+  rect.setAttribute('stroke-dasharray', `${unit * 4} ${unit * 3}`);
+  group.appendChild(rect);
+
+  // Corner ticks, so it reads as a selection square rather than a fill.
+  const tick = unit * 5;
+  for (const [cx, cy, dx, dy] of [
+    [x, y, 1, 1], [x + w, y, -1, 1], [x + w, y + h, -1, -1], [x, y + h, 1, -1]
+  ]) {
+    const corner = document.createElementNS(ns, 'path');
+    corner.setAttribute('d', `M ${cx} ${cy + dy * tick} L ${cx} ${cy} L ${cx + dx * tick} ${cy}`);
+    corner.setAttribute('fill', 'none');
+    corner.setAttribute('stroke', '#e94560');
+    corner.setAttribute('stroke-width', String(unit * 2));
+    group.appendChild(corner);
+  }
+
+  svg.appendChild(group);
+}
+
+// A shape the user cannot currently see is still worth listing — it is often
+// exactly what they are hunting for — but it has to say so.
+function isEntryHidden(entry) {
+  if (getHiddenShapeIds().has(String(entry.id))) return true;
+  if (!entry.layerMembers.length) return hiddenLayers.has(UNLAYERED_LAYER_INDEX);
+  return entry.layerMembers.every(member => hiddenLayers.has(String(member)));
+}
+
+function createShapePickRow(entry, className, onPick) {
+  const row = document.createElement('button');
+  row.type = 'button';
+  row.className = className;
+  row.dataset.shapeId = entry.id;
+  if (selectedShapeId !== null && String(entry.id) === String(selectedShapeId)) row.classList.add('selected');
+
+  const label = document.createElement('span');
+  label.className = 'shape-pick-label';
+  if (entry.depth > 0) {
+    const indent = document.createElement('span');
+    indent.className = 'shape-pick-depth';
+    indent.textContent = '›'.repeat(entry.depth) + ' ';
+    label.appendChild(indent);
+  }
+  label.appendChild(document.createTextNode(entry.label));
+
+  const meta = document.createElement('span');
+  meta.className = 'shape-pick-meta';
+  const bits = [`#${entry.id}`];
+  if (entry.isGroup) bits.push('group');
+  if (isEntryHidden(entry)) bits.push('hidden');
+  meta.textContent = bits.join(' · ');
+
+  row.title = `${entry.label} (ID ${entry.id})`;
+  row.appendChild(label);
+  row.appendChild(meta);
+
+  row.addEventListener('mouseenter', () => highlightShapeBox(entry));
+  row.addEventListener('focus', () => highlightShapeBox(entry));
+  row.addEventListener('mouseleave', () => clearShapeHighlight());
+  row.addEventListener('blur', () => clearShapeHighlight());
+  row.addEventListener('click', (e) => {
+    e.stopPropagation();
+    onPick(entry);
+  });
+  return row;
+}
+
+function closeLayerObjects() {
+  layerObjectsIndex = null;
+  clearShapeHighlight();
+  if (layerObjectsPanel) layerObjectsPanel.hidden = true;
+}
+
+function renderLayerObjects() {
+  if (!layerObjectsPanel) return;
+  const page = getCurrentPage();
+  if (layerObjectsIndex === null || !page) {
+    layerObjectsPanel.hidden = true;
+    return;
+  }
+
+  const layer = getUiLayers(page).find(candidate => String(candidate.index) === String(layerObjectsIndex));
+  const entries = shapesOnLayer(page, layerObjectsIndex, { unlayeredIndex: UNLAYERED_LAYER_INDEX });
+
+  layerObjectsPanel.hidden = false;
+  layerObjectsTitle.textContent =
+    `${layer ? getLayerDisplayName(layer) : 'Layer'} — ${entries.length} object${entries.length === 1 ? '' : 's'}`;
+  layerObjectsList.innerHTML = '';
+
+  if (!entries.length) {
+    const empty = document.createElement('div');
+    empty.className = 'layer-objects-empty';
+    empty.textContent = 'No shapes on this layer.';
+    layerObjectsList.appendChild(empty);
+    return;
+  }
+
+  for (const entry of entries) {
+    layerObjectsList.appendChild(createShapePickRow(entry, 'layer-object-row', (picked) => {
+      setSelectedShape(picked.id);
+      renderLayerObjects();
+    }));
+  }
+}
+
+function openLayerObjects(layerIndex) {
+  layerObjectsIndex = String(layerIndex) === String(layerObjectsIndex) ? null : layerIndex;
+  if (layerObjectsIndex === null) closeLayerObjects();
+  else renderLayerObjects();
+}
+
+function renderShapePickList() {
+  if (!shapePickSection) return;
+  shapePickSection.hidden = contextPickEntries.length === 0;
+  if (!contextPickEntries.length) return;
+
+  shapePickHint.textContent =
+    `${contextPickEntries.length} shape${contextPickEntries.length === 1 ? '' : 's'} here · hover to highlight`;
+  shapePickList.innerHTML = '';
+  for (const entry of contextPickEntries) {
+    const row = createShapePickRow(entry, 'shape-pick-row', (picked) => {
+      contextShapeId = String(picked.id);
+      setSelectedShape(picked.id);
+      renderShapeContextMenu();
+      renderShapePickList();
+    });
+    if (contextShapeId !== null && String(entry.id) === String(contextShapeId)) row.classList.add('active');
+    shapePickList.appendChild(row);
+  }
+}
+
 function attachSvgLayerFocusHandlers() {
   const svg = svgContainer.querySelector('svg');
   if (!svg) return;
   svg.addEventListener('click', (e) => {
+    // While drawing, a click is a path point - not a selection.
+    if (penActive) return;
     focusLayerFromSvgElement(e.target);
     const group = e.target.closest?.('g[data-shape-id]');
     if (group) setSelectedShape(group.getAttribute('data-shape-id'));
   });
   svg.addEventListener('contextmenu', (e) => {
+    if (penActive) return;
+    const page = getCurrentPage();
+    const point = clientToPageUnits(e.clientX, e.clientY);
+    // Everything whose box covers the click, topmost first, with a few pixels
+    // of slop so a hairline is still catchable.
+    const entries = page && point
+      ? shapesAtPoint(page, point.x, point.y, { slop: pageInchesPerDevicePixel(page) * 3 })
+      : [];
+
     const group = e.target.closest?.('g[data-shape-id]');
-    if (!group) return;
+    const targetId = group?.getAttribute('data-shape-id') ?? entries[0]?.id ?? null;
+    if (targetId === null) return;
+
     e.preventDefault();
-    openShapeContextMenu(group.getAttribute('data-shape-id'), e.clientX, e.clientY);
+    openShapeContextMenu(targetId, e.clientX, e.clientY, entries);
   });
 }
 
@@ -1740,6 +2006,10 @@ async function loadFile(file) {
     removeNonSelectedButton.disabled = !currentPackageEditable;
     removeNonVisibleButton.disabled = !currentPackageEditable;
     compareButton.disabled = currentFileType !== 'vsdx';
+    // Drawing writes back into the package, so it needs an editable one.
+    if (penButton) penButton.disabled = !currentPackageEditable;
+    setPenActive(false);
+    closeLayerObjects();
     // Default to first foreground page
     const firstFg = currentPages.findIndex(p => !p.isBackground);
     currentPageIndex = firstFg >= 0 ? firstFg : 0;
@@ -1802,6 +2072,11 @@ viewportEl.addEventListener('wheel', (e) => {
 }, { passive: false });
 
 viewportEl.addEventListener('mousedown', (e) => {
+  if (penActive && e.button === 0) {
+    e.preventDefault();
+    penMouseDown(e);
+    return;
+  }
   if (e.button === 0) {
     isPanning = true;
     panStartX = e.clientX - panX;
@@ -1811,6 +2086,7 @@ viewportEl.addEventListener('mousedown', (e) => {
 });
 
 window.addEventListener('mousemove', (e) => {
+  if (penActive) penMouseMove(e);
   if (!isPanning) return;
   panX = e.clientX - panStartX;
   panY = e.clientY - panStartY;
@@ -1818,8 +2094,352 @@ window.addEventListener('mousemove', (e) => {
 });
 
 window.addEventListener('mouseup', () => {
+  if (penActive) penMouseUp();
   isPanning = false;
   viewportEl.style.cursor = 'grab';
+});
+
+viewportEl.addEventListener('dblclick', (e) => {
+  if (!penActive) return;
+  e.preventDefault();
+  finishPenPathFromDoubleClick();
+});
+
+// --- Pen tool -------------------------------------------------------------
+// Click places a corner, drag pulls a bezier handle out of the point just
+// placed (mirrored on both sides, like Illustrator's smooth point). The path is
+// only turned into a shape on commit, because Visio's cubics are fractions of
+// the shape's bounding box and that box is not known until the path is done.
+
+function getPageDpi(page) {
+  const width = page?.width;
+  if (!width) return 96;
+  const units = pageCoordinateWidth(page);
+  return units > 0 ? units / width : 96;
+}
+
+// One device pixel expressed in page inches, for hit tests and for keeping the
+// preview handles the same size on screen at any zoom.
+function pageInchesPerDevicePixel(page) {
+  return unitsPerDevicePixel(page) / getPageDpi(page);
+}
+
+function clientToPageUnits(clientX, clientY) {
+  const svg = svgContainer.querySelector('svg');
+  const page = getCurrentPage();
+  if (!svg || !page) return null;
+
+  let ux = null;
+  let uy = null;
+
+  // In a browser the SVG knows its own screen transform, which folds in pan,
+  // zoom, and whatever layout did to it.
+  if (typeof svg.getScreenCTM === 'function' && typeof svg.createSVGPoint === 'function') {
+    const ctm = svg.getScreenCTM();
+    if (ctm && Number.isFinite(ctm.a) && ctm.a !== 0) {
+      const point = svg.createSVGPoint();
+      point.x = clientX;
+      point.y = clientY;
+      const local = point.matrixTransform(ctm.inverse());
+      ux = local.x;
+      uy = local.y;
+    }
+  }
+
+  // Headless DOMs have no SVG geometry: fall back to the rendered box, then to
+  // the pan/zoom transform, which is exact when the SVG is at its natural size.
+  if (ux === null) {
+    const rect = svg.getBoundingClientRect?.();
+    const viewBox = svg.getAttribute('viewBox')?.split(/[\s,]+/).map(Number);
+    if (rect && rect.width > 0 && rect.height > 0 && viewBox?.length === 4) {
+      ux = viewBox[0] + ((clientX - rect.left) / rect.width) * viewBox[2];
+      uy = viewBox[1] + ((clientY - rect.top) / rect.height) * viewBox[3];
+    } else {
+      const viewportRect = viewportEl.getBoundingClientRect?.() || { left: 0, top: 0 };
+      ux = (clientX - viewportRect.left - panX) / zoom;
+      uy = (clientY - viewportRect.top - panY) / zoom;
+    }
+  }
+
+  const dpi = getPageDpi(page);
+  return { x: ux / dpi, y: page.height - uy / dpi };
+}
+
+function readPenStyle() {
+  const opacity = Number.parseFloat(penFillOpacity?.value);
+  return {
+    stroke: penStrokeOn ? penStrokeOn.checked : true,
+    strokeColor: penStrokeColor?.value || '#1a1a1a',
+    strokeWidthPt: Number.isFinite(Number.parseFloat(penStrokeWidth?.value))
+      ? Number.parseFloat(penStrokeWidth.value)
+      : 1,
+    strokePattern: Number.parseInt(penStrokePattern?.value, 10) || 1,
+    fill: penFillOn ? penFillOn.checked : false,
+    fillColor: penFillColor?.value || '#9ec6ff',
+    fillTrans: Number.isFinite(opacity) ? Math.min(1, Math.max(0, 1 - opacity / 100)) : 0
+  };
+}
+
+function updatePenBarState() {
+  const drawing = penNodes.length > 0;
+  if (penFinishButton) penFinishButton.disabled = penNodes.length < 2 || penCommitting;
+  if (penUndoButton) penUndoButton.disabled = !drawing || penCommitting;
+  if (penCancelButton) penCancelButton.disabled = !drawing || penCommitting;
+  if (penHint) {
+    penHint.textContent = !drawing
+      ? 'Click to place a corner · drag to pull a curve'
+      : `${penNodes.length} point${penNodes.length === 1 ? '' : 's'} · Enter or double-click finishes · Esc cancels`;
+  }
+}
+
+function setPenActive(active) {
+  const next = Boolean(active) && currentPackageEditable && currentPages.length > 0;
+  penActive = next;
+  penButton?.classList.toggle('active', next);
+  if (penBar) penBar.hidden = !next;
+  viewportEl.classList.toggle('pen-active', next);
+  if (!next) {
+    penNodes = [];
+    penCursor = null;
+    penDrag = null;
+    clearPenPreview();
+  }
+  updatePenBarState();
+}
+
+function clearPenPreview() {
+  svgContainer.querySelector('#pen-preview')?.remove();
+}
+
+function renderPenPreview() {
+  clearPenPreview();
+  const svg = svgContainer.querySelector('svg');
+  const page = getCurrentPage();
+  if (!svg || !page || !penActive || !penNodes.length) return;
+
+  const ns = 'http://www.w3.org/2000/svg';
+  const dpi = getPageDpi(page);
+  const unit = unitsPerDevicePixel(page);
+  const style = readPenStyle();
+  const closed = Boolean(penClosePath?.checked) && penNodes.length > 2;
+  const toUser = (point) => ({ x: point.x * dpi, y: (page.height - point.y) * dpi });
+
+  const group = document.createElementNS(ns, 'g');
+  group.setAttribute('id', 'pen-preview');
+  group.setAttribute('pointer-events', 'none');
+
+  const addPath = (d, attrs) => {
+    if (!d) return;
+    const path = document.createElementNS(ns, 'path');
+    path.setAttribute('d', d);
+    for (const [key, value] of Object.entries(attrs)) path.setAttribute(key, value);
+    group.appendChild(path);
+  };
+
+  // The committed part of the path, painted with the style it will be saved
+  // with so the fill and stroke controls mean something before you commit.
+  const committed = penPathToSvgD(penNodes, { closed, dpi, pageHeight: page.height });
+  addPath(committed, {
+    fill: style.fill ? style.fillColor : 'none',
+    'fill-opacity': style.fill ? String(1 - style.fillTrans) : '0',
+    'fill-rule': 'evenodd',
+    stroke: style.stroke ? style.strokeColor : 'none',
+    'stroke-width': String(Math.max((style.strokeWidthPt / 72) * dpi, unit)),
+    'stroke-linejoin': 'round'
+  });
+
+  // The segment chasing the cursor, dashed so it reads as not-yet-placed.
+  if (penCursor && !penDrag) {
+    const last = penNodes[penNodes.length - 1];
+    addPath(
+      penPathToSvgD([last, { x: penCursor.x, y: penCursor.y, cIn: null, cOut: null }], { dpi, pageHeight: page.height }),
+      {
+        fill: 'none',
+        stroke: '#7b52b9',
+        'stroke-width': String(unit),
+        'stroke-dasharray': `${unit * 4} ${unit * 3}`
+      }
+    );
+  }
+
+  const addCircle = (point, radius, fill, stroke) => {
+    const user = toUser(point);
+    const circle = document.createElementNS(ns, 'circle');
+    circle.setAttribute('cx', String(user.x));
+    circle.setAttribute('cy', String(user.y));
+    circle.setAttribute('r', String(radius));
+    circle.setAttribute('fill', fill);
+    circle.setAttribute('stroke', stroke);
+    circle.setAttribute('stroke-width', String(unit));
+    group.appendChild(circle);
+  };
+
+  const addHandleLine = (from, to) => {
+    const a = toUser(from);
+    const b = toUser(to);
+    const line = document.createElementNS(ns, 'line');
+    line.setAttribute('x1', String(a.x));
+    line.setAttribute('y1', String(a.y));
+    line.setAttribute('x2', String(b.x));
+    line.setAttribute('y2', String(b.y));
+    line.setAttribute('stroke', '#7b52b9');
+    line.setAttribute('stroke-width', String(unit));
+    group.appendChild(line);
+  };
+
+  for (let i = 0; i < penNodes.length; i++) {
+    const node = penNodes[i];
+    for (const control of [node.cIn, node.cOut]) {
+      if (!control) continue;
+      addHandleLine(node, control);
+      addCircle(control, unit * 2.5, '#7b52b9', '#ffffff');
+    }
+    // The first anchor is the one you click to close the path, so mark it.
+    const isFirst = i === 0 && penNodes.length > 2;
+    addCircle(node, unit * 3.5, isFirst ? '#7b52b9' : '#ffffff', '#7b52b9');
+  }
+
+  svg.appendChild(group);
+}
+
+function penMouseDown(e) {
+  const point = clientToPageUnits(e.clientX, e.clientY);
+  if (!point) return;
+
+  const closeDistance = pageInchesPerDevicePixel(getCurrentPage()) * PEN_CLOSE_PX;
+  if (penNodes.length > 2) {
+    const first = penNodes[0];
+    if (Math.hypot(point.x - first.x, point.y - first.y) <= closeDistance) {
+      if (penClosePath) penClosePath.checked = true;
+      penCursor = null;
+      commitPenPath();
+      return;
+    }
+  }
+
+  penNodes.push({ x: point.x, y: point.y, cIn: null, cOut: null });
+  penDrag = { index: penNodes.length - 1, moved: false };
+  penCursor = null;
+  renderPenPreview();
+  updatePenBarState();
+}
+
+function penMouseMove(e) {
+  const point = clientToPageUnits(e.clientX, e.clientY);
+  if (!point) return;
+
+  if (penDrag) {
+    const node = penNodes[penDrag.index];
+    if (!node) return;
+    const dx = point.x - node.x;
+    const dy = point.y - node.y;
+    // Ignore the shake in a plain click; a corner point should stay a corner.
+    if (!penDrag.moved && Math.hypot(dx, dy) < pageInchesPerDevicePixel(getCurrentPage()) * 2) return;
+    penDrag.moved = true;
+    node.cOut = { x: point.x, y: point.y };
+    node.cIn = { x: node.x - dx, y: node.y - dy };
+    renderPenPreview();
+    return;
+  }
+
+  if (penNodes.length) {
+    penCursor = point;
+    renderPenPreview();
+  }
+}
+
+function penMouseUp() {
+  if (!penDrag) return;
+  penDrag = null;
+  renderPenPreview();
+}
+
+function removeLastPenNode() {
+  if (!penNodes.length) return;
+  penNodes.pop();
+  penDrag = null;
+  renderPenPreview();
+  updatePenBarState();
+}
+
+function cancelPenPath() {
+  penNodes = [];
+  penCursor = null;
+  penDrag = null;
+  clearPenPreview();
+  updatePenBarState();
+}
+
+// A double-click lands after its own mousedown has already placed a point on
+// top of the previous one; drop that duplicate before committing.
+function finishPenPathFromDoubleClick() {
+  if (penNodes.length > 2) {
+    const last = penNodes[penNodes.length - 1];
+    const previous = penNodes[penNodes.length - 2];
+    const slop = pageInchesPerDevicePixel(getCurrentPage()) * PEN_CLOSE_PX;
+    if (Math.hypot(last.x - previous.x, last.y - previous.y) <= slop) penNodes.pop();
+  }
+  commitPenPath();
+}
+
+async function commitPenPath() {
+  if (penCommitting) return;
+  if (penNodes.length < 2) {
+    showError('A path needs at least two points');
+    return;
+  }
+  const page = getCurrentPage();
+  if (!page || !currentPackageEditable || !currentFileBuffer) return;
+
+  penCommitting = true;
+  updatePenBarState();
+  try {
+    const closed = Boolean(penClosePath?.checked) && penNodes.length > 2;
+    const shapeXml = buildPenShapeXml(penNodes, readPenStyle(), { closed });
+    const base = await getPackageBufferWithPendingEdits();
+    const { buffer, shapeId } = await addVsdxShapeToPage(base, page.id, shapeXml);
+    penNodes = [];
+    penCursor = null;
+    penDrag = null;
+    clearPenPreview();
+    await applyUpdatedVsdxBuffer(buffer, page.id);
+    setSelectedShape(shapeId);
+  } catch (e) {
+    console.error(e);
+    showError('Failed to add the path: ' + e.message);
+  } finally {
+    penCommitting = false;
+    updatePenBarState();
+  }
+}
+
+layerObjectsClose?.addEventListener('click', () => closeLayerObjects());
+
+penButton?.addEventListener('click', () => setPenActive(!penActive));
+penFinishButton?.addEventListener('click', () => commitPenPath());
+penUndoButton?.addEventListener('click', () => removeLastPenNode());
+penCancelButton?.addEventListener('click', () => cancelPenPath());
+for (const control of [penStrokeOn, penStrokeColor, penStrokeWidth, penStrokePattern, penFillOn, penFillColor, penFillOpacity, penClosePath]) {
+  control?.addEventListener('input', () => renderPenPreview());
+  control?.addEventListener('change', () => renderPenPreview());
+}
+
+document.addEventListener('keydown', (e) => {
+  if (!penActive) return;
+  const tag = e.target?.tagName?.toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    if (penNodes.length) cancelPenPath();
+    else setPenActive(false);
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    commitPenPath();
+  } else if (e.key === 'Backspace') {
+    e.preventDefault();
+    removeLastPenNode();
+  }
 });
 
 // Toolbar buttons
@@ -2245,7 +2865,12 @@ document.getElementById('btn-export').addEventListener('click', async () => {
   const svg = svgContainer.querySelector('svg');
   if (!svg) return;
   const serializer = new XMLSerializer();
-  let svgStr = serializer.serializeToString(svg);
+  // The pen's live overlay (anchors, handles, rubber band) lives inside the
+  // rendered SVG; it is scaffolding, not part of the drawing.
+  const exported = svg.cloneNode(true);
+  exported.querySelector('#pen-preview')?.remove();
+  exported.querySelector('#shape-highlight')?.remove();
+  let svgStr = serializer.serializeToString(exported);
   try {
     if (currentFileBuffer) {
       // Embed what "Save VSDX" would produce, so layer edits and named views

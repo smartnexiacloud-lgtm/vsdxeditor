@@ -747,6 +747,38 @@ function buildConnectorPath(shape, pageHeight) {
   return null;
 }
 
+// A 1-D connector is drawn directly in page coordinates and its group is
+// returned *without* a transform (see renderShape), unlike every other shape.
+// Anything working out where a shape lands on the page — hit testing, overlays —
+// has to special-case it the same way, so the rule lives here rather than being
+// guessed at a second time.
+export function rendersAsFlatConnector(shape) {
+  return Boolean(shape?.is1D)
+    && (shape.subShapes?.length || 0) === 0
+    && countVisibleGeometrySections(shape) <= 1
+    && buildConnectorPath(shape, 0) !== null;
+}
+
+// Extent of that drawn path in the user units renderPage emits, taken from the
+// path data itself so it cannot drift from what is on screen. `pageHeight` is
+// whatever height the shape is rendered against — the page for a top-level
+// shape, the parent's height for one inside a group.
+export function connectorRenderBounds(shape, pageHeight) {
+  const pathData = buildConnectorPath(shape, pageHeight);
+  if (!pathData) return null;
+  const nums = (pathData.match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi) || []).map(Number);
+  if (nums.length < 2) return null;
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (let i = 0; i + 1 < nums.length; i += 2) {
+    minX = Math.min(minX, nums[i]);
+    maxX = Math.max(maxX, nums[i]);
+    minY = Math.min(minY, nums[i + 1]);
+    maxY = Math.max(maxY, nums[i + 1]);
+  }
+  return { minX, minY, maxX, maxY };
+}
+
 function wrapTextLines(text, maxWidthPx, fontSize) {
   const explicitLines = String(text).split('\n').map(line => line.trim()).filter(Boolean);
   if (explicitLines.length > 1) return explicitLines;

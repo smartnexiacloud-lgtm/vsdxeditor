@@ -1905,6 +1905,60 @@ export async function replaceVsdxShapeXmlSnippet(arrayBuffer, pageId, shapeId, s
   return zip.generateAsync({ type: 'arraybuffer' });
 }
 
+// Shape IDs only have to be unique within a page, so the next free one is one
+// past the highest in use - including IDs nested inside groups, which are in
+// the same number space as the top-level shapes.
+function collectShapeIds(parentEl, ids = new Set()) {
+  for (const shapesEl of getDirectChildren(parentEl, 'Shapes')) collectShapeIds(shapesEl, ids);
+  for (const shapeEl of getDirectChildren(parentEl, 'Shape')) {
+    const id = Number.parseInt(shapeEl.getAttribute('ID'), 10);
+    if (Number.isFinite(id)) ids.add(id);
+    collectShapeIds(shapeEl, ids);
+  }
+  return ids;
+}
+
+function nextFreeShapeId(rootEl) {
+  const ids = collectShapeIds(rootEl);
+  return ids.size ? Math.max(...ids) + 1 : 1;
+}
+
+// Add a new top-level shape to a page. The counterpart to
+// replaceVsdxShapeXmlSnippet, which deliberately refuses anything whose ID does
+// not already exist: here the ID in the snippet is a placeholder and gets
+// rewritten to whatever is free on the target page.
+export async function addVsdxShapeToPage(arrayBuffer, pageId, shapeXmlSnippet) {
+  const zip = await JSZip.loadAsync(arrayBuffer);
+  const { pagePath } = await resolvePagePart(zip, pageId);
+  const pageXml = await readZipText(zip, pagePath);
+  if (!pageXml) throw new Error(`VSDX package is missing ${pagePath}`);
+
+  const pageDoc = parseXml(pageXml);
+  const root = pageDoc.documentElement;
+
+  const snippetDoc = parseXml(`<Root xmlns="${VISIO_MAIN_NS}">${String(shapeXmlSnippet || '').trim()}</Root>`);
+  const parseError = byTag(snippetDoc, 'parsererror')[0];
+  if (parseError) throw new Error('Shape XML is not well-formed');
+
+  const newShapeEl = getDirectChildren(snippetDoc.documentElement, 'Shape')[0];
+  if (!newShapeEl) throw new Error('Shape XML must contain exactly one <Shape> element');
+
+  // An untouched page can legitimately have no <Shapes> container yet.
+  let shapesEl = getDirectChildren(root, 'Shapes')[0];
+  if (!shapesEl) {
+    shapesEl = pageDoc.createElementNS(root.namespaceURI || VISIO_MAIN_NS, 'Shapes');
+    root.appendChild(shapesEl);
+  }
+
+  const shapeId = nextFreeShapeId(root);
+  const inserted = newShapeEl.cloneNode(true);
+  inserted.setAttribute('ID', String(shapeId));
+  shapesEl.appendChild(inserted);
+
+  zip.file(pagePath, new XMLSerializer().serializeToString(pageDoc));
+  return { buffer: await zip.generateAsync({ type: 'arraybuffer' }), shapeId };
+}
+
 async function patchVsdxLayerPermissions(zip, pages, tagColors) {
   const pagesFile = zip.file('visio/pages/pages.xml');
   if (!pagesFile) throw new Error('VSDX package is missing visio/pages/pages.xml');

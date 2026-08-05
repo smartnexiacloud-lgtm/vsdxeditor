@@ -138,8 +138,62 @@ re-saved in the real Microsoft Visio desktop app — see
 - **Right-click a shape** to open its context menu:
   - **Edit XML** — open the shape's raw XML in an editor; **Apply XML** to
     commit your change or **Cancel** to discard.
+  - **Select component** — every shape whose box covers the point you clicked,
+    topmost first, so you can reach a shape sitting underneath another one or
+    pick the group instead of the part inside it. Hovering a row draws a
+    selection square around that shape on the canvas; clicking selects it and
+    points the rest of the menu at it. Nesting is shown with `›` markers, and
+    shapes currently hidden are marked `hidden` — they stay listed, because a
+    shape you cannot see is often the one you are looking for.
   - **Send Object To Layer** — move the shape onto a different layer (filter the
     layer list with the search box).
+
+### Listing every shape on a layer
+
+Each row in the **Layers** sidebar has a **⊙** button that opens the list of
+every shape on that layer, including shapes nested inside groups. Hovering a row
+draws the same selection square on the canvas; clicking selects the shape. The
+button toggles the list, and opening it never changes the layer's visibility.
+
+## Drawing new shapes (Pen)
+
+Click **✎ Pen** to draw a path onto the current page. The button is only
+available for editable Visio XML packages — drawing writes back into the file,
+which the read-only binary `.vsd` formats cannot do.
+
+- **Click** places a corner point.
+- **Click and drag** places a point and pulls a bezier handle out of it. The
+  handle is mirrored on both sides, so the curve runs smoothly through the
+  point — the same behaviour as Illustrator's pen.
+- **Enter**, **double-click**, or **Finish** commits the path.
+- **Clicking the first anchor** (highlighted once the path has three points)
+  closes the path and commits it.
+- **Backspace** or **Undo point** removes the last point; **Esc** or **Cancel**
+  discards the whole path. Pressing **Esc** with nothing drawn leaves the tool.
+
+The bar above the canvas sets what the path is drawn with, and the live preview
+uses those settings so you can see the result before committing:
+
+| Control | Visio cell |
+| --- | --- |
+| Stroke on/off | `LinePattern` 0 and the geometry's `NoLine` |
+| Stroke colour | `LineColor` |
+| Width (pt) | `LineWeight` (converted to inches) |
+| Line pattern | `LinePattern` — solid, dashed, dotted, dash-dot, long dash |
+| Fill on/off | `FillPattern` 0 and the geometry's `NoFill` |
+| Fill colour | `FillForegnd` |
+| Fill opacity | `FillForegndTrans` |
+
+Curves are stored as Visio's `RelCubBezTo` rows, which map one for one onto
+SVG's cubic `C` command (cells `A,B` and `C,D` are the two control points), and
+straight runs stay plain `MoveTo`/`LineTo`. Nothing is fitted or approximated.
+
+Because Visio has no *absolute* cubic — every curve is a fraction of the shape's
+`Width`/`Height` — the path becomes a shape only when you commit it, which is
+when its bounding box is finally known. The new shape lands on the page
+unlayered; use **Send Object To Layer** to file it.
+
+Drawing edits the in-memory document; use **Save Visio** to persist them.
 
 ## Pruning
 

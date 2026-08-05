@@ -6,7 +6,54 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Pen tool — draw new paths onto a drawing.** Click to place a corner, drag to
+  pull a bezier handle out of the point you just placed (mirrored on both sides,
+  like Illustrator's smooth point). `Enter` or a double-click finishes the path,
+  clicking the first anchor closes it, `Backspace` drops the last point, `Esc`
+  discards it. Fill and stroke — colour, weight in points, line pattern, fill
+  colour and opacity — are set from a bar above the canvas and previewed live
+  while you draw.
+
+  The path is written as real Visio geometry, not an approximation: Visio's
+  `RelCubBezTo` row *is* SVG's cubic `C` command, with cells `A,B` and `C,D`
+  holding the two control points, so an exported curve is the curve you drew.
+  Straight runs stay plain `MoveTo`/`LineTo` rows. Because Visio has no
+  *absolute* cubic — every curve is a fraction of the shape's `Width`/`Height` —
+  a path is committed as a whole once its bounding box is known, and a path with
+  no extent on one axis (a perfectly horizontal drag) gets that axis floored and
+  is centred in the box rather than collapsing to a point.
+- **Finding a shape: "Select component" and per-layer object lists.**
+  Right-clicking now lists every shape whose box covers that point, topmost
+  first and groups included, so a shape buried under another one is reachable —
+  and each layer in the sidebar has a **⊙** button listing every shape on it,
+  nested shapes included. Hovering a row in either list draws a selection square
+  around that shape on the canvas; clicking selects it. Hidden shapes stay
+  listed and are marked as hidden, since a shape you cannot see is usually the
+  one you are hunting for.
+
+  The boxes come from a new `shape-picker` module that reproduces the renderer's
+  own transform chain, so a shape nested three groups deep is hit-tested exactly
+  where it is drawn. 1-D connectors are special-cased the way the renderer does
+  it — they are drawn straight in page coordinates and their group carries no
+  transform at all — with the rule exported from `svg-renderer` rather than
+  guessed at twice. A test composes the transform off the rendered SVG and
+  checks the picker against it, shape by shape, across four real drawings
+  (487 groups, 408 of them nested).
+- **`addVsdxShapeToPage`** in the parser: adds a top-level shape to a page,
+  assigning the next free shape ID. The counterpart to
+  `replaceVsdxShapeXmlSnippet`, which deliberately refuses any ID that does not
+  already exist.
+
 ### Fixed
+- **Hand-editing a shape's XML no longer resets the layers.** Applying a shape
+  edit rebuilds the package and re-parses it, and the sidebar is rebuilt from
+  the result — but layer visibility toggles, renames, tags and per-shape layer
+  moves live only in memory until something writes them out, so the edit was
+  applied to the file *as opened* and the re-parse reverted them. Those pending
+  edits are now folded into the package first (the same step the prune paths
+  already did for themselves), and the editor-only "Unlayered" row — which has
+  nowhere to live in the file — is carried across the re-parse by hand.
 - **Hairlines no longer vanish on scaled drawings.** Visio's `LineWeight 0`
   (hairline) was floored at a constant 0.5 units, which is meaningless in a
   scaled drawing's coordinate space — on a 1:100 plan that is 1/19200 of an

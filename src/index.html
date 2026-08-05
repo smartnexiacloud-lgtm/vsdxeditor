@@ -474,6 +474,7 @@
       font-size: 10px;
       color: #7d88b5;
     }
+    .layer-item .layer-objects-btn,
     .layer-item .layer-tag-edit {
       flex-shrink: 0;
       background: none;
@@ -486,12 +487,179 @@
       color: inherit;
     }
     .layer-item:hover .layer-tag-edit,
-    .layer-item.focused .layer-tag-edit {
+    .layer-item.focused .layer-tag-edit,
+    .layer-item:hover .layer-objects-btn,
+    .layer-item.focused .layer-objects-btn {
       opacity: 1;
     }
+    .layer-item .layer-objects-btn.active { opacity: 1; color: #b79cf0; }
     .toolbar button.active {
       background: #533483;
       border-color: #7b52b9;
+    }
+
+    .pen-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 6px 10px;
+      background: #241f3a;
+      border-bottom: 1px solid #3a3a5c;
+      font-size: 12px;
+      color: #d8d8e8;
+    }
+    .pen-bar[hidden] { display: none; }
+    .pen-bar-title {
+      font-weight: 600;
+      color: #b79cf0;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .pen-field {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+    }
+    .pen-bar input[type="number"] {
+      width: 56px;
+      background: #1a1a2e;
+      color: #e8e8f0;
+      border: 1px solid #3a3a5c;
+      border-radius: 3px;
+      padding: 2px 4px;
+    }
+    .pen-bar input[type="color"] {
+      width: 28px;
+      height: 22px;
+      padding: 0;
+      border: 1px solid #3a3a5c;
+      border-radius: 3px;
+      background: #1a1a2e;
+      cursor: pointer;
+    }
+    .pen-bar select {
+      background: #1a1a2e;
+      color: #e8e8f0;
+      border: 1px solid #3a3a5c;
+      border-radius: 3px;
+      padding: 2px 4px;
+    }
+    .pen-bar button {
+      background: #2d2d44;
+      color: #e8e8f0;
+      border: 1px solid #3a3a5c;
+      border-radius: 3px;
+      padding: 3px 10px;
+      cursor: pointer;
+    }
+    .pen-bar button:hover:not(:disabled) { background: #3a3a5c; }
+    .pen-bar button:disabled { opacity: 0.45; cursor: default; }
+    .pen-sep {
+      width: 1px;
+      align-self: stretch;
+      background: #3a3a5c;
+    }
+    .pen-hint {
+      color: #8a8aa8;
+      margin-left: auto;
+    }
+    #viewport.pen-active { cursor: crosshair; }
+
+    .layer-objects {
+      margin-top: 8px;
+      border: 1px solid #3a3a5c;
+      border-radius: 4px;
+      background: #1f1b33;
+      overflow: hidden;
+    }
+    .layer-objects[hidden] { display: none; }
+    .layer-objects-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 8px;
+      background: #2a2545;
+      border-bottom: 1px solid #3a3a5c;
+    }
+    .layer-objects-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: #b79cf0;
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .layer-objects-close {
+      background: none;
+      border: none;
+      color: #8a8aa8;
+      cursor: pointer;
+      font-size: 15px;
+      line-height: 1;
+      padding: 0 2px;
+    }
+    .layer-objects-close:hover { color: #e8e8f0; }
+    .layer-objects-list {
+      max-height: 190px;
+      overflow-y: auto;
+    }
+    .layer-objects-empty {
+      padding: 8px;
+      font-size: 11px;
+      color: #8a8aa8;
+    }
+    .layer-object-row,
+    .shape-pick-row {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      width: 100%;
+      padding: 4px 8px;
+      background: none;
+      border: none;
+      border-bottom: 1px solid #2a2545;
+      color: #d8d8e8;
+      font-size: 11px;
+      text-align: left;
+      cursor: pointer;
+    }
+    .layer-object-row:hover,
+    .shape-pick-row:hover,
+    .layer-object-row.active,
+    .shape-pick-row.active {
+      background: #533483;
+      color: #fff;
+    }
+    .layer-object-row.selected,
+    .shape-pick-row.selected { box-shadow: inset 3px 0 0 #e94560; }
+    .shape-pick-label {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .shape-pick-meta {
+      color: #8a8aa8;
+      font-size: 10px;
+      white-space: nowrap;
+    }
+    .layer-object-row:hover .shape-pick-meta,
+    .shape-pick-row:hover .shape-pick-meta { color: #d9cdf5; }
+    .shape-pick-depth { color: #6f6f96; }
+    .shape-pick-section {
+      border-bottom: 1px solid #3a3a5c;
+      padding: 8px 10px 6px;
+    }
+    .shape-pick-section[hidden] { display: none; }
+    .shape-pick-list {
+      max-height: 180px;
+      overflow-y: auto;
+      margin-top: 4px;
+      border: 1px solid #3a3a5c;
+      border-radius: 3px;
     }
 
     .matrix-modal {
@@ -1087,6 +1255,7 @@
       <button id="btn-save-vsdx" disabled>Save Visio</button>
       <button id="btn-export">Export SVG</button>
       <button id="btn-compare" disabled>Compare…</button>
+      <button id="btn-pen" disabled title="Pen: click to add a corner, drag to pull a curve. Enter or double-click finishes, Esc cancels.">&#9998; Pen</button>
       <select id="stroke-mode" aria-label="Thin line rendering" title="How thin lines (Visio hairlines) are drawn">
         <option value="screen">Hairlines: fit zoom</option>
         <option value="true">Hairlines: true size</option>
@@ -1094,6 +1263,35 @@
       <button id="btn-rerender" title="Re-render this page for the current zoom">&#8635; Update</button>
       <span id="zoom-info">100%</span>
       <a id="link-help" href="usage.html" target="_blank" rel="noopener">Help</a>
+    </div>
+    <div class="pen-bar" id="pen-bar" hidden>
+      <span class="pen-bar-title">Pen</span>
+      <label class="pen-field"><input type="checkbox" id="pen-stroke-on" checked> Stroke</label>
+      <input type="color" id="pen-stroke-color" value="#1a1a1a" title="Stroke colour">
+      <label class="pen-field">Width
+        <input type="number" id="pen-stroke-width" value="1" min="0" max="72" step="0.25" title="Stroke width in points">
+        pt
+      </label>
+      <select id="pen-stroke-pattern" title="Line pattern">
+        <option value="1">Solid</option>
+        <option value="2">Dashed</option>
+        <option value="3">Dotted</option>
+        <option value="4">Dash-dot</option>
+        <option value="6">Long dash</option>
+      </select>
+      <span class="pen-sep"></span>
+      <label class="pen-field"><input type="checkbox" id="pen-fill-on"> Fill</label>
+      <input type="color" id="pen-fill-color" value="#9ec6ff" title="Fill colour">
+      <label class="pen-field">Opacity
+        <input type="number" id="pen-fill-opacity" value="100" min="0" max="100" step="5" title="Fill opacity in percent">
+        %
+      </label>
+      <span class="pen-sep"></span>
+      <label class="pen-field"><input type="checkbox" id="pen-close-path"> Close path</label>
+      <button id="pen-finish" type="button" disabled title="Finish this path (Enter)">Finish</button>
+      <button id="pen-undo" type="button" disabled title="Remove the last point (Backspace)">Undo point</button>
+      <button id="pen-cancel" type="button" disabled title="Discard this path (Esc)">Cancel</button>
+      <span class="pen-hint" id="pen-hint">Click to place a corner &middot; drag to pull a curve</span>
     </div>
     <input type="file" id="compare-input" accept=".vsdx,.vsdm,.vstx,.vstm,.vssx,.vssm" style="display:none">
     <div id="page-tabs"></div>
@@ -1116,6 +1314,13 @@
             <button id="layers-deselect-all" type="button">Deselect all</button>
             <button id="layers-select-filtered" type="button">Select filter</button>
             <button id="layers-deselect-filtered" type="button">Deselect filter</button>
+          </div>
+          <div id="layer-objects" class="layer-objects" hidden>
+            <div class="layer-objects-header">
+              <span id="layer-objects-title" class="layer-objects-title"></span>
+              <button id="layer-objects-close" type="button" class="layer-objects-close" aria-label="Close object list">&times;</button>
+            </div>
+            <div id="layer-objects-list" class="layer-objects-list"></div>
           </div>
           <div id="layers-count" class="layers-count"></div>
         </div>
@@ -1194,6 +1399,11 @@
     <button type="button" role="menuitem" data-tab-action="close-others">Close all other tabs</button>
   </div>
   <div id="shape-context-menu" class="shape-context-menu">
+    <div id="shape-pick-section" class="shape-pick-section">
+      <div class="shape-context-title">Select component</div>
+      <div id="shape-pick-hint" class="shape-context-subtitle"></div>
+      <div id="shape-pick-list" class="shape-pick-list" role="listbox"></div>
+    </div>
     <div class="shape-context-header">
       <div class="shape-context-title">Send Object To Layer</div>
       <div id="shape-context-subtitle" class="shape-context-subtitle"></div>

@@ -39,6 +39,15 @@ portable offline builds.
   travel with the file and survive a Microsoft Visio round-trip
   (see [docs/visio-roundtrip.md](docs/visio-roundtrip.md)).
 - **Shape Tree** — inspect a shape's group hierarchy and inherited style.
+- **Find a shape** — right-click for **Select component**, which lists every
+  shape under the cursor (topmost first, groups included) so you can reach one
+  buried under another, or open a layer's **⊙** button for every shape on that
+  layer. Hovering a row draws a selection square around that shape on the canvas.
+- **Pen tool** — draw new paths onto the drawing: click for a corner, drag to
+  pull a bezier handle, with fill and stroke (colour, weight, line pattern,
+  opacity) set from a bar above the canvas and previewed as you draw. Curves are
+  written as real Visio geometry — `RelCubBezTo` is SVG's cubic `C` command one
+  for one — so what you draw is what Visio opens.
 - **Per-shape XML editing** — right-click a shape to *Edit XML*, or send a
   shape to a different layer.
 - **Prune** the drawing: *Remove Non-visible* or *Remove Non-selected* shapes.
