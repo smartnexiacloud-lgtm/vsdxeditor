@@ -53,11 +53,30 @@ const check = (name, cond, detail = '') => {
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const $ = (id) => window.document.getElementById(id);
+
+// Parsing/rendering a drawing and building a saved .vsdx are async with no
+// fixed duration — on a busy machine they outrun any constant we could pick,
+// so poll for the outcome, bailing early once the app reports an error.
+const WAIT_TIMEOUT_MS = Number(process.env.TEST_WAIT_TIMEOUT_MS) || 120000;
+const waitFor = async (done) => {
+  const deadline = Date.now() + WAIT_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (done()) return true;
+    if ($('error-box')?.textContent.trim()) return false;
+    await sleep(25);
+  }
+  return false;
+};
+// Wait for a *new* <svg> node, not merely for one to exist: dropping a second
+// file leaves the previous render in place until the new one replaces it.
+const currentSvg = () => window.document.querySelector('#svg-container svg');
 const dropFile = async (file) => {
+  if ($('error-box')) $('error-box').textContent = '';
+  const previous = currentSvg();
   const ev = new window.Event('drop', { bubbles: true, cancelable: true });
   Object.defineProperty(ev, 'dataTransfer', { value: { files: [file] } });
   $('drop-zone').dispatchEvent(ev);
-  await sleep(500);
+  await waitFor(() => currentSvg() && currentSvg() !== previous);
 };
 const layerItems = () => [...window.document.querySelectorAll('#layers-list .layer-item')];
 const layerItem = (name) => layerItems().find(item => item.querySelector('.layer-name')?.textContent === name);
@@ -157,8 +176,9 @@ layerItem(targetName).querySelector('input[type=checkbox]').click();
 await sleep(50);
 
 // 5. Save and inspect the bytes.
+const capturedBeforeSave = captured.length;
 $('btn-save-vsdx').click();
-await sleep(500);
+await waitFor(() => captured.length > capturedBeforeSave);
 const savedBytes = Buffer.from(await captured.at(-1).arrayBuffer());
 check('Save VSDX produced a ZIP', savedBytes.subarray(0, 2).toString() === 'PK');
 const zip = await JSZip.loadAsync(savedBytes);

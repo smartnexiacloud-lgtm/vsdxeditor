@@ -55,11 +55,36 @@ const check = (name, cond, detail = '') => {
   cond ? pass++ : fail++;
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Parsing and rendering a drawing is async and has no fixed duration — on a
+// busy machine it comfortably outruns any constant we could pick here, which
+// used to fail this whole suite spuriously. Poll for the outcome instead, and
+// give up early if the app reported an error (nothing more is coming).
+const WAIT_TIMEOUT_MS = Number(process.env.TEST_WAIT_TIMEOUT_MS) || 120000;
+const errorBox = () => window.document.getElementById('error-box');
+const waitFor = async (done) => {
+  const deadline = Date.now() + WAIT_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (done()) return true;
+    if (errorBox()?.textContent.trim()) return false;
+    await sleep(25);
+  }
+  return false;
+};
+// Why a check failed, for the detail column: the app's own message if it has
+// one, otherwise say we ran out of patience rather than printing an empty box.
+const whyNot = () => 'error-box: ' + (errorBox()?.textContent.trim() || `(timed out after ${WAIT_TIMEOUT_MS} ms)`);
+
+// Wait for a *new* <svg> node, not merely for one to exist: dropping a second
+// file leaves the previous render in place until the new one replaces it.
+const currentSvg = () => window.document.querySelector('#svg-container svg');
 const dropFile = async (file) => {
+  if (errorBox()) errorBox().textContent = '';
+  const previous = currentSvg();
   const ev = new window.Event('drop', { bubbles: true, cancelable: true });
   Object.defineProperty(ev, 'dataTransfer', { value: { files: [file] } });
   window.document.getElementById('drop-zone').dispatchEvent(ev);
-  await sleep(500); // loadFile is async
+  await waitFor(() => currentSvg() && currentSvg() !== previous);
 };
 
 const fixture = process.argv[2] || 'test-files/test4_connectors.vsdx';
@@ -69,14 +94,14 @@ console.log(`── in-app svg export round-trip: ${fixture} ──`);
 const srcBytes = new Uint8Array(readFileSync(fixture));
 await dropFile(new window.File([srcBytes], 'roundtrip.vsdm'));
 check('app booted and rendered the vsdx',
-  !!window.document.querySelector('#svg-container svg'),
-  'error-box: ' + window.document.getElementById('error-box')?.textContent);
+  !!window.document.querySelector('#svg-container svg'), whyNot());
 
 // 2. Click Export SVG and inspect the blob the user would download.
 window.document.getElementById('btn-export').click();
-await sleep(500); // handler awaits saveVsdxLayerPermissions
+// The handler awaits saveVsdxLayerPermissions before it hands over the blob.
+await waitFor(() => captured.some((b) => b.type === 'image/svg+xml'));
 const svgBlob = captured.find((b) => b.type === 'image/svg+xml');
-check('Export SVG produced an image/svg+xml download', !!svgBlob);
+check('Export SVG produced an image/svg+xml download', !!svgBlob, whyNot());
 const svgText = svgBlob ? Buffer.from(await svgBlob.arrayBuffer()).toString('utf8') : '';
 check('exported SVG embeds vsdxeditor-source metadata', svgText.includes('vsdxeditor-source'));
 
@@ -90,8 +115,7 @@ check('embedded payload is a ZIP (vsdx)', embedded.subarray(0, 2).toString() ===
 window.document.getElementById('svg-container').innerHTML = '';
 await dropFile(new window.File([svgText], 'exported.svg'));
 const reRendered = window.document.querySelector('#svg-container svg');
-check('exported .svg re-opens and renders the drawing', !!reRendered,
-  'error-box: ' + window.document.getElementById('error-box')?.textContent);
+check('exported .svg re-opens and renders the drawing', !!reRendered, whyNot());
 check('file name restored from embedded metadata',
   /\.vsdm$/i.test(window.document.getElementById('file-name').textContent),
   window.document.getElementById('file-name').textContent);

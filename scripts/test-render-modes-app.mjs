@@ -36,6 +36,23 @@ const check = (name, cond, detail = '') => {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const $ = (id) => window.document.getElementById(id);
 
+// Parsing and rendering a drawing is async with no fixed duration — on a busy
+// machine it outruns any constant we could pick, so poll for the outcome and
+// bail early once the app reports an error.
+const WAIT_TIMEOUT_MS = Number(process.env.TEST_WAIT_TIMEOUT_MS) || 120000;
+const currentSvg = () => window.document.querySelector('#svg-container svg');
+const waitFor = async (done) => {
+  const deadline = Date.now() + WAIT_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (done()) return true;
+    if ($('error-box')?.textContent.trim()) return false;
+    await sleep(25);
+  }
+  return false;
+};
+// A re-render swaps in a fresh <svg>; wait for that rather than a delay.
+const waitForRerender = (previous) => waitFor(() => currentSvg() && currentSvg() !== previous);
+
 const fixture = process.argv[2] || 'test-files/test4_connectors.vsdx';
 console.log(`── in-app thin-line rendering: ${fixture} ──`);
 
@@ -44,10 +61,10 @@ Object.defineProperty(ev, 'dataTransfer', {
   value: { files: [new window.File([readFileSync(fixture)], 'render.vsdx')] }
 });
 $('drop-zone').dispatchEvent(ev);
-await sleep(500);
+await waitFor(() => !!currentSvg());
 
-check('app booted and rendered', !!window.document.querySelector('#svg-container svg'),
-  'error: ' + $('error-box')?.textContent);
+check('app booted and rendered', !!currentSvg(),
+  'error: ' + ($('error-box')?.textContent.trim() || `(timed out after ${WAIT_TIMEOUT_MS} ms)`));
 
 // Thinnest stroke anywhere in the drawing: that is the one the minimum bites on.
 const thinnestStroke = () => {
@@ -67,11 +84,12 @@ check('something thin is on screen to test with', Number.isFinite(atFit) && atFi
 
 // True size: lines drop to their real Visio weights, so the thinnest line can
 // only get thinner (or stay put, when nothing was being floored).
+const beforeTrueSize = currentSvg();
 strokeMode.value = 'true';
 strokeMode.dispatchEvent(new window.Event('change'));
-await sleep(200);
+await waitForRerender(beforeTrueSize);
 const trueSize = thinnestStroke();
-check('true-size mode re-renders', !!window.document.querySelector('#svg-container svg'));
+check('true-size mode re-renders', !!currentSvg() && currentSvg() !== beforeTrueSize);
 check('true size never draws thicker than fit-zoom', trueSize <= atFit + 1e-9,
   `${trueSize} vs ${atFit}`);
 check('true size still draws hairlines, not zero-width lines', trueSize > 0, String(trueSize));
@@ -85,9 +103,10 @@ check('zooming alone leaves the rendered strokes untouched', thinnestStroke() ==
 
 // Back to fit-zoom at a much smaller zoom: the minimum has to grow to keep
 // hairlines on screen, and only re-rendering applies it.
+const beforeScreen = currentSvg();
 strokeMode.value = 'screen';
 strokeMode.dispatchEvent(new window.Event('change'));
-await sleep(200);
+await waitForRerender(beforeScreen);
 const zoomedOut = thinnestStroke();
 check('fit-zoom compensates for a zoomed-out view', zoomedOut > trueSize,
   `${zoomedOut} vs ${trueSize}`);
@@ -99,8 +118,9 @@ $('btn-zoom-in').click();
 $('btn-zoom-in').click();
 await sleep(50);
 check('Update flags a render made for a different zoom', rerender.classList.contains('stale'));
+const beforeUpdate = currentSvg();
 rerender.click();
-await sleep(200);
+await waitForRerender(beforeUpdate);
 check('Update clears the stale flag', !rerender.classList.contains('stale'));
 check('Update re-rendered for the closer zoom', thinnestStroke() < zoomedOut,
   `${thinnestStroke()} vs ${zoomedOut}`);

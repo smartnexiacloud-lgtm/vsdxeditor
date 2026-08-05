@@ -53,11 +53,30 @@ const check = (name, cond, detail = '') => {
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const $ = (id) => window.document.getElementById(id);
+
+// Parsing/rendering a drawing and building a saved .vsdx are async with no
+// fixed duration — on a busy machine they outrun any constant we could pick,
+// so poll for the outcome, bailing early once the app reports an error.
+const WAIT_TIMEOUT_MS = Number(process.env.TEST_WAIT_TIMEOUT_MS) || 120000;
+const waitFor = async (done) => {
+  const deadline = Date.now() + WAIT_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (done()) return true;
+    if ($('error-box')?.textContent.trim()) return false;
+    await sleep(25);
+  }
+  return false;
+};
+// Wait for a *new* <svg> node, not merely for one to exist: dropping a second
+// file leaves the previous render in place until the new one replaces it.
+const currentSvg = () => window.document.querySelector('#svg-container svg');
 const dropFile = async (file) => {
+  if ($('error-box')) $('error-box').textContent = '';
+  const previous = currentSvg();
   const ev = new window.Event('drop', { bubbles: true, cancelable: true });
   Object.defineProperty(ev, 'dataTransfer', { value: { files: [file] } });
   $('drop-zone').dispatchEvent(ev);
-  await sleep(500);
+  await waitFor(() => currentSvg() && currentSvg() !== previous);
 };
 // A layer row's checkbox in the sidebar: #layer-cb-<index>.
 const connectorCheckbox = () =>
@@ -134,8 +153,9 @@ check('matrix named-view dropdown stays synchronized',
   [...$('layer-matrix-view-select').options].filter(o => o.value !== '').length === 2);
 
 // 4. Save VSDX and inspect the downloaded bytes.
+const capturedBeforeSave = captured.length;
 $('btn-save-vsdx').click();
-await sleep(500);
+await waitFor(() => captured.length > capturedBeforeSave);
 const vsdxBlob = captured.at(-1);
 const savedBytes = Buffer.from(await vsdxBlob.arrayBuffer());
 check('Save VSDX produced a ZIP', savedBytes.subarray(0, 2).toString() === 'PK');
