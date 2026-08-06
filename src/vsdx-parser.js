@@ -2234,6 +2234,75 @@ export async function ungroupVsdxShapes(arrayBuffer, pageId, plan) {
   });
 }
 
+// Delete shapes outright. A group takes everything inside it, which is what
+// deleting a group means and also all the XML can express — a <Shape> holds its
+// children. So the ids that vanish are the ones asked for *plus* their
+// descendants, and the connections pointing at any of them go too: a <Connect>
+// naming a shape that no longer exists is a dangling reference Visio will
+// complain about.
+export async function deleteVsdxShapes(arrayBuffer, pageId, shapeIds) {
+  return withPageDocument(arrayBuffer, pageId, (doc, root) => {
+    const wanted = [...new Set((shapeIds || []).map(String))];
+    if (!wanted.length) throw new Error('Nothing to delete');
+
+    const removed = new Set();
+    for (const id of wanted) {
+      const shapeEl = findShapeElementById(root, id);
+      // Already gone: deleting a group and one of its children in the same call
+      // is a perfectly ordinary selection, and the child went with the group.
+      if (!shapeEl) {
+        if (removed.has(id)) continue;
+        throw new Error(`Could not find shape ${id} on this page`);
+      }
+      removed.add(String(shapeEl.getAttribute('ID')));
+      for (const childId of collectShapeIds(shapeEl)) removed.add(String(childId));
+      shapeEl.parentNode.removeChild(shapeEl);
+    }
+
+    removeDanglingConnects(doc, removed);
+    return { shapeIds: [...removed] };
+  });
+}
+
+// Push a shape somewhere else, turn it, or change its size — whatever the
+// caller worked out in src/shape-arrange.js. Everything a drag can do to a
+// shape is some of these six cells, so there is one entry point rather than
+// three near-identical ones.
+//
+// Only the cells that were asked for are written: a plain move must not start
+// pinning down a Width the shape was happily inheriting from its master, and a
+// resize must not invent an Angle cell for a shape that has never been turned.
+export async function transformVsdxShapes(arrayBuffer, pageId, updates) {
+  return withPageDocument(arrayBuffer, pageId, (doc, root) => {
+    const wanted = (updates || []).filter(update => update && update.id !== undefined);
+    if (!wanted.length) throw new Error('Nothing to move');
+
+    const touched = [];
+    for (const { id, cells } of wanted) {
+      const shapeEl = findShapeElementById(root, String(id));
+      if (!shapeEl) throw new Error(`Could not find shape ${id} on this page`);
+      for (const name of ['PinX', 'PinY', 'Width', 'Height', 'LocPinX', 'LocPinY']) {
+        const value = cells?.[name.charAt(0).toLowerCase() + name.slice(1)];
+        if (Number.isFinite(value)) setShapeCell(doc, shapeEl, name, formatShapeNumber(value));
+      }
+      // Angle, FlipX and FlipY fall out of the same matrix as the pin does, so
+      // they come back even from a move — a move never changes them, and
+      // writing back what is already there is not a change.
+      if (cells && ('angle' in cells || 'flipX' in cells || 'flipY' in cells)) {
+        for (const [name, value, isDefault] of [
+          ['Angle', formatShapeNumber(cells.angle || 0), Math.abs(cells.angle || 0) < 1e-9],
+          ['FlipX', cells.flipX ? '1' : '0', !cells.flipX],
+          ['FlipY', cells.flipY ? '1' : '0', !cells.flipY]
+        ]) {
+          if (!isDefault || getCell(shapeEl, name)) setShapeCell(doc, shapeEl, name, value);
+        }
+      }
+      touched.push(String(id));
+    }
+    return { shapeIds: touched };
+  });
+}
+
 // A Visio layer exists in exactly one place: a Row in the page's Layer
 // section. So adding or removing a layer is adding or removing a Row here, and
 // the in-memory page is the source of truth — a Row whose IX no longer appears

@@ -7,6 +7,52 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **A Select tool, and shapes you can actually push around.** There was a pen
+  but nothing to pick things up with: a press on a shape panned the canvas, and
+  the only way to move anything was to edit its XML. **Select** now sits beside
+  **Pen** in the toolbar, and the selected shape carries eight resize handles
+  and a rotation grip:
+  - **drag the shape** to move it (grab an unselected shape and it selects and
+    moves in one gesture; a whole multiple selection drags together),
+  - **drag a handle** to resize — corner handles change both axes, edge handles
+    one, **Shift** keeps the proportions,
+  - **drag the grip** to turn it, **Shift** snapping to 15°.
+
+  Handles sit on the shape's *own* box, so a shape turned 30° gets handles
+  turned 30° with it and resizing runs along its own axes. What follows the
+  pointer is an outline, not the drawing: the shape is edited once, when the
+  mouse comes up, so a drag is one durable edit that survives *Save Visio*
+  rather than a hundred. Dragging a group takes its contents with it, and
+  resizing one scales them with it. It all works on a shape nested three groups
+  deep, because the cells are worked out through the same matrix chain the
+  renderer walks. A connector is drawn between its endpoints rather than placed
+  by its pin, so it says so instead of pretending to move.
+- **The Shape Tree walks under the arrow keys.** A page is thirty rows called
+  `Shape.7`, `Shape.8`, `Shape.9`, which is not a list anyone wants to hunt
+  through with a mouse. **↑/↓** step through the rows you can see, **→** opens a
+  group and then walks into it, **←** closes it and then climbs back out,
+  **Home/End** and **PgUp/PgDn** go further at once, **Space** shows or hides
+  the row's shape and **F2** renames it. The cursor is deliberately not the
+  selection — moving it only draws the same box hovering a row does, so you can
+  walk a drawing watching the canvas without disturbing what you had selected —
+  and **Enter** is what commits it. The tree is a single tab stop rather than
+  six buttons per row.
+- **Delete shapes.** There was no way to, short of hiding them or pruning a
+  whole layer. Select one or several and **Delete** appears with the other
+  arrange actions in the right-click menu; the **Delete** and **Backspace**
+  keys do the same, except while the pen tool has them or you are typing in a
+  box. Deleting a group deletes what is inside it, and any connector glued to
+  something that goes is unglued rather than left pointing at a shape that no
+  longer exists. It is a real edit to the drawing, so it survives *Save VSDX*.
+- **The Shape Tree lists the page.** It used to open on the selected shape's
+  *parent group*, so selecting a shape that was not in a group gave a tree of
+  exactly one row: every row you could click was the row already selected,
+  which is indistinguishable from clicking rows doing nothing. It now shows
+  every shape on the page, nested, with the selected one marked and its
+  branches opened. Hovering a row draws a box round that shape on the canvas,
+  its tooltip carries the shape's own text (often the only thing that tells
+  `Shape.8` from `Shape.9`), and right-clicking a row opens the same menu the
+  canvas does — rename, edit XML, send to a layer, arrange, delete.
 - **The Layers pane splits where you want it to, not where the stylesheet
   said.** Its width was already yours to drag; the division between the tool
   sections at the top and the list of layers below was not, so opening Filter,
@@ -234,6 +280,41 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   already exist.
 
 ### Fixed
+- **Zooming blurred the whole drawing until you moved.** Zoom was a `scale()`
+  on the container, and scaling a composited layer does not redraw it — the
+  compositor stretches the pixels it already has, which is why the picture went
+  soft the moment the wheel moved and snapped back the moment you panned (a pan
+  is what finally invalidated the layer). The scale now goes into the SVG's own
+  layout size as soon as the gesture settles, so the browser draws the vectors
+  at the size they are shown at. Vectors have no business being blurry at any
+  zoom. Panning is still a transform, since a translate resamples nothing.
+- **The export dialog showed options that did not apply.** It was hiding them —
+  with the `hidden` attribute — but they were laid out with `display: flex`,
+  and an author rule beats the browser's own rule for `hidden`. So every row the
+  dialog thought it had folded away was on screen and fully usable: **Longest
+  side** while you were exporting at original size or fit-to-screen, the SVG
+  *embed the source document* checkbox while you were exporting a PDF (which
+  cannot carry it), and the PDF library download consent while you were
+  exporting an SVG (which downloads nothing).
+- **Selecting a shape behind another one looked like it had not worked.** The
+  selection was drawn as an outline on the shape's own group, and an outline is
+  painted where the shape is painted — so picking a buried shape out of *Select
+  component* or the Shape Tree drew a marker the shape in front covered up. You
+  moved the pointer off the row, the hover box went with it, and nothing
+  appeared to be selected. The marker is now its own overlay, drawn last, so it
+  is on top of the drawing whatever it is selecting.
+- **The selection box was drawn round the shape's geometry, not round the
+  shape.** A shape's box is where its geometry lives, and the ink is not
+  confined to it: put a 50pt stroke on a short path and most of the shape ends
+  up outside the box that is supposed to contain it. The box now comes from
+  where the browser actually drew the shape — stroke and all — and falls back
+  to the geometric box only where there is nothing laid out to measure.
+- **The Shape Tree's ✕ did not delete anything.** It removed the shape from the
+  page held in memory, which looks identical on screen, and then *Save VSDX*
+  patches the original package and skips shapes it no longer knows about — so
+  the shape came back in the saved file. It goes through the package now, like
+  every other edit. The row the tree opened on is deletable too; it was exempt
+  only because the old in-memory version had nowhere to put a tree with no root.
 - **"Select component" missed shapes that were behind the one you clicked.**
   The list was built from one question — which shapes' bounding boxes cover
   this point — asked in page inches. That leans on the app's own screen→page

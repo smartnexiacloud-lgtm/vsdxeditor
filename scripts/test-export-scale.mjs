@@ -87,6 +87,11 @@ svg.setAttribute('viewBox', `0 0 ${BIG_W} ${BIG_H}`);
 svg.setAttribute('width', '100%');
 svg.setAttribute('height', '100%');
 svg.style.maxWidth = BIG_W + 'px';
+// The viewer also puts the zoom into the root's width/height, so the vectors are
+// drawn at the size they are shown at rather than magnified as pixels. Both are
+// inline styles, and an inline style beats the attribute the exporter sets.
+svg.style.width = BIG_W * 2 + 'px';
+svg.style.height = BIG_H * 2 + 'px';
 const child = document.createElementNS(svgNS, 'path');
 child.setAttribute('d', 'M 0 0 L 33120 8640');
 svg.appendChild(child);
@@ -101,6 +106,12 @@ check('the viewBox is left at full precision', svg.getAttribute('viewBox') === `
 check('geometry is untouched', child.getAttribute('d') === 'M 0 0 L 33120 8640');
 check('the viewer max-width no longer fights the new size',
   !/max-width/.test(svg.getAttribute('style') || ''), svg.getAttribute('style') || '(none)');
+check('nor does the size the viewer was showing it at',
+  !/(^|;)\s*width/.test(svg.getAttribute('style') || '')
+  && !/(^|;)\s*height/.test(svg.getAttribute('style') || ''),
+  svg.getAttribute('style') || '(none)');
+check('so a drawing exported while zoomed in is still exported at the size asked for',
+  svg.getAttribute('width') === String(viewer.width), svg.getAttribute('width'));
 
 // ---------------------------------------------------------------------------
 console.log('\n3. The SHA-256 gate');

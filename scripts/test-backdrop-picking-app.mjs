@@ -165,8 +165,8 @@ await sleep(60);
 check('clicking it does not shut the menu it was offered in',
   $('shape-context-menu').classList.contains('visible'));
 check('and it selects the shape on the canvas',
-  (window.document.querySelector(`#svg-container svg g[data-shape-id="${BACKDROP_ID}"]`)?.style.outline || '').includes('solid'),
-  window.document.querySelector(`#svg-container svg g[data-shape-id="${BACKDROP_ID}"]`)?.style.outline);
+  window.document.querySelector(`#svg-container svg g[data-shape-id="${BACKDROP_ID}"]`)?.dataset.selected === 'primary',
+  window.document.querySelector(`#svg-container svg g[data-shape-id="${BACKDROP_ID}"]`)?.dataset.selected);
 check('the menu says the shape lives on the background page rather than offering this page\'s layers',
   /background page/i.test($('shape-context-list').textContent), $('shape-context-list').textContent.trim().slice(0, 120));
 check('and no layer of this page is presented as assignable to it',

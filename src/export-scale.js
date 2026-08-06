@@ -138,9 +138,14 @@ export function applyExportSize(svg, size) {
   if (!svg || !size || !size.width || !size.height) return svg;
   svg.setAttribute('width', String(size.width));
   svg.setAttribute('height', String(size.height));
-  // The viewer pins the root's max-width to the drawing's full width; left in
-  // place it would fight the size we just set.
+  // The viewer pins the root's max-width to the drawing's full width, and puts
+  // the zoom into the root's width/height so the vectors are drawn at the size
+  // they are shown at rather than scaled up as pixels. Both are inline styles,
+  // which beat the attributes just set, and both are about looking at the
+  // drawing rather than about the file leaving the app.
   svg.style.removeProperty('max-width');
+  svg.style.removeProperty('width');
+  svg.style.removeProperty('height');
   if (!svg.getAttribute('style')) svg.removeAttribute('style');
   return svg;
 }

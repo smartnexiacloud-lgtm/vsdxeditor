@@ -57,8 +57,14 @@ portable offline builds.
   different teams care about. Views are embedded in the `.vsdx` itself — they
   travel with the file and survive a Microsoft Visio round-trip
   (see [docs/visio-roundtrip.md](docs/visio-roundtrip.md)).
-- **Shape Tree** — inspect a shape's group hierarchy and inherited style, and
-  rename any shape from its row.
+- **Shape Tree** — every shape on the page, nested, with the selected one
+  marked. Hovering a row draws a box round that shape on the canvas and its
+  tooltip shows the text the shape holds; right-clicking a row opens the same
+  menu the canvas does. Rename, inspect inherited style, or delete from a row.
+  It walks under the **arrow keys** — ↑↓ through the rows, → into a group and ←
+  back out, **Enter** to select, **Space** to show/hide, **F2** to rename —
+  and the cursor only *points* at a shape (drawing the same box a hover does),
+  so you can look around a drawing without losing the selection you have.
 - **Find a shape** — search the page by name, text, or `#id` from the **Find
   shapes** box in the Layers sidebar; right-click for **Select component**, which
   lists everything passing through the point (topmost first, groups and shapes
@@ -67,6 +73,14 @@ portable offline builds.
   for everything on that layer. In all three, hovering a row draws a selection
   square around that shape on the canvas, and clicking selects it *and* points
   the Layers sidebar at the layer it is on.
+- **Select tool** — pick a shape and push it around: drag it to move it, drag
+  one of its eight handles to resize it (**Shift** keeps the proportions), or
+  drag the grip above it to turn it (**Shift** snaps to 15°). Handles sit on the
+  shape's own box, so a turned shape resizes along its own axes. An outline
+  follows the pointer rather than the drawing itself — the edit lands once, when
+  you let go, so a drag is one durable change that survives *Save Visio*.
+  Dragging a group takes its contents with it and resizing one scales them, and
+  it all works on a shape nested several groups deep.
 - **Pen tool** — draw new paths onto the drawing: click for a corner, drag to
   pull a bezier handle, with fill and stroke (colour, weight, line pattern,
   opacity) set from a bar above the canvas and previewed as you draw. Curves are
@@ -77,7 +91,9 @@ portable offline builds.
   `Shape.7`), *Edit XML*, or send it to a different layer.
 - **Select several shapes and arrange them** — ctrl-click (or shift-click) to
   add shapes to the selection, then right-click for **Group**, **Ungroup**,
-  **Bring to front** and **Send to back**. Grouping rewrites each member's
+  **Bring to front**, **Send to back** and **Delete** (or press **Delete** /
+  **Backspace**; deleting a group takes what is inside it, and unglues any
+  connector left pointing at nothing). Grouping rewrites each member's
   `PinX`/`PinY` into the new group's coordinate space, so nothing moves a
   thousandth of an inch; z-order is the order the shapes are written in, which
   is what Visio reads it from too.
@@ -210,7 +226,7 @@ npm run test:diff-view    # side-by-side diff rendering
 | `src/svg-renderer.js` | Page → SVG rendering |
 | `src/shape-inheritance.js` | Shape style inheritance resolution |
 | `src/shape-picker.js` | Page-space shape boxes: hit testing, layer listing, search |
-| `src/shape-arrange.js` | Group / ungroup geometry: a shape's cells under a new parent |
+| `src/shape-arrange.js` | Group / ungroup / move / resize / rotate geometry: what a shape's cells become |
 | `src/vsdx-diff.js` / `src/diff-view.js` | Diff engine + diff UI |
 | `scripts/vsdx-serialize.mjs` | Canonical serialize / pack / textconv / merge driver |
 | `scripts/git-difftool-serve.mjs` | `git difftool` server that opens the browser visual diff |

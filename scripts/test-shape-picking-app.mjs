@@ -114,8 +114,8 @@ if (target) {
   pickRows()[0].click();
   await sleep(50);
   const selected = window.document.querySelector(`#svg-container svg g[data-shape-id="${wantedId}"]`);
-  check('clicking a row selects that shape', (selected?.style.outline || '').includes('solid'),
-    `outline=${selected?.style.outline}`);
+  check('clicking a row selects that shape', selected?.dataset.selected === 'primary',
+    `data-selected=${selected?.dataset.selected}`);
 
   // A right-click on blank canvas has nothing to offer and must not open.
   $('shape-context-menu').classList.remove('visible');
@@ -167,8 +167,8 @@ if (layerRow) {
     objectRows()[0].click();
     await sleep(50);
     const selected = window.document.querySelector(`#svg-container svg g[data-shape-id="${wantedId}"]`);
-    check('clicking an object row selects that shape', (selected?.style.outline || '').includes('solid'),
-      `outline=${selected?.style.outline}`);
+    check('clicking an object row selects that shape', selected?.dataset.selected === 'primary',
+      `data-selected=${selected?.dataset.selected}`);
     check('the list stays open after selecting', $('layer-objects').hidden === false);
     check('the selected row is marked', objectRows().some(r => r.classList.contains('selected')));
   }

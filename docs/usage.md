@@ -24,8 +24,12 @@ switch pages.
 | --- | --- |
 | **+** / **−** | Zoom in / out |
 | **Fit** | Scale the page to fit the window |
-| Drag on empty canvas | Pan |
+| Drag on empty canvas | Pan (dragging a *selected* shape moves it instead — see [Select](#moving-resizing-and-turning-shapes-select)) |
 | `zoom-info` readout | Shows the current zoom percentage |
+
+Zoom is applied to the SVG's own size rather than as a transform on top of it,
+so the drawing is re-drawn at every zoom instead of magnified as pixels — no
+soft edges while you wheel, and none left behind afterwards.
 
 ### Thin lines (hairlines)
 
@@ -287,11 +291,36 @@ re-saved in the real Microsoft Visio desktop app — see
 
 ## Inspecting shapes
 
-- **Shape Tree** sidebar: select a shape to see its parent group hierarchy and
-  the style it inherits. Each row carries a **✎** that renames that shape in
-  place; double-clicking the name does the same once the row is the selected
-  one. **Enter** commits, **Esc** leaves the name alone, and a blank answer
-  clears it.
+- **Shape Tree** sidebar: select a shape and the tree opens on the whole page —
+  every shape, nested inside its group, with the selected one marked and the
+  branches leading to it opened. Hovering a row draws a selection square around
+  that shape on the canvas, and the row's tooltip shows the text the shape
+  holds, which is often the only thing that tells `Shape.8` from `Shape.9`.
+  Clicking a row selects that shape; **right-clicking a row opens the same menu
+  the canvas does**, so rename, *Edit XML*, *Send Object To Layer*, the arrange
+  actions and *Delete* are all on a row. Each row also carries a **✎** that
+  renames the shape in place (double-clicking the name does the same once the
+  row is the selected one; **Enter** commits, **Esc** leaves it alone, a blank
+  answer clears it) and a **×** that deletes it from the drawing.
+- **Walking the tree from the keyboard.** Tab into the tree (or click a row) and
+  the arrows take over. The cursor is *not* the selection: moving it only points
+  at a shape — it draws the same box hovering a row does — so you can walk a
+  drawing watching the canvas without disturbing what you already had selected,
+  and **Enter** is what commits it.
+
+  | Key | What it does |
+  | --- | --- |
+  | **↑ / ↓** | step through the rows you can see |
+  | **PgUp / PgDn** | ten rows at a time |
+  | **Home / End** | first / last row |
+  | **→** | open the group under the cursor; again to step into it |
+  | **←** | close the group under the cursor; again to climb out to its parent |
+  | **Enter** | select the shape the cursor is on |
+  | **Space** | show/hide it — the row's checkbox |
+  | **F2** | rename it in place |
+
+  The whole tree is one tab stop: the buttons on a row are reached by pointer,
+  not by tabbing thirty times to get past them.
 - **Right-click a shape** to open its context menu:
   - **Rename…** — set the shape's Visio name (its `Name`/`NameU`, the same field
     Visio's own *Shape Name* dialog edits). It is what the Shape Tree, the
@@ -318,17 +347,63 @@ re-saved in the real Microsoft Visio desktop app — see
     listed too and marked `background`. You can highlight and select one; the
     rest of the menu then says it belongs to the background page, because its
     layers are that page's and assigning it one of this page's would be wrong.
-  - **Arrange** — see below.
+  - **Arrange**, including **Delete** — see below.
   - **Send Object To Layer** — move the shape onto a different layer (filter the
     layer list with the search box), or **+ New layer…** to create one and file
     the shape onto it at the same time.
+
+### Moving, resizing and turning shapes (Select)
+
+**Select** is the toolbar's other tool, next to **Pen**, and it is what the
+canvas does whenever the pen is not out. Click a shape to pick it, and it grows
+eight square handles and a round grip above it:
+
+| Drag | What happens |
+| --- | --- |
+| **the shape itself** | Moves it. Grabbing a shape that was not selected selects it and moves it in the one gesture, and a whole multiple selection moves together. |
+| **a corner handle** | Resizes both axes at once. Hold **Shift** to keep the shape's proportions. |
+| **an edge handle** | Resizes just that axis — the stretch. |
+| **the round grip** | Turns the shape about its pin. Hold **Shift** to snap to 15°, so 90° is easy to hit. |
+
+The handles sit on the shape's *own* box, not on the upright box that contains
+it, so a shape turned 30° gets handles turned 30° with it and dragging one
+resizes along the shape's own axes. The corner opposite the one you are dragging
+stays exactly where it was.
+
+What follows the pointer is a dashed **outline**, not the drawing. The shape is
+edited once, when you let go — so a drag is one durable change to the file
+rather than a hundred, and it survives **Save Visio** like every other edit.
+Pressing anywhere that is not a selected shape still pans the canvas.
+
+Dragging a group takes everything inside it, and resizing one scales its
+contents with it, the way Visio does. All of it works on a shape nested several
+groups deep: the cells are worked out through the same matrix chain the renderer
+walks, so a shape's position inside its parent is rewritten correctly however
+deep it sits.
+
+Two things it will not do:
+
+- **Move a connector.** A connector is drawn between its endpoints rather than
+  placed by its pin, so moving the pin would move nothing. It says so rather
+  than appearing to do nothing.
+- **Skew a shape.** Visio's shape transform is a pin, a size, an angle and two
+  flip flags — there is no skew in it. Slanting a shape means rewriting its
+  geometry, which is a different operation from moving the shape about.
+
+Editing the individual anchor points of a path (the SVG node-editing idea) is
+not built yet either; the pen writes geometry but nothing edits it afterwards
+except **Edit XML**.
 
 ### Selecting several shapes, and arranging them
 
 **Ctrl-click** (⌘-click on a Mac) or **shift-click** a shape to add it to the
 selection, and again to drop it; a plain click selects just that one. Selected
-shapes are outlined on the canvas — solid for the one the Shape Tree and the
-*Send Object To Layer* list are pointed at, dashed for the rest. The same
+shapes get a marked box on the canvas — solid for the one the Shape Tree and the
+*Send Object To Layer* list are pointed at, dashed for the rest. The box is
+drawn on top of the whole drawing, so selecting a shape that is buried under
+another one still shows, and it is measured from where the shape was actually
+drawn rather than from its geometry — a shape with a very thick stroke is
+contained by its own selection box rather than spilling out of it. The same
 ctrl-click works on the rows in *Select component*, the shape search results and
 a layer's object list — and picking a shape from any of them points the Layers
 sidebar at the layer that shape is on. Right-clicking a shape that is already selected keeps the
@@ -343,6 +418,7 @@ selected:
 | **Ungroup** | Dissolves a group and puts its shapes back on the page, keeping the place the group held in the z-order. |
 | **Bring to front** | Draws the selected shapes on top of their siblings. |
 | **Send to back** | Draws them behind their siblings. |
+| **Delete** | Removes the selected shapes from the drawing. Deleting a group deletes everything inside it, and any connector glued to a shape that goes is unglued rather than left pointing at nothing. **Delete** and **Backspace** do the same from the keyboard, except while the pen tool is active or you are typing in a box. |
 
 Z-order in Visio *is* the order the shapes are written in, so front and back
 move a shape among its own siblings — a shape inside a group is brought to the
@@ -492,7 +568,11 @@ So the dialog lets you say how big the file should *claim* to be:
 | **Custom longest side** | Any size you like, in px. This one may also enlarge. |
 
 The presets are ceilings, never magnifiers: a drawing already inside the limit
-exports untouched.
+exports untouched. **Longest side** is only asked for by *Custom*, and only
+appears then — the same goes for the rest of the dialog: the SVG embed checkbox
+is there for SVG and gone for PDF (a PDF cannot carry the source document), and
+the PDF library consent is there for PDF and gone for SVG (which downloads
+nothing).
 
 **Rescaling costs you nothing.** Only the root `width`/`height` change; the
 `viewBox` and every coordinate in the file are left exactly as they were. The

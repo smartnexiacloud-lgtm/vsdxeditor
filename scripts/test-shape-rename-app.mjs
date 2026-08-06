@@ -217,7 +217,12 @@ if (treeEditor()) {
 // selection no longer redraws the tree when it has not actually changed.
 const renamedRow = treeRowFor('Tree renamed');
 if (renamedRow) {
-  const label = renamedRow.querySelector('.shape-tree-label');
+  // The tree lists the whole page, so this row is not necessarily the selected
+  // one; the first click is what makes it so, and only the second one is the
+  // "already selected" case the guard is about.
+  renamedRow.querySelector('.shape-tree-label').click();
+  await sleep(50);
+  const label = treeRowFor('Tree renamed')?.querySelector('.shape-tree-label');
   label.click();
   await sleep(50);
   const sameLabel = treeRowFor('Tree renamed')?.querySelector('.shape-tree-label');

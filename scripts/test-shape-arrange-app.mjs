@@ -104,7 +104,7 @@ const rightClick = async (id) => {
   await sleep(60);
 };
 const outlined = () => [...window.document.querySelectorAll('#svg-container svg g[data-shape-id]')]
-  .filter(g => (g.style.outline || '').includes('#e94560'))
+  .filter(g => g.dataset.selected)
   .map(g => g.getAttribute('data-shape-id'));
 const menuOpen = () => $('shape-context-menu').classList.contains('visible');
 const arrangeVisible = () => !$('shape-arrange-section').hidden;

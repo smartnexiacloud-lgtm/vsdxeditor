@@ -906,6 +906,17 @@
       gap: 10px;
       font-size: 12px;
     }
+    /* `display: flex` beats the browser's own rule for the hidden attribute, so
+       every row the dialog thought it had folded away was on screen anyway:
+       "Longest side" while you were exporting at original size, the SVG embed
+       checkbox while you were exporting a PDF, and the PDF library consent while
+       you were exporting an SVG. Each of them controls something the chosen
+       format has no use for. */
+    .export-field[hidden],
+    .export-check[hidden],
+    .export-gate[hidden] {
+      display: none;
+    }
     .export-field > span:first-child {
       flex: 0 0 78px;
       color: #b9c2e0;
@@ -1338,6 +1349,19 @@
       gap: 6px;
       margin-top: 6px;
     }
+    /* Delete sits with the other selection actions but is the one that throws
+       work away, so it is coloured like it and given the row to itself. */
+    .shape-context-action.danger {
+      grid-column: 1 / -1;
+      background: #5c2130;
+      border-color: #8c3548;
+    }
+    .shape-context-action.danger:hover {
+      background: #74293c;
+    }
+    .shape-context-action.danger:disabled {
+      background: #5c2130;
+    }
     .shape-xml-textarea {
       width: 100%;
       min-height: 360px;
@@ -1439,6 +1463,13 @@
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    .shape-tree-hint {
+      font-size: 11px;
+      color: #6f7aa3;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
     .shape-tree-body {
       flex: 1;
       overflow: auto;
@@ -1458,6 +1489,19 @@
     }
     .shape-tree-node.selected {
       background: rgba(233, 69, 96, 0.14);
+    }
+    /* The keyboard cursor is deliberately not the selection: walking the tree
+       with the arrows only points at a shape — Enter is what selects it — so the
+       row you are standing on is outlined rather than filled, and brightens when
+       the tree actually has focus. */
+    .shape-tree-node:focus {
+      outline: none;
+    }
+    .shape-tree-node.cursor {
+      box-shadow: inset 0 0 0 1px rgba(143, 154, 195, 0.45);
+    }
+    .shape-tree-node.cursor:focus {
+      box-shadow: inset 0 0 0 2px #e94560;
     }
     .shape-tree-node.hidden {
       opacity: 0.6;
@@ -1618,6 +1662,7 @@
       <button id="btn-save-vsdx" disabled>Save Visio</button>
       <button id="btn-export" title="Export this page as SVG or PDF, at original or rescaled size">Export&hellip;</button>
       <button id="btn-compare" disabled>Compare…</button>
+      <button id="btn-select" class="active" disabled title="Select: click a shape to pick it, drag it to move it, drag a handle to resize it or the grip to turn it. Delete removes it.">&#10021; Select</button>
       <button id="btn-pen" disabled title="Pen: click to add a corner, drag to pull a curve. Enter or double-click finishes, Esc cancels.">&#9998; Pen</button>
       <select id="stroke-mode" aria-label="Thin line rendering" title="How thin lines (Visio hairlines) are drawn">
         <option value="screen">Hairlines: fit zoom</option>
@@ -1783,8 +1828,9 @@
         <div class="shape-tree-header">
           <div class="shape-tree-title">Shape Tree</div>
           <div id="shape-tree-subtitle" class="shape-tree-subtitle">Select a shape to inspect its parent group.</div>
+          <div class="shape-tree-hint">↑↓ move · ←→ fold · Enter selects</div>
         </div>
-        <div id="shape-tree-body" class="shape-tree-body">
+        <div id="shape-tree-body" class="shape-tree-body" tabindex="-1" role="tree" aria-label="Shapes on this page">
           <div class="shape-tree-empty">Select a shape to inspect its parent group.</div>
         </div>
       </div>
@@ -1853,6 +1899,7 @@
         <button id="shape-arrange-ungroup" class="shape-context-action" type="button">Ungroup</button>
         <button id="shape-arrange-front" class="shape-context-action" type="button">Bring to front</button>
         <button id="shape-arrange-back" class="shape-context-action" type="button">Send to back</button>
+        <button id="shape-arrange-delete" class="shape-context-action danger" type="button">Delete</button>
       </div>
     </div>
     <div class="shape-context-header">

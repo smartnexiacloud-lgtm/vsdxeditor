@@ -1,4 +1,4 @@
-import { parseVsdx, saveVsdxLayerPermissions, saveVsdxWithoutHiddenLayers, saveVsdxWithoutNonSelectedLayers, saveVsdxWithoutNonVisibleData, getVsdxShapeXmlSnippet, replaceVsdxShapeXmlSnippet, addVsdxShapeToPage, groupVsdxShapes, ungroupVsdxShapes, reorderVsdxShapes, normalizeLayerTags, normalizeTagColor, sanitizeLayerTreeSettings, DEFAULT_LAYER_DELIMITER } from './vsdx-parser.js';
+import { parseVsdx, saveVsdxLayerPermissions, saveVsdxWithoutHiddenLayers, saveVsdxWithoutNonSelectedLayers, saveVsdxWithoutNonVisibleData, getVsdxShapeXmlSnippet, replaceVsdxShapeXmlSnippet, addVsdxShapeToPage, groupVsdxShapes, ungroupVsdxShapes, reorderVsdxShapes, deleteVsdxShapes, transformVsdxShapes, normalizeLayerTags, normalizeTagColor, sanitizeLayerTreeSettings, DEFAULT_LAYER_DELIMITER } from './vsdx-parser.js';
 import { embedVsdxInSvg, extractVsdxFromSvg } from './svg-vsdx-embed.js';
 import { parseVsd } from './vsd-parser.js';
 import { renderPage, pageCoordinateWidth } from './svg-renderer.js';
@@ -7,7 +7,10 @@ import {
   shapesAtPoint, shapesOnLayer, shapesOnLayers, searchShapes,
   collectShapeBoxes, topmostFirst, dedupeById
 } from './shape-picker.js';
-import { planGroupShapes, planUngroupShape, isGroupShape, inheritsFromMaster } from './shape-arrange.js';
+import {
+  planGroupShapes, planUngroupShape, isGroupShape, inheritsFromMaster,
+  planMoveShapes, planRotateShapes, planResizeShape
+} from './shape-arrange.js';
 import { openDiffView } from './diff-view.js';
 import { splitLayerPath, buildLayerTree, layersUnder, flattenLayerTree, groupKeys } from './layer-tree.js';
 import { EXPORT_SIZE_MODES, computeExportSize, describeExportSize, applyExportSize, svgViewBoxSize, defaultSizeMode, PDF_MAX_PX } from './export-scale.js';
@@ -84,6 +87,7 @@ const shapeArrangeGroup = document.getElementById('shape-arrange-group');
 const shapeArrangeUngroup = document.getElementById('shape-arrange-ungroup');
 const shapeArrangeFront = document.getElementById('shape-arrange-front');
 const shapeArrangeBack = document.getElementById('shape-arrange-back');
+const shapeArrangeDelete = document.getElementById('shape-arrange-delete');
 const shapeContextEditXml = document.getElementById('shape-context-edit-xml');
 const shapeContextNewLayer = document.getElementById('shape-context-new-layer');
 const shapeXmlModal = document.getElementById('shape-xml-modal');
@@ -107,6 +111,7 @@ const exportPdfLibs = document.getElementById('export-pdf-libs');
 const exportPdfConsent = document.getElementById('export-pdf-consent');
 const exportStatus = document.getElementById('export-status');
 const penButton = document.getElementById('btn-pen');
+const selectButton = document.getElementById('btn-select');
 const penBar = document.getElementById('pen-bar');
 const penStrokeOn = document.getElementById('pen-stroke-on');
 const penStrokeColor = document.getElementById('pen-stroke-color');
@@ -138,6 +143,10 @@ let zoom = 1;
 // change it until the page is re-rendered - hence the Update button.
 let strokeMode = 'screen';
 let renderedZoom = 1;
+// How much of `zoom` is baked into the SVG's own layout size rather than into
+// the container's transform. See commitLayoutZoom.
+let layoutZoom = 1;
+let layoutZoomTimer = null;
 let panX = 0, panY = 0;
 let isPanning = false;
 let panStartX, panStartY;
@@ -162,6 +171,9 @@ let editingShapeId = null;
 let editingShapeXmlId = null;
 const hiddenShapeIdsByPage = new Map();
 const collapsedShapeIdsByPage = new Map();
+// Which Shape Tree row the keyboard is standing on. Not the selection: see
+// handleShapeTreeKeydown.
+let shapeTreeCursorId = null;
 // Pen tool. penNodes are in page units (inches, Y up from the page bottom) -
 // the space the parser and pen-geometry both speak, so nothing is converted
 // twice. penDrag tracks the handle being pulled out of the node just placed.
@@ -263,10 +275,50 @@ function showViewer() {
   viewer.style.display = 'flex';
 }
 
+// Zoom used to be a plain `scale()` on the container, and scaling a composited
+// layer does not redraw it — the compositor stretches the pixels it already has,
+// which is why the drawing went soft the instant you touched the wheel and
+// sharpened again the moment you panned (a pan is what finally invalidated the
+// layer). Vectors have no business being blurry at any zoom.
+//
+// So the scale is *moved into the SVG's own size* as soon as the gesture
+// settles: laying the SVG out bigger makes the browser draw the vectors bigger,
+// which is sharp by construction. The transform keeps whatever part of the zoom
+// has not been committed yet, so the wheel still feels instant — a wheel gesture
+// is a stream of ticks and relaying out a large drawing on every one of them
+// would stutter — and the picture resolves a frame or two after you stop.
+//
+// Pan stays a transform: a translate never resamples anything.
 function updateTransform() {
-  svgContainer.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+  const residual = zoom / (layoutZoom || 1);
+  svgContainer.style.transform = `translate(${panX}px, ${panY}px) scale(${residual})`;
   zoomInfo.textContent = `${Math.round(zoom * 100)}%`;
   updateRerenderState();
+  scheduleLayoutZoom();
+}
+
+// translate() is applied in the parent's coordinates, before the scale, so the
+// pan is in screen pixels either way and moving the scale between the two
+// leaves the drawing exactly where it was on screen.
+function commitLayoutZoom() {
+  layoutZoomTimer = null;
+  const svg = svgContainer.querySelector('svg');
+  if (!svg) return;
+  const { width, height } = svgViewBoxSize(svg);
+  if (!(width > 0 && height > 0)) return;
+  layoutZoom = zoom;
+  svg.style.width = `${width * layoutZoom}px`;
+  svg.style.height = `${height * layoutZoom}px`;
+  // The renderer pins max-width to the drawing's natural width to keep it from
+  // stretching; past 100% that is exactly what we are asking for.
+  svg.style.maxWidth = 'none';
+  svgContainer.style.transform = `translate(${panX}px, ${panY}px)`;
+}
+
+function scheduleLayoutZoom() {
+  if (layoutZoom === zoom) return;
+  if (layoutZoomTimer !== null) clearTimeout(layoutZoomTimer);
+  layoutZoomTimer = setTimeout(commitLayoutZoom, 80);
 }
 
 // Page coordinate units per device pixel at the current zoom. Measured off the
@@ -324,6 +376,12 @@ function renderCurrentPage() {
   const renderedPage = composedPage(page);
 
   renderPage(renderedPage, svgContainer, { minStrokeWidth: currentMinStrokeWidth(renderedPage) });
+  // A brand new SVG is at its natural size whatever the old one had been sized
+  // to, so the zoom baked into layout is back to none until it is put there
+  // again — which is done now rather than on a timer, since there is no gesture
+  // in progress to keep smooth.
+  layoutZoom = 1;
+  commitLayoutZoom();
   renderedZoom = zoom;
   updateRerenderState();
   applyLayerVisibility();
@@ -1993,15 +2051,15 @@ function getCollapsedShapeIds(pageKey = getCurrentPageKey()) {
   return collapsedShapeIdsByPage.get(pageKey);
 }
 
-function getTreeRootShape(shapeId = selectedShapeId) {
-  if (shapeId === null || shapeId === undefined) return null;
-  const path = findShapePath(getCurrentPage()?.shapes || [], shapeId);
-  if (!path || path.length === 0) return null;
-  return path.length > 1 ? path[path.length - 2] : path[0];
-}
-
 function normalizeShapeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+// Keys that mean something to the drawing mean something else entirely inside a
+// text box, and the field the user is typing in gets to keep them.
+function isTypingTarget(target) {
+  const tag = target?.tagName?.toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || target?.isContentEditable === true;
 }
 
 function isGenericShapeTitle(shape) {
@@ -2062,17 +2120,127 @@ function promptRenameShape(shape) {
   return true;
 }
 
+// The selection marker is drawn *last*, as its own overlay, not as an outline
+// on the shape's own group. An outline is painted where the shape is painted,
+// so selecting something that sits behind another shape drew a marker the shape
+// in front covered up — you picked a buried shape out of the list, moved the
+// mouse off the row, and it looked like nothing had been selected at all.
+//
+// The group still carries data-selected, because "is this shape selected" is a
+// question the rest of the app and the tests ask of the DOM.
 function syncSelectedShapeHighlight() {
-  const groups = svgContainer.querySelectorAll('g[data-shape-id]');
-  for (const group of groups) {
+  const svg = svgContainer.querySelector('svg');
+  const page = getCurrentPage();
+  svgContainer.querySelector('#shape-selection')?.remove();
+
+  const entries = new Map();
+  if (svg && page) {
+    for (const entry of collectShapeBoxes(getComposedPage())) entries.set(String(entry.id), entry);
+  }
+
+  const selected = [];
+  for (const group of svgContainer.querySelectorAll('g[data-shape-id]')) {
     const id = group.getAttribute('data-shape-id');
-    const isSelected = isShapeSelected(id);
+    group.style.outline = '';
+    group.style.outlineOffset = '';
+    if (!isShapeSelected(id)) {
+      delete group.dataset.selected;
+      continue;
+    }
     // The primary is solid, the rest dashed — with several shapes selected it
     // still has to be clear which one the Shape Tree and the layer list mean.
     const isPrimary = selectedShapeId !== null && id === String(selectedShapeId);
-    group.style.outline = isSelected ? `2px ${isPrimary ? 'solid' : 'dashed'} #e94560` : '';
-    group.style.outlineOffset = isSelected ? '2px' : '';
+    group.dataset.selected = isPrimary ? 'primary' : 'secondary';
+    if (entries.has(id)) selected.push({ entry: entries.get(id), isPrimary });
   }
+  if (!svg || !page || !selected.length) return;
+
+  const overlay = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  overlay.setAttribute('id', 'shape-selection');
+  overlay.setAttribute('pointer-events', 'none');
+  const unit = unitsPerDevicePixel(page);
+  for (const { entry, isPrimary } of selected) {
+    appendShapeBoxDecoration(overlay, shapeOverlayBox(entry, page), unit, { solid: isPrimary });
+  }
+  // Handles go on one shape at a time. Resizing several at once is a different
+  // question — which of them is the box being dragged? — and rotating several
+  // about one point is another, so the drag tools ask about the shape the rest
+  // of the app already calls the selected one.
+  const primary = selected.find(item => item.isPrimary);
+  if (primary && selected.length === 1 && currentPackageEditable && !penActive
+      && findShapeById(page.shapes || [], primary.entry.id)) {
+    appendShapeHandles(overlay, primary.entry, unit);
+  }
+  svg.appendChild(overlay);
+}
+
+// Where the handles sit: the corners and edge midpoints of the shape's *own*
+// box, not of the upright box that contains it, so a shape turned 30° gets
+// handles turned 30° with it and dragging one resizes along the shape's own
+// axes. Local px run right and down from the shape's top-left corner.
+const RESIZE_HANDLE_SPOTS = [
+  ['nw', 0, 0], ['n', 0.5, 0], ['ne', 1, 0],
+  ['w', 0, 0.5], ['e', 1, 0.5],
+  ['sw', 0, 1], ['s', 0.5, 1], ['se', 1, 1]
+];
+
+function applyMatrix(m, x, y) {
+  return { x: m[0] * x + m[2] * y + m[4], y: m[1] * x + m[3] * y + m[5] };
+}
+
+function appendShapeHandles(overlay, entry, unit) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const m = entry.matrix;
+  const w = (entry.shape.width || 0) * 96;
+  const h = (entry.shape.height || 0) * 96;
+  if (!(w > 0 && h > 0) || !m) return;
+
+  const size = unit * 8;
+  for (const [handle, fx, fy] of RESIZE_HANDLE_SPOTS) {
+    const p = applyMatrix(m, fx * w, fy * h);
+    const box = document.createElementNS(ns, 'rect');
+    box.setAttribute('x', String(p.x - size / 2));
+    box.setAttribute('y', String(p.y - size / 2));
+    box.setAttribute('width', String(size));
+    box.setAttribute('height', String(size));
+    box.setAttribute('fill', '#ffffff');
+    box.setAttribute('stroke', '#e94560');
+    box.setAttribute('stroke-width', String(unit * 1.5));
+    box.setAttribute('pointer-events', 'all');
+    box.setAttribute('data-handle', handle);
+    box.setAttribute('data-handle-shape', String(entry.id));
+    overlay.appendChild(box);
+  }
+
+  // The rotation grip stands off the top edge, along the shape's own up
+  // direction — the same direction the "n" handle would move in.
+  const top = applyMatrix(m, w / 2, 0);
+  const centre = applyMatrix(m, w / 2, h / 2);
+  const away = Math.hypot(top.x - centre.x, top.y - centre.y) || 1;
+  const ux = (top.x - centre.x) / away;
+  const uy = (top.y - centre.y) / away;
+  const grip = { x: top.x + ux * unit * 22, y: top.y + uy * unit * 22 };
+
+  const stem = document.createElementNS(ns, 'line');
+  stem.setAttribute('x1', String(top.x));
+  stem.setAttribute('y1', String(top.y));
+  stem.setAttribute('x2', String(grip.x));
+  stem.setAttribute('y2', String(grip.y));
+  stem.setAttribute('stroke', '#e94560');
+  stem.setAttribute('stroke-width', String(unit * 1.5));
+  overlay.appendChild(stem);
+
+  const knob = document.createElementNS(ns, 'circle');
+  knob.setAttribute('cx', String(grip.x));
+  knob.setAttribute('cy', String(grip.y));
+  knob.setAttribute('r', String(unit * 5));
+  knob.setAttribute('fill', '#ffffff');
+  knob.setAttribute('stroke', '#e94560');
+  knob.setAttribute('stroke-width', String(unit * 1.5));
+  knob.setAttribute('pointer-events', 'all');
+  knob.setAttribute('data-handle', 'rotate');
+  knob.setAttribute('data-handle-shape', String(entry.id));
+  overlay.appendChild(knob);
 }
 
 function applyShapeVisibility() {
@@ -2085,18 +2253,6 @@ function applyShapeVisibility() {
       group.style.display = 'none';
     }
   }
-}
-
-function removeShapeById(shapes, shapeId) {
-  for (let i = 0; i < (shapes || []).length; i++) {
-    const shape = shapes[i];
-    if (String(shape.id) === String(shapeId)) {
-      shapes.splice(i, 1);
-      return true;
-    }
-    if (removeShapeById(shape.subShapes || [], shapeId)) return true;
-  }
-  return false;
 }
 
 // --- The selection ---------------------------------------------------------
@@ -2191,25 +2347,18 @@ function toggleShapeTreeBranch(shapeId) {
   renderShapeTree();
 }
 
+// The row's ✕. It used to splice the shape out of the in-memory page only,
+// which looked like a delete and then quietly came back on Save VSDX, because
+// saving patches the original package and simply skips shapes it no longer
+// knows about. It deletes for real now, through the same path as everything
+// else that edits the drawing.
 function deleteShapeFromTree(shapeId) {
-  const page = getCurrentPage();
   const key = String(shapeId);
-  if (!page) return;
-  const root = getTreeRootShape();
-  const path = findShapePath(page.shapes || [], key);
-  if (!path) return;
-
-  removeShapeById(page.shapes || [], key);
-  getHiddenShapeIds().delete(key);
-  getCollapsedShapeIds().delete(key);
-  if (editingShapeId === key) editingShapeId = null;
-
-  if (selectedShapeId !== null) {
-    const selectedPath = findShapePath([root].filter(Boolean), selectedShapeId) || findShapePath(page.shapes || [], selectedShapeId);
-    if (!selectedPath) selectedShapeId = root && String(root.id) !== key ? String(root.id) : null;
-  }
-
-  renderCurrentPage();
+  if (!findShapeById(getCurrentPage()?.shapes || [], key)) return;
+  return runArrange('Delete', async (page, base) => {
+    const { buffer } = await deleteVsdxShapes(base, page.id, [key]);
+    return { buffer };
+  });
 }
 
 function createShapeTreeNode(shape, depth, rootShapeId) {
@@ -2218,12 +2367,44 @@ function createShapeTreeNode(shape, depth, rootShapeId) {
   const hasChildren = (shape.subShapes || []).length > 0;
   const row = document.createElement('div');
   row.className = 'shape-tree-node';
+  row.dataset.shapeId = String(shape.id);
   if (isShapeSelected(shape.id)) row.classList.add('selected');
   if (hiddenShapeIds.has(String(shape.id))) row.classList.add('hidden');
   row.style.paddingLeft = `${8 + depth * 18}px`;
 
+  // The row is the thing the keyboard lands on, not the buttons inside it: one
+  // tab stop for the whole tree, and the arrows take it from there. syncShapeTreeCursor
+  // hands the one row that is the cursor a tabIndex of 0.
+  row.setAttribute('role', 'treeitem');
+  row.setAttribute('aria-level', String(depth + 1));
+  row.setAttribute('aria-selected', isShapeSelected(shape.id) ? 'true' : 'false');
+  if (hasChildren) row.setAttribute('aria-expanded', collapsedShapeIds.has(String(shape.id)) ? 'false' : 'true');
+  row.tabIndex = -1;
+
+  // Reading a tree of Shape.7, Shape.8, Shape.9 tells you nothing about which is
+  // which on the canvas, so hovering a row draws the same selection square the
+  // "Select component" list does, and the row carries the shape's own text —
+  // often the only thing that identifies it — as its tooltip.
+  const shapeText = normalizeShapeText(shape.text);
+  row.title = shapeText ? `${getShapeLabel(shape)} — “${shapeText}”` : getShapeLabel(shape);
+  row.addEventListener('mouseenter', () => highlightShapeById(shape.id));
+  row.addEventListener('mouseleave', () => clearShapeHighlight());
+
+  // The same menu the canvas opens, on the same rules: right-clicking inside a
+  // multiple selection acts on all of it, right-clicking anything else moves
+  // the selection there first. There is no stack of shapes under a tree row, so
+  // the "Select component" list has nothing to offer and stays folded away.
+  row.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    shapeTreeCursorId = String(shape.id);
+    if (!isShapeSelected(shape.id)) setSelectedShape(shape.id);
+    openShapeContextMenu(shape.id, e.clientX, e.clientY, []);
+  });
+
   const expander = document.createElement('button');
   expander.type = 'button';
+  expander.tabIndex = -1;
   expander.className = 'shape-tree-expander';
   expander.textContent = hasChildren && collapsedShapeIds.has(String(shape.id)) ? '+' : '-';
   expander.disabled = !hasChildren;
@@ -2234,6 +2415,7 @@ function createShapeTreeNode(shape, depth, rootShapeId) {
   const checkbox = document.createElement('input');
   checkbox.type = 'checkbox';
   checkbox.className = 'shape-tree-checkbox';
+  checkbox.tabIndex = -1;
   checkbox.checked = !hiddenShapeIds.has(String(shape.id));
   checkbox.setAttribute('aria-label', `Toggle visibility for ${getShapeLabel(shape)}`);
   checkbox.addEventListener('change', () => setShapeVisible(shape.id, checkbox.checked));
@@ -2265,13 +2447,19 @@ function createShapeTreeNode(shape, depth, rootShapeId) {
   } else {
     label = document.createElement('button');
     label.type = 'button';
+    label.tabIndex = -1;
     label.className = 'shape-tree-label';
     label.textContent = getShapeLabel(shape);
     const meta = document.createElement('span');
     meta.className = 'shape-tree-meta';
     meta.textContent = getShapeTreeMeta(shape);
     label.appendChild(meta);
-    label.addEventListener('click', () => setSelectedShape(shape.id));
+    // Clicking is also where the keyboard picks up from, so the cursor comes
+    // with it — click a row, then arrow away from there.
+    label.addEventListener('click', () => {
+      shapeTreeCursorId = String(shape.id);
+      setSelectedShape(shape.id);
+    });
     label.addEventListener('dblclick', (e) => {
       e.preventDefault();
       startShapeRename(shape.id);
@@ -2283,6 +2471,7 @@ function createShapeTreeNode(shape, depth, rootShapeId) {
   // the second click. A button is a button whatever the row's state.
   const rename = document.createElement('button');
   rename.type = 'button';
+  rename.tabIndex = -1;
   rename.className = 'shape-tree-rename';
   rename.textContent = '✎';
   rename.disabled = !currentPackageEditable;
@@ -2297,14 +2486,26 @@ function createShapeTreeNode(shape, depth, rootShapeId) {
 
   const remove = document.createElement('button');
   remove.type = 'button';
+  remove.tabIndex = -1;
   remove.className = 'shape-tree-delete';
   remove.textContent = '×';
-  remove.disabled = String(shape.id) === String(rootShapeId);
-  remove.title = remove.disabled ? 'Root shape cannot be deleted from this view' : 'Delete this shape from the current view';
-  remove.addEventListener('click', () => deleteShapeFromTree(shape.id));
+  // The root used to be exempt, from back when this spliced the in-memory tree
+  // and had nowhere to put a tree with no root. It deletes through the package
+  // now, and the tree simply closes, so there is nothing left to protect it
+  // from: a shape you opened the tree on is as deletable as any other.
+  remove.disabled = !currentPackageEditable;
+  remove.title = currentPackageEditable
+    ? `Delete ${getShapeLabel(shape)}${(shape.subShapes || []).length ? ', and everything in it,' : ''} from the drawing`
+    : 'This package is read-only';
+  remove.setAttribute('aria-label', `Delete ${getShapeLabel(shape)}`);
+  remove.addEventListener('click', (e) => {
+    e.stopPropagation();
+    deleteShapeFromTree(shape.id);
+  });
 
   const editXml = document.createElement('button');
   editXml.type = 'button';
+  editXml.tabIndex = -1;
   editXml.className = 'shape-tree-xml';
   editXml.textContent = '</>';
   editXml.title = 'Edit this shape XML';
@@ -2329,25 +2530,181 @@ function createShapeTreeNode(shape, depth, rootShapeId) {
   return fragment;
 }
 
+// A tree of one row is not a tree. This used to open on the selected shape's
+// parent group, so selecting a shape that was not in a group listed that shape
+// and nothing else — every row you could click was the row already selected,
+// which looks exactly like clicking rows does nothing. It shows the page now,
+// so the panel answers "what is in this drawing, and where is this shape in
+// it", and clicking a row moves the selection somewhere.
+function shapeTreeRoots() {
+  return getCurrentPage()?.shapes || [];
+}
+
+// A selected shape inside a folded group has no row to be marked on, so the
+// branches leading to it are opened.
+function expandToSelectedShape() {
+  if (selectedShapeId === null) return;
+  const path = findShapePath(shapeTreeRoots(), selectedShapeId);
+  if (!path) return;
+  const collapsed = getCollapsedShapeIds();
+  for (const ancestor of path.slice(0, -1)) collapsed.delete(String(ancestor.id));
+}
+
 function renderShapeTree() {
-  const root = getTreeRootShape();
+  const page = getCurrentPage();
+  const roots = shapeTreeRoots();
+  // Emptying the body blurs whatever was focused inside it, so whether the tree
+  // had the keyboard has to be asked before, not after.
+  const hadFocus = shapeTreeBody.contains(document.activeElement);
   shapeTreeBody.innerHTML = '';
 
-  if (!root || !findShapeById(getCurrentPage()?.shapes || [], root.id)) {
+  if (!page || !roots.length) {
     shapeTreeSidebar.classList.remove('visible');
-    shapeTreeSubtitle.textContent = 'Select a shape to inspect its parent group.';
+    shapeTreeSubtitle.textContent = 'Select a shape to inspect the drawing.';
     const empty = document.createElement('div');
     empty.className = 'shape-tree-empty';
-    empty.textContent = 'Select a shape to inspect its parent group.';
+    empty.textContent = page ? 'This page has no shapes.' : 'Select a shape to inspect the drawing.';
     shapeTreeBody.appendChild(empty);
+    shapeTreeCursorId = null;
+    return;
+  }
+  if (selectedShapeId === null) {
+    shapeTreeSidebar.classList.remove('visible');
+    shapeTreeCursorId = null;
     return;
   }
 
   shapeTreeSidebar.classList.add('visible');
-  const selected = findShapeById(getCurrentPage()?.shapes || [], selectedShapeId);
-  shapeTreeSubtitle.textContent = `${getShapeLabel(root)} · selected ${getShapeLabel(selected)}`;
-  shapeTreeBody.appendChild(createShapeTreeNode(root, 0, root.id));
+  expandToSelectedShape();
+  const selected = findShapeById(roots, selectedShapeId);
+  const total = collectShapeBoxes(page).length;
+  shapeTreeSubtitle.textContent = selected
+    ? `${page.name || 'Page'} · ${total} shape${total === 1 ? '' : 's'} · selected ${getShapeLabel(selected)}`
+    : `${page.name || 'Page'} · ${total} shape${total === 1 ? '' : 's'}`;
+  for (const root of roots) shapeTreeBody.appendChild(createShapeTreeNode(root, 0, null));
+  // A row being renamed puts an input on screen that focuses itself; taking the
+  // keyboard back for the tree would close it the moment it opened.
+  syncShapeTreeCursor(hadFocus && editingShapeId === null);
 }
+
+// ---------------------------------------------------------------------------
+// Walking the tree from the keyboard
+//
+// A page is thirty rows called Shape.7, Shape.8, Shape.9, which is not a list
+// anyone wants to hunt through with a mouse. The tree moves under the arrows
+// like any other tree: up and down step through the rows you can see, right
+// opens a group and then walks into it, left closes it and then walks back out.
+//
+// The cursor is not the selection. Moving it only *shows* you a shape — it
+// draws the same box hovering a row does — so you can walk a drawing looking at
+// the canvas without losing the selection you already have, and Enter is what
+// commits it.
+// ---------------------------------------------------------------------------
+
+function shapeTreeRows() {
+  return [...shapeTreeBody.querySelectorAll('.shape-tree-node')];
+}
+
+function shapeTreeCursorRow() {
+  return shapeTreeRows().find(row => row.dataset.shapeId === String(shapeTreeCursorId)) || null;
+}
+
+// The cursor belongs to a row, not to a shape: fold a group away and the shape
+// it was on has no row left, so it falls back to the selected row and then to
+// the first one rather than leaving the tree with nowhere to put the keyboard.
+function syncShapeTreeCursor(refocus = false) {
+  const rows = shapeTreeRows();
+  if (!rows.length) {
+    shapeTreeCursorId = null;
+    return;
+  }
+  if (!rows.some(row => row.dataset.shapeId === String(shapeTreeCursorId))) {
+    const fallback = rows.find(row => row.classList.contains('selected')) || rows[0];
+    shapeTreeCursorId = fallback.dataset.shapeId;
+  }
+  for (const row of rows) {
+    const isCursor = row.dataset.shapeId === String(shapeTreeCursorId);
+    row.classList.toggle('cursor', isCursor);
+    row.tabIndex = isCursor ? 0 : -1;
+  }
+  if (refocus) shapeTreeCursorRow()?.focus?.({ preventScroll: true });
+}
+
+function moveShapeTreeCursor(shapeId) {
+  shapeTreeCursorId = shapeId === null ? null : String(shapeId);
+  syncShapeTreeCursor(true);
+  const row = shapeTreeCursorRow();
+  // Optional-called: not every host implements it, and failing to scroll is no
+  // reason to give up on the rest of the move.
+  row?.scrollIntoView?.({ block: 'nearest' });
+  if (row) highlightShapeById(row.dataset.shapeId);
+  else clearShapeHighlight();
+}
+
+function stepShapeTreeCursor(delta) {
+  const rows = shapeTreeRows();
+  if (!rows.length) return;
+  const at = rows.findIndex(row => row.dataset.shapeId === String(shapeTreeCursorId));
+  const next = Math.max(0, Math.min(rows.length - 1, at < 0 ? 0 : at + delta));
+  moveShapeTreeCursor(rows[next].dataset.shapeId);
+}
+
+function handleShapeTreeKeydown(e) {
+  // The inline rename editor is a text field, and Enter and the arrows mean
+  // something else entirely inside one.
+  if (isTypingTarget(e.target)) return;
+  if (e.altKey || e.ctrlKey || e.metaKey) return;
+  const rows = shapeTreeRows();
+  if (!rows.length) return;
+
+  const cursorId = shapeTreeCursorId;
+  const shape = cursorId === null ? null : findShapeById(shapeTreeRoots(), cursorId);
+  const hasChildren = (shape?.subShapes || []).length > 0;
+  const isOpen = hasChildren && !getCollapsedShapeIds().has(String(cursorId));
+
+  switch (e.key) {
+    case 'ArrowDown': stepShapeTreeCursor(1); break;
+    case 'ArrowUp': stepShapeTreeCursor(-1); break;
+    case 'PageDown': stepShapeTreeCursor(10); break;
+    case 'PageUp': stepShapeTreeCursor(-10); break;
+    case 'Home': moveShapeTreeCursor(rows[0].dataset.shapeId); break;
+    case 'End': moveShapeTreeCursor(rows[rows.length - 1].dataset.shapeId); break;
+    case 'ArrowRight':
+      // Closed group: open it. Open group: step into it. Leaf: nothing to do.
+      if (hasChildren && !isOpen) toggleShapeTreeBranch(cursorId);
+      else if (isOpen) moveShapeTreeCursor(shape.subShapes[0].id);
+      break;
+    case 'ArrowLeft': {
+      // The mirror image: close what is open, otherwise climb out of it.
+      if (isOpen) { toggleShapeTreeBranch(cursorId); break; }
+      const path = cursorId === null ? null : findShapePath(shapeTreeRoots(), cursorId);
+      const parent = path && path.length > 1 ? path[path.length - 2] : null;
+      if (parent) moveShapeTreeCursor(parent.id);
+      break;
+    }
+    case 'Enter':
+      if (cursorId !== null) setSelectedShape(cursorId);
+      break;
+    case ' ':
+      // What the row's checkbox does, since that is the other thing a row is.
+      if (shape) setShapeVisible(cursorId, getHiddenShapeIds().has(String(cursorId)));
+      break;
+    case 'F2':
+      if (cursorId !== null) startShapeRename(cursorId);
+      break;
+    default:
+      return;
+  }
+  e.preventDefault();
+  e.stopPropagation();
+}
+
+shapeTreeBody.addEventListener('keydown', handleShapeTreeKeydown);
+// Walking the tree paints a box on the canvas for the row you are standing on;
+// it belongs to the walk, so it goes when the keyboard does.
+shapeTreeBody.addEventListener('focusout', (e) => {
+  if (!shapeTreeBody.contains(e.relatedTarget)) clearShapeHighlight();
+});
 
 function getContextShape() {
   // The backdrop is searched too, or picking one of its shapes out of the list
@@ -2530,6 +2887,15 @@ function renderShapeArrangeSection() {
 
   shapeArrangeFront.title = 'Draw these shapes on top of their siblings';
   shapeArrangeBack.title = 'Draw these shapes behind their siblings';
+
+  // getSelectedShapes only ever finds shapes on this page, which is the same
+  // test deletableSelectionIds makes — a backdrop shape is not in either.
+  if (shapeArrangeDelete) {
+    shapeArrangeDelete.textContent = shapes.length > 1 ? `Delete ${shapes.length} shapes` : 'Delete';
+    shapeArrangeDelete.title = shapes.length === 1
+      ? `Delete ${getShapeLabel(shapes[0])}, and anything grouped inside it, from this page`
+      : `Delete these ${shapes.length} shapes, and anything grouped inside them, from this page`;
+  }
 }
 
 async function runArrange(label, work) {
@@ -2590,6 +2956,28 @@ function reorderSelection(place) {
   });
 }
 
+// Deleting goes through the package like the other three, so what is gone is
+// gone from the file and not only from the drawing on screen.
+//
+// Shapes on the background page are drawn here but belong to another page, so
+// they are dropped from the request rather than deleted out from under whoever
+// owns them — the same reason the layer list refuses to reassign them.
+function deletableSelectionIds() {
+  const shapes = getCurrentPage()?.shapes || [];
+  return [...selectedShapeIds].filter(id => findShapeById(shapes, id));
+}
+
+function deleteSelection() {
+  const ids = deletableSelectionIds();
+  return runArrange('Delete', async (page, base) => {
+    if (!ids.length) throw new Error('Nothing on this page is selected');
+    const { buffer } = await deleteVsdxShapes(base, page.id, ids);
+    // Nothing to re-select: reloading the package clears the selection, and
+    // every id in it just stopped existing.
+    return { buffer };
+  });
+}
+
 function openShapeContextMenu(shapeId, clientX, clientY, pickEntries = []) {
   contextShapeId = String(shapeId);
   contextPickEntries = pickEntries;
@@ -2617,37 +3005,68 @@ function clearShapeHighlight() {
   svgContainer.querySelector('#shape-highlight')?.remove();
 }
 
-function highlightShapeBox(entry) {
-  clearShapeHighlight();
+// Where a shape is *drawn*, in SVG user units.
+//
+// A shape's Width/Height box is where its geometry lives, and that is not where
+// the ink ends up: a 50pt stroke on a thin path puts most of the shape outside
+// the box, and a box drawn on the box alone has the shape hanging out of it.
+// The browser has already worked out the real extent, stroke and markers and
+// all, so ask it — getBoundingClientRect on the rendered group — and only fall
+// back to the geometric box where there is no layout to ask (headless DOMs, a
+// group that is display:none).
+function renderedShapeBox(shapeId) {
   const svg = svgContainer.querySelector('svg');
-  const page = getCurrentPage();
-  if (!svg || !page || !entry) return;
+  const group = svg?.querySelector(`g[data-shape-id="${window.CSS?.escape ? CSS.escape(String(shapeId)) : shapeId}"]`);
+  const rect = group?.getBoundingClientRect?.();
+  if (!rect || !(rect.width > 0 || rect.height > 0)) return null;
+  const topLeft = clientToUserUnits(rect.left, rect.top);
+  const bottomRight = clientToUserUnits(rect.right, rect.bottom);
+  if (!topLeft || !bottomRight) return null;
+  return {
+    x: Math.min(topLeft.x, bottomRight.x),
+    y: Math.min(topLeft.y, bottomRight.y),
+    w: Math.abs(bottomRight.x - topLeft.x),
+    h: Math.abs(bottomRight.y - topLeft.y)
+  };
+}
 
-  const ns = 'http://www.w3.org/2000/svg';
+function geometricShapeBox(entry, page) {
   const dpi = getPageDpi(page);
-  const unit = unitsPerDevicePixel(page);
   const box = entry.bounds;
+  return {
+    x: box.minX * dpi,
+    y: (page.height - box.maxY) * dpi,
+    w: (box.maxX - box.minX) * dpi,
+    h: (box.maxY - box.minY) * dpi
+  };
+}
+
+// One box per shape, padded, with a floor so a horizontal line still gets
+// something grabbable rather than a zero-height sliver.
+function shapeOverlayBox(entry, page) {
+  const unit = unitsPerDevicePixel(page);
   const pad = unit * 2;
-  const x = box.minX * dpi - pad;
-  const y = (page.height - box.maxY) * dpi - pad;
-  // A zero-extent shape (a horizontal line) still needs a grabbable box.
-  const w = Math.max((box.maxX - box.minX) * dpi, unit) + pad * 2;
-  const h = Math.max((box.maxY - box.minY) * dpi, unit) + pad * 2;
+  const box = renderedShapeBox(entry.id) || geometricShapeBox(entry, page);
+  return {
+    x: box.x - pad,
+    y: box.y - pad,
+    w: Math.max(box.w, unit) + pad * 2,
+    h: Math.max(box.h, unit) + pad * 2
+  };
+}
 
-  const group = document.createElementNS(ns, 'g');
-  group.setAttribute('id', 'shape-highlight');
-  group.setAttribute('pointer-events', 'none');
-
+function appendShapeBoxDecoration(group, { x, y, w, h }, unit, { solid }) {
+  const ns = 'http://www.w3.org/2000/svg';
   const rect = document.createElementNS(ns, 'rect');
   rect.setAttribute('x', String(x));
   rect.setAttribute('y', String(y));
   rect.setAttribute('width', String(w));
   rect.setAttribute('height', String(h));
   rect.setAttribute('fill', '#e94560');
-  rect.setAttribute('fill-opacity', '0.12');
+  rect.setAttribute('fill-opacity', solid ? '0.08' : '0.12');
   rect.setAttribute('stroke', '#e94560');
   rect.setAttribute('stroke-width', String(unit * 1.5));
-  rect.setAttribute('stroke-dasharray', `${unit * 4} ${unit * 3}`);
+  if (!solid) rect.setAttribute('stroke-dasharray', `${unit * 4} ${unit * 3}`);
   group.appendChild(rect);
 
   // Corner ticks, so it reads as a selection square rather than a fill.
@@ -2662,7 +3081,27 @@ function highlightShapeBox(entry) {
     corner.setAttribute('stroke-width', String(unit * 2));
     group.appendChild(corner);
   }
+}
 
+// The same square, for callers that have an id rather than a collected entry —
+// the Shape Tree walks the page model, not the box list.
+function highlightShapeById(shapeId) {
+  const entry = collectShapeBoxes(getComposedPage())
+    .find(candidate => String(candidate.id) === String(shapeId));
+  if (entry) highlightShapeBox(entry);
+  else clearShapeHighlight();
+}
+
+function highlightShapeBox(entry) {
+  clearShapeHighlight();
+  const svg = svgContainer.querySelector('svg');
+  const page = getCurrentPage();
+  if (!svg || !page || !entry) return;
+
+  const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  group.setAttribute('id', 'shape-highlight');
+  group.setAttribute('pointer-events', 'none');
+  appendShapeBoxDecoration(group, shapeOverlayBox(entry, page), unitsPerDevicePixel(page), { solid: false });
   svg.appendChild(group);
 }
 
@@ -2918,6 +3357,13 @@ function attachSvgLayerFocusHandlers() {
   svg.addEventListener('click', (e) => {
     // While drawing, a click is a path point - not a selection.
     if (penActive) return;
+    // Letting go after a drag is not a click. Without this, dragging several
+    // shapes at once would end with the selection collapsed onto whichever one
+    // the pointer happened to be over.
+    if (suppressNextCanvasClick) {
+      suppressNextCanvasClick = false;
+      return;
+    }
     focusLayerFromSvgElement(e.target);
     const group = e.target.closest?.('g[data-shape-id]');
     if (!group) return;
@@ -3349,6 +3795,7 @@ async function loadFile(file) {
     compareButton.disabled = currentFileType !== 'vsdx';
     // Drawing writes back into the package, so it needs an editable one.
     if (penButton) penButton.disabled = !currentPackageEditable;
+    if (selectButton) selectButton.disabled = !currentPackageEditable;
     // So does adding a layer — a read-only stencil has nowhere to put one.
     if (layersManage) layersManage.style.display = currentPackageEditable ? '' : 'none';
     if (shapeContextNewLayer) shapeContextNewLayer.style.display = currentPackageEditable ? '' : 'none';
@@ -3424,6 +3871,12 @@ viewportEl.addEventListener('mousedown', (e) => {
     penMouseDown(e);
     return;
   }
+  // A press on a selected shape, or on one of its handles, drags the shape.
+  // Anywhere else is the canvas, and the canvas pans.
+  if (beginShapeDrag(e)) {
+    e.preventDefault();
+    return;
+  }
   if (e.button === 0) {
     isPanning = true;
     panStartX = e.clientX - panX;
@@ -3434,6 +3887,10 @@ viewportEl.addEventListener('mousedown', (e) => {
 
 window.addEventListener('mousemove', (e) => {
   if (penActive) penMouseMove(e);
+  if (shapeDrag) {
+    updateShapeDrag(e);
+    return;
+  }
   if (!isPanning) return;
   panX = e.clientX - panStartX;
   panY = e.clientY - panStartY;
@@ -3442,6 +3899,7 @@ window.addEventListener('mousemove', (e) => {
 
 window.addEventListener('mouseup', () => {
   if (penActive) penMouseUp();
+  if (shapeDrag) endShapeDrag();
   isPanning = false;
   viewportEl.style.cursor = 'grab';
 });
@@ -3471,10 +3929,12 @@ function pageInchesPerDevicePixel(page) {
   return unitsPerDevicePixel(page) / getPageDpi(page);
 }
 
-function clientToPageUnits(clientX, clientY) {
+// Client pixels → the SVG's own user units. Everything drawn as an overlay on
+// the page lives in these, so this is the step that has to be right; turning
+// them into page inches afterwards is only arithmetic.
+function clientToUserUnits(clientX, clientY) {
   const svg = svgContainer.querySelector('svg');
-  const page = getCurrentPage();
-  if (!svg || !page) return null;
+  if (!svg) return null;
 
   let ux = null;
   let uy = null;
@@ -3508,8 +3968,191 @@ function clientToPageUnits(clientX, clientY) {
     }
   }
 
+  return { x: ux, y: uy };
+}
+
+function clientToPageUnits(clientX, clientY) {
+  const page = getCurrentPage();
+  const local = clientToUserUnits(clientX, clientY);
+  if (!page || !local) return null;
   const dpi = getPageDpi(page);
-  return { x: ux / dpi, y: page.height - uy / dpi };
+  return { x: local.x / dpi, y: page.height - local.y / dpi };
+}
+
+// ---------------------------------------------------------------------------
+// Dragging shapes: move, resize, rotate
+//
+// Until now the drawing could only be edited through dialogs and the XML
+// editor — you could say where a shape belonged but not push it there, and a
+// press on a shape panned the canvas instead. Pressing a *selected* shape now
+// drags it, and the selected shape carries eight resize handles and a rotation
+// grip.
+//
+// What is dragged is an outline, not the drawing. The shape itself is not
+// touched until the mouse comes up, at which point the edit goes through the
+// package like every other one — so a drag is one durable edit rather than a
+// hundred, and it survives Save Visio. Visio's own drag preview is an outline
+// too, for the same reason.
+//
+// The maths is all in src/shape-arrange.js: the planners answer "what cells
+// would put the shape there", and they answer it for a shape nested three
+// groups deep just as readily as for one on the page.
+// ---------------------------------------------------------------------------
+
+let shapeDrag = null;
+let suppressNextCanvasClick = false;
+
+// A press has to travel a little before it is a drag: without this, the tiny
+// movement between pressing and releasing a mouse button would rewrite the file
+// every time anyone selected anything.
+const DRAG_SLOP_PX = 3;
+
+function movableSelectionIds() {
+  const shapes = getCurrentPage()?.shapes || [];
+  return [...selectedShapeIds].filter(id => findShapeById(shapes, id));
+}
+
+function clearDragPreview() {
+  svgContainer.querySelector('#shape-drag-preview')?.remove();
+}
+
+// The outline, drawn last so nothing can cover it, as a closed polygon through
+// the four corners the shape is about to have.
+function drawDragPreview(outlines) {
+  clearDragPreview();
+  const svg = svgContainer.querySelector('svg');
+  const page = getCurrentPage();
+  if (!svg || !page || !outlines?.length) return;
+  const ns = 'http://www.w3.org/2000/svg';
+  const unit = unitsPerDevicePixel(page);
+  const layer = document.createElementNS(ns, 'g');
+  layer.setAttribute('id', 'shape-drag-preview');
+  layer.setAttribute('pointer-events', 'none');
+  for (const corners of outlines) {
+    if (!corners?.length) continue;
+    const poly = document.createElementNS(ns, 'polygon');
+    poly.setAttribute('points', corners.map(p => `${p.x},${p.y}`).join(' '));
+    poly.setAttribute('fill', '#e94560');
+    poly.setAttribute('fill-opacity', '0.10');
+    poly.setAttribute('stroke', '#e94560');
+    poly.setAttribute('stroke-width', String(unit * 1.5));
+    poly.setAttribute('stroke-dasharray', `${unit * 4} ${unit * 3}`);
+    layer.appendChild(poly);
+  }
+  svg.appendChild(layer);
+}
+
+function beginShapeDrag(e) {
+  if (penActive || !currentPackageEditable || e.button !== 0) return false;
+  const page = getCurrentPage();
+  const start = page ? clientToPageUnits(e.clientX, e.clientY) : null;
+  if (!start) return false;
+
+  const handleEl = e.target?.closest?.('[data-handle]');
+  if (handleEl) {
+    const handle = handleEl.getAttribute('data-handle');
+    const id = handleEl.getAttribute('data-handle-shape');
+    if (!findShapeById(page.shapes || [], id)) return false;
+    shapeDrag = {
+      kind: handle === 'rotate' ? 'rotate' : 'resize',
+      handle, ids: [String(id)], start,
+      clientX: e.clientX, clientY: e.clientY, moved: false, plan: null
+    };
+    return true;
+  }
+
+  // Modifier-clicks are for building a selection; the click handler owns those,
+  // and taking the press to mean "drag" would fight it.
+  if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return false;
+  const group = e.target?.closest?.('g[data-shape-id]');
+  const id = group?.getAttribute('data-shape-id');
+  // Shapes drawn from the background page belong to another page and are not
+  // this page's to move — the same rule the layer list and Delete both follow.
+  if (!id || !findShapeById(page.shapes || [], id)) return false;
+  // Pressing something not yet selected selects it first, so a shape can be
+  // grabbed and moved in one gesture rather than needing a click to arm it.
+  if (!isShapeSelected(id)) setSelectedShape(id);
+
+  shapeDrag = {
+    kind: 'move', handle: null, ids: movableSelectionIds(), start,
+    clientX: e.clientX, clientY: e.clientY, moved: false, plan: null
+  };
+  return true;
+}
+
+function updateShapeDrag(e) {
+  if (!shapeDrag) return;
+  if (!shapeDrag.moved) {
+    if (Math.hypot(e.clientX - shapeDrag.clientX, e.clientY - shapeDrag.clientY) < DRAG_SLOP_PX) return;
+    shapeDrag.moved = true;
+  }
+  const page = getCurrentPage();
+  const at = page ? clientToPageUnits(e.clientX, e.clientY) : null;
+  if (!at) return;
+
+  try {
+    if (shapeDrag.kind === 'move') {
+      shapeDrag.plan = planMoveShapes(page, shapeDrag.ids, at.x - shapeDrag.start.x, at.y - shapeDrag.start.y);
+      drawDragPreview(shapeDrag.plan.map(item => item.preview));
+    } else if (shapeDrag.kind === 'resize') {
+      const plan = planResizeShape(page, shapeDrag.ids[0], shapeDrag.handle, at.x, at.y,
+        { keepAspect: e.shiftKey });
+      shapeDrag.plan = [{ id: plan.id, cells: plan.cells }, ...plan.children];
+      drawDragPreview([plan.preview]);
+    } else {
+      shapeDrag.plan = planRotateShapes(page, shapeDrag.ids, rotationFromPointer(page, shapeDrag, at, e.shiftKey));
+      drawDragPreview(shapeDrag.plan.map(item => item.preview));
+    }
+    shapeDrag.error = null;
+  } catch (err) {
+    // A drag that cannot be expressed (a connector, a shape that has gone) says
+    // so when it is let go rather than throwing on every mouse move.
+    shapeDrag.plan = null;
+    shapeDrag.error = err;
+    clearDragPreview();
+  }
+}
+
+// How far round the shape's pin the pointer has travelled since the press.
+// Shift snaps to 15°, which is what everyone reaches for when they want 90.
+function rotationFromPointer(page, drag, at, snap) {
+  const entry = collectShapeBoxes(page).find(candidate => candidate.id === drag.ids[0]);
+  if (!entry) return 0;
+  const shape = entry.shape;
+  const pin = applyMatrix(entry.matrix, (shape.locPinX || 0) * 96,
+    ((shape.height || 0) - (shape.locPinY || 0)) * 96);
+  const dpi = getPageDpi(page);
+  const centre = { x: pin.x / dpi, y: page.height - pin.y / dpi };
+  const from = Math.atan2(drag.start.y - centre.y, drag.start.x - centre.x);
+  const to = Math.atan2(at.y - centre.y, at.x - centre.x);
+  let delta = to - from;
+  if (snap) {
+    const step = Math.PI / 12;
+    delta = Math.round(delta / step) * step;
+  }
+  return delta;
+}
+
+function endShapeDrag() {
+  const drag = shapeDrag;
+  shapeDrag = null;
+  if (!drag) return;
+  clearDragPreview();
+  // A press that never travelled is a click, and a click is a selection.
+  if (!drag.moved) return;
+  suppressNextCanvasClick = true;
+  if (drag.error) {
+    showError(drag.error.message);
+    return;
+  }
+  if (!drag.plan?.length) return;
+
+  const label = drag.kind === 'move' ? 'Move' : drag.kind === 'resize' ? 'Resize' : 'Rotate';
+  const updates = drag.plan;
+  runArrange(label, async (page, base) => {
+    const { buffer } = await transformVsdxShapes(base, page.id, updates);
+    return { buffer, select: drag.ids };
+  });
 }
 
 function readPenStyle() {
@@ -3543,6 +4186,10 @@ function setPenActive(active) {
   const next = Boolean(active) && currentPackageEditable && currentPages.length > 0;
   penActive = next;
   penButton?.classList.toggle('active', next);
+  // Two tools, one at a time, and the toolbar says which. Select is not a mode
+  // with any state of its own — it is what the canvas does when the pen is not
+  // holding it — but calling it nothing at all left people looking for it.
+  selectButton?.classList.toggle('active', !next);
   if (penBar) penBar.hidden = !next;
   viewportEl.classList.toggle('pen-active', next);
   if (!next) {
@@ -3552,6 +4199,9 @@ function setPenActive(active) {
     clearPenPreview();
   }
   updatePenBarState();
+  // The pen owns the pointer while it is out, so the drag handles step aside
+  // rather than competing with it for clicks.
+  syncSelectedShapeHighlight();
 }
 
 function clearPenPreview() {
@@ -3787,6 +4437,7 @@ shapeSearchInput?.addEventListener('keydown', (e) => {
   }
 });
 
+selectButton?.addEventListener('click', () => setPenActive(false));
 penButton?.addEventListener('click', () => setPenActive(!penActive));
 penFinishButton?.addEventListener('click', () => commitPenPath());
 penUndoButton?.addEventListener('click', () => removeLastPenNode());
@@ -3798,8 +4449,7 @@ for (const control of [penStrokeOn, penStrokeColor, penStrokeWidth, penStrokePat
 
 document.addEventListener('keydown', (e) => {
   if (!penActive) return;
-  const tag = e.target?.tagName?.toLowerCase();
-  if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+  if (isTypingTarget(e.target)) return;
 
   if (e.key === 'Escape') {
     e.preventDefault();
@@ -4155,6 +4805,7 @@ shapeArrangeGroup?.addEventListener('click', () => groupSelection());
 shapeArrangeUngroup?.addEventListener('click', () => ungroupSelection());
 shapeArrangeFront?.addEventListener('click', () => reorderSelection('front'));
 shapeArrangeBack?.addEventListener('click', () => reorderSelection('back'));
+shapeArrangeDelete?.addEventListener('click', () => deleteSelection());
 shapeContextEditXml?.addEventListener('click', () => {
   if (contextShapeId !== null) openShapeXmlEditor(contextShapeId);
 });
@@ -4243,6 +4894,18 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (e.key === 'Escape' && layerMatrixModal.classList.contains('visible')) hideLayerMatrix();
+
+  // Delete what is selected. Backspace does it too, since that is the key half
+  // of everyone reaches for — but not while the pen tool owns it for taking
+  // back the last node, and not while a modal is up, where the selection behind
+  // it is not what the user is looking at.
+  if ((e.key === 'Delete' || e.key === 'Backspace') && !penActive && !isTypingTarget(e.target)) {
+    if (layerMatrixModal.classList.contains('visible') || shapeXmlModal.classList.contains('visible')) return;
+    if (exportModal.classList.contains('visible')) return;
+    if (!selectedShapeIds.size || !currentPackageEditable) return;
+    e.preventDefault();
+    deleteSelection();
+  }
 });
 
 layerFilterMode.addEventListener('change', () => {
@@ -4319,6 +4982,7 @@ function buildExportSvg(size) {
   const exported = svg.cloneNode(true);
   exported.querySelector('#pen-preview')?.remove();
   exported.querySelector('#shape-highlight')?.remove();
+  exported.querySelector('#shape-selection')?.remove();
   return applyExportSize(exported, size);
 }
 

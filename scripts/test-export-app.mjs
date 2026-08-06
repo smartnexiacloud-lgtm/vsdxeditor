@@ -115,6 +115,27 @@ check('the summary says what will be produced', /px/.test($('export-summary').te
 check('the custom field is hidden until custom is chosen', $('export-custom-row').hidden === true);
 check('the PDF download gate is hidden for SVG export', $('export-pdf-gate').hidden === true);
 
+// …and hidden has to mean *not on screen*. In a browser an author rule beats
+// the one the browser itself has for the hidden attribute, so laying these rows
+// out with `display: flex` left every row the dialog thought it had folded away
+// sitting there fully usable: "Longest side" while exporting at original size,
+// the PDF library consent while exporting an SVG, the SVG embed checkbox while
+// exporting a PDF — each of them controlling something the chosen format has no
+// use for.
+//
+// getComputedStyle cannot see this: jsdom gives the hidden attribute a
+// precedence real browsers do not, and answers "none" either way. So the rule
+// that puts it right is checked for directly.
+const hiddenRules = [...window.document.styleSheets]
+  .flatMap(sheet => [...sheet.cssRules])
+  .filter(rule => rule.selectorText?.includes('[hidden]') && rule.style?.display === 'none')
+  .map(rule => rule.selectorText)
+  .join(' ');
+for (const cls of ['.export-field', '.export-check', '.export-gate']) {
+  check(`${cls} rows stay laid out but go when hidden`, hiddenRules.includes(`${cls}[hidden]`), hiddenRules);
+}
+const shown = (id) => $(id).hidden !== true;
+
 // ---------------------------------------------------------------------------
 console.log('\n2. Original size');
 
@@ -184,6 +205,7 @@ $('btn-export').click();
 $('export-size').value = 'custom';
 fire($('export-size'), 'change');
 check('choosing custom reveals the number field', $('export-custom-row').hidden === false);
+check('…on screen, not merely un-hidden', shown('export-custom-row'));
 $('export-custom-px').value = '640';
 fire($('export-custom-px'), 'input');
 $('export-embed').checked = false;
@@ -207,7 +229,10 @@ check('no network request has been made by any SVG export', fetches.length === 0
 $('export-format').value = 'pdf';
 fire($('export-format'), 'change');
 check('choosing PDF reveals the download gate', $('export-pdf-gate').hidden === false);
+check('…on screen, not merely un-hidden', shown('export-pdf-gate'));
 check('the embed option is hidden for PDF', $('export-embed-row').hidden === true);
+check('…and really off screen, since a PDF cannot carry the source document',
+  !shown('export-embed-row'), window.getComputedStyle($('export-embed-row')).display);
 
 // PDF's 200in ceiling is the reason the whole rescale exists, so asking for a
 // page past it must be refused up front rather than producing a broken file.
