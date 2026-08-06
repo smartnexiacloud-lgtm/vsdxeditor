@@ -68,10 +68,24 @@ function flattenShapes(shapes, out = new Map()) {
   return out;
 }
 
+// What a geometry row *draws*. The parsed row also carries where it came from —
+// which section, which document, which cells the shape itself holds and the
+// formulas behind them — so that geometry can be edited, and none of that is a
+// visible difference between two drawings. A shape that inherits its outline
+// from a master draws exactly what a shape with the same outline written out
+// locally draws, and the diff has to keep saying so.
+const GEOMETRY_ROW_FIELDS = ['type', 'ix', 'del', 'x', 'y', 'a', 'b', 'c', 'd', 'e'];
+
 function geometryHash(shape) {
   // Stable, normalized string of the geometry rows for equality testing.
   try {
-    return JSON.stringify(shape.geometry ?? null, (k, v) => (typeof v === 'number' ? norm(v) : v));
+    const drawn = (shape.geometry ?? null)?.map(section => ({
+      noFill: section.noFill,
+      noLine: section.noLine,
+      noShow: section.noShow,
+      rows: (section.rows || []).map(row => GEOMETRY_ROW_FIELDS.map(field => row[field] ?? null))
+    })) ?? null;
+    return JSON.stringify(drawn, (k, v) => (typeof v === 'number' ? norm(v) : v));
   } catch {
     return '';
   }

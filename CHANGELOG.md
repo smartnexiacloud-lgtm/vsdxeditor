@@ -7,6 +7,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **The parser says where each geometry row came from.** It used to answer only
+  *what does this shape draw*: the master's rows and the shape's own rows were
+  flattened into one effective list of numbers, which is everything the renderer
+  needs and nothing an editor can use. Each row now also carries the Geometry
+  section's `IX`, its own `IX`, whether it lives on the shape, on the master or
+  is a shape row overriding a master row, which cells the shape's own row
+  actually holds, and the **formula** behind each cell. That last one matters
+  because reading only the computed value cannot tell a coordinate someone typed
+  from the current answer to `Width*0.5` — and overwriting the second kind with
+  a number silently de-parametrises the shape, which is the whole point of a
+  Visio master. This is groundwork for editing a path's points; nothing about
+  what is drawn has changed, and the visual diff explicitly ignores it, so the
+  same outline reached two different ways is still not a difference.
 - **A Select tool, and shapes you can actually push around.** There was a pen
   but nothing to pick things up with: a press on a shape panned the canvas, and
   the only way to move anything was to edit its XML. **Select** now sits beside

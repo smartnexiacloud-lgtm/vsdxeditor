@@ -637,8 +637,36 @@ function parseRowData(row) {
     rowData.b = getCellFloat(row, 'B');
   }
 
+  // Which cells this Row element actually carries, and the formula behind each.
+  //
+  // V is what Visio computed and is all the renderer needs; F is how it got
+  // there — `Width*0.5`, a guard, or the sentinel "Inh". Reading V alone is fine
+  // for drawing and hopeless for editing: a coordinate reading 0.75 might be a
+  // number someone typed or the current answer to `Width*0.5`, and overwriting
+  // the second kind with a number silently de-parametrises the shape, which is
+  // the entire point of a master. Carrying the formula lets an editor decline
+  // the rows it would break.
+  //
+  // The cell list matters for the same reason: a row on a shape that overrides
+  // a master's commonly holds *only* the cells that differ, so "does this row
+  // have an X" and "what is this row's X" are different questions. Writing X
+  // must not disturb a Y that is still inherited.
+  const ownCells = [];
+  const formulas = {};
+  for (const cell of getDirectChildren(row, 'Cell')) {
+    const name = cell.getAttribute('N');
+    if (!name) continue;
+    ownCells.push(name);
+    const f = cell.getAttribute('F');
+    if (f !== null && f !== '') formulas[name] = f;
+  }
+  rowData.ownCells = ownCells;
+  rowData.formulas = formulas;
+
   return rowData;
 }
+
+const ROW_PROVENANCE_KEYS = new Set(['ownCells', 'formulas', 'source', 'sectionIx']);
 
 function mergeRowData(masterRow, shapeRow) {
   if (!masterRow) return shapeRow;
@@ -646,11 +674,22 @@ function mergeRowData(masterRow, shapeRow) {
 
   const merged = { ...masterRow };
   for (const [key, value] of Object.entries(shapeRow)) {
+    // Provenance is about where a row *is*, not what it draws, so it is merged
+    // deliberately below rather than swept up by the value loop.
+    if (ROW_PROVENANCE_KEYS.has(key)) continue;
     if (value !== null && value !== undefined) {
       merged[key] = value;
     }
   }
   merged.del = shapeRow.del;
+  // The row exists in both places: the shape's cells win where it has them, and
+  // an editor writing to this row writes onto the shape, not onto the master.
+  merged.source = 'override';
+  merged.sectionIx = shapeRow.sectionIx ?? masterRow.sectionIx;
+  merged.ownCells = shapeRow.ownCells || [];
+  // A cell the shape does not carry keeps the master's formula, because that is
+  // the formula still driving the value the renderer sees.
+  merged.formulas = { ...(masterRow.formulas || {}), ...(shapeRow.formulas || {}) };
   return merged;
 }
 
@@ -661,7 +700,14 @@ function parseSectionFlag(value) {
 }
 
 // Parse raw geometry sections from a shape element (returns row elements indexed by IX)
-function parseGeometryRaw(shapeEl) {
+//
+// `source` says which document the rows came out of. The merged result is what
+// the renderer draws, and until now that was all it said — a row was a type and
+// some numbers with no way back to the XML it came from. Anything that wants to
+// *edit* a point needs the way back: which Geometry section, which Row, and on
+// whose element it sits, because a row inherited from a master has no element
+// on the shape at all until one is written.
+function parseGeometryRaw(shapeEl, source) {
   const sections = [];
   const sectionEls = getDirectChildren(shapeEl, 'Section');
   for (const sec of sectionEls) {
@@ -674,10 +720,13 @@ function parseGeometryRaw(shapeEl) {
     const rowEls = getDirectChildren(sec, 'Row');
     for (const row of rowEls) {
       const rowData = parseRowData(row);
+      rowData.source = source;
+      rowData.sectionIx = ix;
       if (rowData.ix) rowMap.set(rowData.ix, rowData);
     }
     sections.push({
       ix,
+      source,
       rowMap,
       noFill: parseSectionFlag(noFill),
       noLine: parseSectionFlag(noLine),
@@ -687,6 +736,21 @@ function parseGeometryRaw(shapeEl) {
   return sections;
 }
 
+// The shape of a merged section. `ix` and `source` are what an editor needs:
+// which <Section N="Geometry" IX="…"> this is, and whether the shape has one of
+// its own at all ('master' means every row here is inherited).
+function mergedSection(sections, rows) {
+  const [primary, fallback] = sections;
+  return {
+    ix: primary?.ix ?? fallback?.ix ?? '0',
+    source: !fallback ? primary.source : (primary.source === fallback.source ? primary.source : 'override'),
+    rows: [...rows.values()].filter(r => !r.del).sort((a, b) => parseInt(a.ix) - parseInt(b.ix)),
+    noFill: primary?.noFill ?? fallback?.noFill ?? false,
+    noLine: primary?.noLine ?? fallback?.noLine ?? false,
+    noShow: primary?.noShow ?? fallback?.noShow ?? false
+  };
+}
+
 function hasGeometrySections(shapeEl) {
   if (!shapeEl) return false;
   return getDirectChildren(shapeEl, 'Section').some(sec => sec.getAttribute('N') === 'Geometry');
@@ -694,19 +758,14 @@ function hasGeometrySections(shapeEl) {
 
 // Merge master geometry with shape geometry (shape overrides master by IX)
 function mergeGeometry(masterEl, shapeEl, is1D) {
-  const masterGeo = masterEl ? parseGeometryRaw(masterEl) : [];
-  const shapeGeo = parseGeometryRaw(shapeEl);
+  const masterGeo = masterEl ? parseGeometryRaw(masterEl, 'master') : [];
+  const shapeGeo = parseGeometryRaw(shapeEl, 'shape');
 
   // If shape has its own geometry sections, merge with master by section IX
   if (shapeGeo.length === 0 && masterGeo.length === 0) return [];
   if (shapeGeo.length === 0) {
     // Use master geometry as-is
-    return masterGeo.map(sec => ({
-      rows: [...sec.rowMap.values()].filter(r => !r.del).sort((a, b) => parseInt(a.ix) - parseInt(b.ix)),
-      noFill: sec.noFill ?? false,
-      noLine: sec.noLine ?? false,
-      noShow: sec.noShow ?? false
-    }));
+    return masterGeo.map(sec => mergedSection([sec], sec.rowMap));
   }
   if (is1D) {
     // Shape rows win, but they only carry the cells that differ from the
@@ -723,21 +782,11 @@ function mergeGeometry(masterEl, shapeEl, is1D) {
       for (const [ix, row] of sec.rowMap) {
         rowMap.set(ix, mergeRowData(rowMap.get(ix), row));
       }
-      return {
-        rows: [...rowMap.values()].filter(r => !r.del).sort((a, b) => parseInt(a.ix) - parseInt(b.ix)),
-        noFill: sec.noFill ?? masterSec?.noFill ?? false,
-        noLine: sec.noLine ?? masterSec?.noLine ?? false,
-        noShow: sec.noShow ?? masterSec?.noShow ?? false
-      };
+      return mergedSection([sec, masterSec], rowMap);
     });
   }
   if (masterGeo.length === 0) {
-    return shapeGeo.map(sec => ({
-      rows: [...sec.rowMap.values()].filter(r => !r.del).sort((a, b) => parseInt(a.ix) - parseInt(b.ix)),
-      noFill: sec.noFill ?? false,
-      noLine: sec.noLine ?? false,
-      noShow: sec.noShow ?? false
-    }));
+    return shapeGeo.map(sec => mergedSection([sec], sec.rowMap));
   }
 
   // Merge: index master sections by IX
@@ -763,24 +812,12 @@ function mergeGeometry(masterEl, shapeEl, is1D) {
       mergedRowMap.set(ix, mergeRowData(mergedRowMap.get(ix), row));
     }
 
-    const noShow = shapeSec.noShow ?? masterSec?.noShow ?? false;
-
-    merged.push({
-      rows: [...mergedRowMap.values()].filter(r => !r.del).sort((a, b) => parseInt(a.ix) - parseInt(b.ix)),
-      noFill: shapeSec.noFill ?? masterSec?.noFill ?? false,
-      noLine: shapeSec.noLine ?? masterSec?.noLine ?? false,
-      noShow
-    });
+    merged.push(mergedSection([shapeSec, masterSec], mergedRowMap));
   }
   // Add master sections not present in shape
   for (const masterSec of masterGeo) {
     if (!seenIx.has(masterSec.ix)) {
-      merged.push({
-        rows: [...masterSec.rowMap.values()].filter(r => !r.del).sort((a, b) => parseInt(a.ix) - parseInt(b.ix)),
-        noFill: masterSec.noFill ?? false,
-        noLine: masterSec.noLine ?? false,
-        noShow: masterSec.noShow ?? false
-      });
+      merged.push(mergedSection([masterSec], masterSec.rowMap));
     }
   }
 
