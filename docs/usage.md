@@ -14,6 +14,11 @@ Supported formats are `.vsdx`, `.vsdm`, `.vstx`, `.vstm`, `.vssx`, `.vssm`,
 sheets; XML drawings and templates can be edited and saved in their original
 format.
 
+An `.svg` this app exported can be opened too: it carries the source drawing as
+embedded metadata, and if you have edited the picture in another editor since,
+you are asked whether to bring those edits back — see
+[Editing the SVG somewhere else](#editing-the-svg-somewhere-else-and-bringing-it-back).
+
 The file name appears in the toolbar and the first page renders as SVG.
 Multi-page documents show one tab per page beneath the toolbar — click a tab to
 switch pages.
@@ -543,7 +548,9 @@ included, which stay closed.
   edits applied) is embedded as base64 `<metadata>`, so an exported `.svg` can
   be dropped back into the app — or handed to someone else — and opened again
   as the full drawing, losslessly. Untick **Embed the source Visio document**
-  for a plain, much smaller SVG that will not re-open here.
+  for a plain, much smaller SVG that will not re-open here. Shapes come out
+  grouped into real SVG layers — see
+  [Layers in the exported SVG](#layers-in-the-exported-svg).
 - **PDF** — see [PDF export](#pdf-export) below.
 - **Save Visio** (on the toolbar, not in this dialog) — download an XML drawing
   or template with all your edits (layer changes, shape XML edits, pruning)
@@ -579,6 +586,66 @@ nothing).
 result is the same vector drawing at full precision, just labelled with a size
 that ordinary software can handle. The dialog opens on **Viewer-safe** for a
 drawing too big for a PDF page, and on **Original size** for everything else.
+
+### Layers in the exported SVG
+
+A Visio layer is a property of a shape — the page is a flat list of shapes, each
+naming the layers it is on. SVG has no layer concept at all, but every editor
+that pretends to have one reads the same convention, so the export writes it:
+each Visio layer becomes a `<g inkscape:groupmode="layer">` labelled with the
+layer's name, and Inkscape (or Boxy, or Affinity) opens the file with a working
+layer panel instead of one flat pile of paths. Layers you have switched off in
+the app come out as a **hidden group**, not as a pile of individually hidden
+shapes, so the eye icon in the layer panel actually toggles them back on.
+
+One caveat, and it is Visio's rather than the app's. SVG's paint order **is**
+document order, while Visio's z-order is independent of its layers — a drawing
+can perfectly well stack wall, door, wall, door. Collecting every wall into one
+group therefore moves shapes past each other, and where they overlap that
+changes the picture. So the export only merges a layer's shapes into one group
+when it can show the reordering is invisible: every pair of shapes that swapped
+has to have disjoint bounding boxes. Where it cannot, that layer is emitted as
+several groups following the original order — you get `Walls`, `Walls (2)`,
+`Walls (3)` in the panel instead of one `Walls`, and the drawing looks exactly
+as Visio draws it. Tidier XML is not worth a silently restacked drawing.
+
+### Editing the SVG somewhere else and bringing it back
+
+An exported SVG carries the whole drawing inside it, so re-opening one gives you
+the drawing back — which for a long time meant that anything you had done to the
+*picture* in between was silently discarded. It is not any more.
+
+Open an exported `.svg` in Inkscape, delete things, draw things, save, and drop
+the file back on the app. It compares the picture against the drawing embedded
+in it, tells you what it found, and asks before applying anything:
+
+| What you did | What comes back |
+| --- | --- |
+| **Deleted a shape** | Every shape's group carries its Visio id, so an id the picture no longer has is a shape that was deleted. Deleting a group takes its children's ids with it, which reads correctly as deleting the group. |
+| **Deleted a whole layer** | The shapes on it are gone, so they are deleted. The layer itself stays — remove it from the Layers sidebar. |
+| **Drew a new path or shape** | `path`, `rect`, `circle`, `ellipse`, `line`, `polyline` and `polygon` become real Visio shapes: geometry, fill, stroke colour, width, dashes and opacity. Curves stay curves — Visio's `RelCubBezTo` row *is* SVG's cubic `C` — and quadratics, the `S`/`T` shorthands and elliptical arcs are converted exactly. |
+| **Drew into an Inkscape layer** | The new shape lands on the Visio layer of the same name, if the drawing has one. |
+
+Cancel and the drawing opens exactly as it was exported, edits ignored.
+
+**What it will not do is guess at changes to existing shapes.** An edit inside a
+shape's own group cannot be told apart from the shape as exported without
+replaying the whole render and comparing, and even then a shape's rendered path
+is a lossy view of its Visio geometry — masters, formulas, inherited style —
+so reading one back would quietly flatten a parametric shape into a dumb
+outline. Moving, resizing and turning are better done here with the
+[Select tool](#moving-resizing-and-turning-shapes-select), where the drawing
+keeps its structure.
+
+Two more things it declines to convert rather than get wrong:
+
+- **`<text>`, `<image>` and `<use>`** are reported as skipped rather than
+  imported. Text belongs on a Visio shape, not in geometry.
+- **An SVG whose shape ids have been stripped** — by Inkscape's *Optimised SVG*
+  output, say, or by an SVG minifier — is refused outright. With no ids there is
+  no way to tell a deletion from a file that simply never had them, and the
+  wrong answer deletes the drawing. You get told why, and the embedded drawing
+  opens untouched.
 
 ### PDF export
 

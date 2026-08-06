@@ -15,6 +15,8 @@ import { openDiffView } from './diff-view.js';
 import { splitLayerPath, buildLayerTree, layersUnder, flattenLayerTree, groupKeys } from './layer-tree.js';
 import { EXPORT_SIZE_MODES, computeExportSize, describeExportSize, applyExportSize, svgViewBoxSize, defaultSizeMode, PDF_MAX_PX } from './export-scale.js';
 import { PINNED_LIBS, loadPdfLibraries, svgToPdfBlob } from './pdf-export.js';
+import { groupSvgShapesByLayer } from './svg-layers.js';
+import { readSvgEdits, applySvgEdits, summarizeSvgEdits } from './svg-import.js';
 
 const dropZone = document.getElementById('drop-zone');
 const fileInput = document.getElementById('file-input');
@@ -3745,6 +3747,65 @@ function resetView() {
   updateTransform();
 }
 
+// An SVG this app exported carries the whole drawing inside it, so re-opening
+// one has always round-tripped perfectly — including round-tripping away
+// anything done to the picture in between. What the picture can still be
+// trusted to say is which shapes are gone and which are new (src/svg-import.js
+// explains why it stops there), and since applying that rewrites the drawing it
+// is asked for rather than assumed.
+async function applySvgPictureEdits(svgText, embedded) {
+  const bytes = embedded.buffer;
+  const original = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  const format = getVisioFormat(embedded.name);
+  if (!format || format.family !== 'xml') return original;   // legacy .vsd is read-only
+
+  let plan;
+  try {
+    plan = readSvgEdits(svgText, await parseVsdx(original), { pageId: embedded.pageId });
+  } catch (e) {
+    console.error('Could not compare the SVG against the drawing it carries:', e);
+    return original;
+  }
+
+  if (!plan.ok) {
+    if (plan.reason) showError(`Opened the embedded drawing without checking for edits: ${plan.reason}`);
+    return original;
+  }
+  if (!plan.added.length && !plan.removed.length) {
+    if (plan.skipped.length) showError(describeSkippedSvgElements(plan));
+    return original;
+  }
+
+  const detail = [
+    `This SVG has been edited since it was exported: ${summarizeSvgEdits(plan)}.`,
+    '',
+    ...plan.added.slice(0, 8).map(entry =>
+      `  + ${entry.label}${entry.layer ? ` on layer "${entry.layer}"` : ''}`),
+    ...(plan.added.length > 8 ? [`  + …and ${plan.added.length - 8} more`] : []),
+    ...plan.removed.slice(0, 8).map(entry => `  − ${entry.label}`),
+    ...(plan.removed.length > 8 ? [`  − …and ${plan.removed.length - 8} more`] : []),
+    ...(plan.skipped.length ? ['', describeSkippedSvgElements(plan)] : []),
+    '',
+    'Apply them to the drawing? Cancel opens the drawing as it was exported.'
+  ].join('\n');
+
+  if (!window.confirm(detail)) return original;
+  try {
+    const applied = await applySvgEdits(original, plan);
+    return applied.buffer;
+  } catch (e) {
+    console.error('Could not apply the SVG edits:', e);
+    showError('Could not apply the SVG edits: ' + (e?.message || e));
+    return original;
+  }
+}
+
+function describeSkippedSvgElements(plan) {
+  const shown = plan.skipped.slice(0, 4).map(entry => `${entry.label} — ${entry.reason}`);
+  if (plan.skipped.length > shown.length) shown.push(`…and ${plan.skipped.length - shown.length} more`);
+  return `Not imported:\n  ${shown.join('\n  ')}`;
+}
+
 async function loadFile(file) {
   // Each document gets its own export default: a size chosen for the last
   // drawing is meaningless for this one, and the drawing most in need of being
@@ -3754,7 +3815,8 @@ async function loadFile(file) {
   if (name.endsWith('.svg')) {
     // SVGs exported by this app carry the source document as base64 metadata;
     // unwrap it and load the embedded .vsdx/.vsd as if it were opened directly.
-    const embedded = extractVsdxFromSvg(await file.text());
+    const svgText = await file.text();
+    const embedded = extractVsdxFromSvg(svgText);
     if (!embedded) {
       showError('This SVG has no embedded VSDX data (only SVGs exported by this app can be re-opened)');
       return;
@@ -3762,7 +3824,8 @@ async function loadFile(file) {
     const embeddedName = getVisioFormat(embedded.name)
       ? embedded.name
       : file.name.replace(/\.svg$/i, '') + '.vsdx';
-    file = new File([embedded.buffer], embeddedName);
+    const buffer = await applySvgPictureEdits(svgText, embedded);
+    file = new File([buffer], embeddedName);
     name = embeddedName.toLowerCase();
   }
   const format = getVisioFormat(name);
@@ -4983,7 +5046,28 @@ function buildExportSvg(size) {
   exported.querySelector('#pen-preview')?.remove();
   exported.querySelector('#shape-highlight')?.remove();
   exported.querySelector('#shape-selection')?.remove();
+  groupExportedSvgByLayer(exported);
   return applyExportSize(exported, size);
+}
+
+// Visio layers are a cell on each shape; SVG has no layers at all and Inkscape
+// reads them off a container. Regrouping on the way out is what makes the
+// exported file's layers switchable in the editor the user opens it in — and
+// src/svg-layers.js only does it where the drawing's stacking survives it,
+// which is what the shape boxes are for.
+function groupExportedSvgByLayer(exported) {
+  const page = currentPages[currentPageIndex];
+  if (!page) return null;
+  const bounds = new Map();
+  for (const entry of collectShapeBoxes(page)) {
+    if (entry.depth === 0) bounds.set(String(entry.id), entry.bounds);
+  }
+  try {
+    return groupSvgShapesByLayer(exported, page, { bounds });
+  } catch (e) {
+    console.error('Could not group the exported SVG into layers:', e);
+    return null;
+  }
 }
 
 function currentExportSize() {
@@ -5022,7 +5106,9 @@ async function exportSvgFile(size) {
         const source = currentPackageEditable
           ? await saveVsdxLayerPermissions(currentFileBuffer, currentPages, viewTemplates, layerTagColors, currentLayerTreeSettings())
           : currentFileBuffer;
-        svgStr = embedVsdxInSvg(svgStr, source, fileName.textContent || 'diagram.vsdx');
+        svgStr = embedVsdxInSvg(svgStr, source, fileName.textContent || 'diagram.vsdx', {
+          pageId: currentPages[currentPageIndex]?.id
+        });
       }
     } catch (e) {
       console.error('Failed to embed VSDX metadata in SVG, exporting plain SVG:', e);

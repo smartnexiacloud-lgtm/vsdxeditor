@@ -7,6 +7,44 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Edit an exported SVG somewhere else and bring the edits back.** Exported
+  SVGs carry the whole drawing as embedded metadata, so re-opening one always
+  round-tripped perfectly — including round-tripping away everything you had
+  done to it in between. Opening an edited SVG now compares the picture against
+  the drawing inside it and offers to apply what it finds:
+  - **shapes you deleted** — every shape's group carries its Visio id, so an id
+    the picture no longer has is a shape that was deleted (deleting a group in
+    Inkscape takes its children's ids with it, which reads correctly as deleting
+    the group);
+  - **shapes you drew** — any `path`, `rect`, `circle`, `ellipse`, `line`,
+    `polyline` or `polygon` sitting outside every shape group becomes a real
+    Visio shape, geometry, fill, stroke, dash and all. Curves come through as
+    `RelCubBezTo` rows rather than being flattened, because that row *is* SVG's
+    cubic `C`; quadratics, `S`/`T` shorthands and elliptical arcs are converted
+    exactly (arcs to within 0.02% of their radius), and a path drawn into an
+    Inkscape layer lands on the Visio layer of the same name.
+
+  Nothing is applied without being asked first, and the dialog says what it
+  found. What it deliberately does not do is guess at *modifications*: an edit
+  inside an existing shape's group cannot be told from the shape as exported
+  without replaying the render, and a shape's rendered path is a lossy view of
+  its Visio geometry (masters, formulas, inherited style), so reading one back
+  would quietly flatten the shape into a dumb outline. Moving and resizing are
+  better done with the Select tool, where the drawing keeps its structure. An
+  SVG whose shape ids have been stripped (by an "optimised SVG" export, say) is
+  refused outright rather than read as *everything was deleted*.
+- **Exported SVGs have real layers.** The export used to tag each shape with a
+  `data-layers` attribute, which no SVG editor reads: opening the file gave one
+  flat pile of paths and an empty layer panel. Shapes are now grouped into
+  `inkscape:groupmode="layer"` containers named for the Visio layers they are
+  on, and a layer switched off in the app comes out as a hidden *group* rather
+  than a pile of individually hidden shapes — so the eye in Inkscape's layer
+  panel is a real toggle. A Visio layer is a property of a shape while SVG's
+  paint order *is* document order, so collecting a layer's shapes together can
+  restack the drawing; that is only done where it provably cannot show (every
+  pair of shapes that swapped has disjoint bounding boxes). Where it would, the
+  layer is emitted as several groups in the original order — an uglier layer
+  panel, but the picture Visio draws.
 - **The parser says where each geometry row came from.** It used to answer only
   *what does this shape draw*: the master's rows and the shape's own rows were
   flattened into one effective list of numbers, which is everything the renderer

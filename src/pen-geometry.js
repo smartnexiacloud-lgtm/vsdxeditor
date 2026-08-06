@@ -233,6 +233,13 @@ export function buildPenShapeXml(nodes, style = {}, options = {}) {
     cell('ShdwPattern', '0')
   ];
 
+  // Visio writes layer membership as a semicolon-separated list of layer
+  // indexes. Nothing the pen draws is on a layer, but a path imported from an
+  // edited SVG was drawn inside one (src/svg-import.js), and dropping it on the
+  // page unlayered would lose that.
+  const layerMembers = (options.layerMembers || []).map(String).filter(Boolean);
+  if (layerMembers.length) cells.push(cell('LayerMember', layerMembers.join(';')));
+
   const geometry = [
     '<Section N="Geometry" IX="0">',
     cell('NoFill', fillOn ? '0' : '1'),

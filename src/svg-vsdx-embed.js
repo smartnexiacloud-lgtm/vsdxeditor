@@ -56,13 +56,21 @@ const DOCUMENT_RE =
 /**
  * Return a copy of `svgString` with `buffer` (ArrayBuffer or Uint8Array)
  * embedded as base64 metadata. Any previously embedded document is replaced.
+ *
+ * `options.pageId` records which page was drawn. Re-opening the SVG only needs
+ * the document, but *comparing* it against the document — to see what was added
+ * or deleted in another editor — has to know which page's shapes it is looking
+ * at, and a multi-page drawing cannot be asked.
  */
-export function embedVsdxInSvg(svgString, buffer, name) {
+export function embedVsdxInSvg(svgString, buffer, name, options = {}) {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  const pageId = options.pageId === undefined || options.pageId === null ? '' : String(options.pageId);
   const metadata =
     `<metadata id="${EMBED_ID}">` +
     `<vsdxeditor:document xmlns:vsdxeditor="${EMBED_NS}" ` +
-    `name="${escapeAttr(name || 'diagram.vsdx')}" encoding="base64">` +
+    `name="${escapeAttr(name || 'diagram.vsdx')}" ` +
+    (pageId === '' ? '' : `page="${escapeAttr(pageId)}" `) +
+    `encoding="base64">` +
     bytesToBase64(bytes) +
     `</vsdxeditor:document></metadata>`;
 
@@ -78,8 +86,9 @@ export function embedVsdxInSvg(svgString, buffer, name) {
 
 /**
  * Extract an embedded document from SVG text. Returns
- * `{ buffer: Uint8Array, name: string }` or `null` when the SVG carries no
- * embedded document.
+ * `{ buffer: Uint8Array, name: string, pageId: string|null }` or `null` when
+ * the SVG carries no embedded document. `pageId` is null for SVGs exported
+ * before it was recorded.
  */
 export function extractVsdxFromSvg(svgText) {
   const meta = METADATA_RE.exec(svgText);
@@ -87,8 +96,10 @@ export function extractVsdxFromSvg(svgText) {
   const doc = DOCUMENT_RE.exec(meta[1]);
   if (!doc) return null;
   const nameMatch = /\bname="([^"]*)"/.exec(doc[1]);
+  const pageMatch = /\bpage="([^"]*)"/.exec(doc[1]);
   return {
     buffer: base64ToBytes(doc[2].replace(/\s+/g, '')),
     name: nameMatch ? unescapeAttr(nameMatch[1]) : 'diagram.vsdx',
+    pageId: pageMatch ? unescapeAttr(pageMatch[1]) : null,
   };
 }

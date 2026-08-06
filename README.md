@@ -101,10 +101,20 @@ portable offline builds.
 - **Export** the current page as **SVG or PDF**, or **Save VSDX** with your edits
   applied. Exported SVGs embed the source `.vsdx` as base64 metadata, so dropping
   an exported `.svg` back into the app round-trips losslessly to the drawing.
+  Shapes come out grouped into **real SVG layers** (`inkscape:groupmode`) named
+  for the Visio layers they are on, so the file opens in Inkscape with a working
+  layer panel rather than one flat pile of paths.
   Large drawings can be exported at a **rescaled** intrinsic size — a metadata-only
   change that leaves the `viewBox` and every coordinate untouched — so browsers,
   Inkscape and PDF viewers stop choking on them. PDF export fetches jsPDF and
   svg2pdf.js on demand, each **pinned by SHA-256** and only after you allow it.
+- **Edit the SVG elsewhere and bring it back** — open an exported SVG in
+  Inkscape, delete things, draw things, then drop it back on the app. It
+  compares the picture with the drawing embedded in it and offers to apply what
+  you deleted and what you drew; new paths become real Visio geometry (curves
+  stay curves), and a path drawn into an Inkscape layer lands on the Visio layer
+  of the same name. Edits *inside* an existing shape are not read back — that
+  would flatten it into a dumb outline; use the Select tool for those.
 - **Compare two files** — overlay + side-by-side visual diff that highlights
   moved, added, removed, and modified shapes, and reports layer changes.
 - **Git integration** — readable `git diff` and true 3-way `git merge` for
@@ -227,6 +237,9 @@ npm run test:diff-view    # side-by-side diff rendering
 | `src/shape-inheritance.js` | Shape style inheritance resolution |
 | `src/shape-picker.js` | Page-space shape boxes: hit testing, layer listing, search |
 | `src/shape-arrange.js` | Group / ungroup / move / resize / rotate geometry: what a shape's cells become |
+| `src/svg-layers.js` | Grouping the exported SVG's shapes into real (Inkscape) layers |
+| `src/svg-path.js` | SVG path data → the pen's node model (arcs, quadratics and shorthands expanded) |
+| `src/svg-import.js` | Reading an edited SVG back: what was deleted, what was drawn |
 | `src/vsdx-diff.js` / `src/diff-view.js` | Diff engine + diff UI |
 | `scripts/vsdx-serialize.mjs` | Canonical serialize / pack / textconv / merge driver |
 | `scripts/git-difftool-serve.mjs` | `git difftool` server that opens the browser visual diff |

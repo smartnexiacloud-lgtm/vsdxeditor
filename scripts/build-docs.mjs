@@ -19,6 +19,32 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = join(root, 'dist');
 mkdirSync(outDir, { recursive: true });
 
+// The docs cross-reference each other by heading — "see [PDF export](#pdf-export)"
+// — which markdown resolves against ids GitHub adds and marked does not, so
+// every one of those links was dead on the rendered site. Slugged the way
+// GitHub slugs, since that is what the source files were written against and
+// what they still have to work as on GitHub itself.
+const headingIds = new Map();
+const slugify = (text) => text
+  .replace(/<[^>]*>/g, '')
+  .toLowerCase()
+  .replace(/[^\w\- ]+/g, '')
+  .trim()
+  .replace(/\s+/g, '-');
+
+marked.use({
+  renderer: {
+    heading(token) {
+      const text = this.parser.parseInline(token.tokens);
+      const base = slugify(text) || 'section';
+      const seen = headingIds.get(base) || 0;
+      headingIds.set(base, seen + 1);
+      const id = seen ? `${base}-${seen}` : base;
+      return `<h${token.depth} id="${id}">${text}</h${token.depth}>\n`;
+    }
+  }
+});
+
 const GITHUB = 'https://github.com/smartnexiacloud-lgtm/vsdxeditor';
 const SITE = 'https://smartnexiacloud-lgtm.github.io/vsdxeditor/';
 const DEFAULT_DESCRIPTION = 'Open, inspect, edit, compare, and version-control Microsoft Visio VSDX and VSD drawings directly in your browser.';
@@ -142,6 +168,7 @@ ${body}
 
 function renderMarkdownPage({ src, out, title, active }) {
   const md = readFileSync(join(root, src), 'utf8');
+  headingIds.clear();   // ids are unique per page, not across the site
   const body = rewriteLinks(marked.parse(md, { gfm: true }));
   const descriptions = {
     'usage.html': 'Learn how to view, edit, compare, export, and manage layers and sheets in Microsoft Visio VSDX and VSD drawings.',
