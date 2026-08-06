@@ -84,6 +84,16 @@ const chipsOf = (name) => [...(layerItem(name)?.querySelectorAll('.layer-tag') |
 const legendTags = () => [...window.document.querySelectorAll('#layers-tag-legend .tag-legend-name')].map(b => b.textContent);
 const matrixTagInput = (pageName, layerName) =>
   window.document.querySelector(`#layer-matrix-body input[aria-label="${pageName} ${layerName} tags"]`);
+// A row's actions live on its menu, so reaching one is: open the menu, click
+// the entry. Returns false when the row does not offer that action at all.
+const menuEntry = (action) => $('layer-context-menu').querySelector(`[data-layer-action="${action}"]`);
+const rowAction = (row, action) => {
+  row.querySelector('.layer-menu-btn').click();
+  const entry = menuEntry(action);
+  if (!entry || entry.disabled) return false;
+  entry.click();
+  return true;
+};
 const pageTab = (name) =>
   [...window.document.querySelectorAll('#page-tabs .page-tab-label')].find(b => b.textContent === name);
 const setInput = (input, value) => {
@@ -99,11 +109,11 @@ check('app booted and rendered', !!window.document.querySelector('#svg-container
   'error: ' + $('error-box')?.textContent);
 check('tag panel hidden while nothing is tagged', $('layers-tags')?.style.display === 'none');
 
-// 1. Tag a layer from the sidebar (🏷 button → prompt).
+// 1. Tag a layer from the sidebar (row menu → Edit tags… → prompt).
 const target = layerItems().find(item => !item.classList.contains('virtual-layer'));
 const targetName = target.querySelector('.layer-name').textContent;
 promptReply = 'electrical, as-built, electrical';
-target.querySelector('.layer-tag-edit').click();
+rowAction(target, 'tags');
 await sleep(50);
 check('sidebar shows the tags as chips',
   JSON.stringify(chipsOf(targetName)) === JSON.stringify(['electrical', 'as-built']),
@@ -113,9 +123,9 @@ check('tag legend lists both tags',
   JSON.stringify(legendTags()) === JSON.stringify(['as-built', 'electrical']), JSON.stringify(legendTags()));
 check('tagging a layer did not toggle its visibility',
   target.querySelector('input[type=checkbox]').checked === true);
-check('the editor-only Unlayered row offers no tag button',
+check('the editor-only Unlayered row cannot be tagged',
   layerItems().filter(i => i.classList.contains('virtual-layer'))
-    .every(i => !i.querySelector('.layer-tag-edit')));
+    .every(i => rowAction(i, 'tags') === false));
 
 // 2. The Layer Matrix edits the same tags, per page.
 const pageNames = [...window.document.querySelectorAll('#page-tabs .page-tab-label')].map(b => b.textContent);
@@ -209,7 +219,7 @@ if (secondPageInput) {
 
 // 7. Clearing a layer's tags removes its chips.
 promptReply = '';
-layerItem(targetName).querySelector('.layer-tag-edit').click();
+rowAction(layerItem(targetName), 'tags');
 await sleep(50);
 check('clearing tags removes the chips', chipsOf(targetName).length === 0);
 

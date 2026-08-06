@@ -44,7 +44,7 @@ The minimum is baked into the SVG when the page is drawn, so changing the zoom
 does not change it — following the zoom live would mean re-rendering the whole
 drawing on every wheel tick. Instead, **⟳ Update** re-renders the page for the
 current zoom, and lights up once you have zoomed away from the zoom the drawing
-on screen was rendered for. **Export SVG** exports what is on screen, so switch
+on screen was rendered for. **Export…** exports what is on screen, so switch
 to **True size** first if you want an export with untouched line weights.
 
 ## Layers
@@ -52,21 +52,57 @@ to **True size** first if you want an export with untouched line weights.
 Click **Layers** to open the layers sidebar. Each layer has a visibility toggle;
 turning one off hides its shapes in the rendered page.
 
-Bulk controls:
+A layer's row is its name, its checkbox and its tags — nothing else. Everything
+else a row can do is on **its menu**, which a right-click on the row opens, as
+does the **⋯** at its end:
 
-- **Select all** / **Deselect all** — toggle every layer.
-- **Search layers** box with a filter mode (*Contains*, *Equals*, *Starts
-  with*, *Ends with*).
-- **Select filter** / **Deselect filter** — apply to just the filtered layers.
+- **List shapes** — every shape on that layer, in the panel above the list.
+  Hovering a row draws a square around that shape on the canvas.
+- **Rename…** and **Move to group…** — see
+  [grouping](#grouping-layers-by-a-delimiter).
+- **Edit tags…** — see [layer tags](#layer-tags).
+- **Delete…** — see [adding and removing layers](#adding-and-removing-layers).
+
+On a [group](#grouping-layers-by-a-delimiter) row every entry speaks for the
+whole subtree: *List shapes* lists every shape on every layer under it (each
+shape once, however many of those layers it is on), and *Delete* asks once for
+the lot.
+
+### The pane itself
+
+Layer names are as long as their author made them, and the tools for working
+with them are each occasional, so:
+
+- **Drag the pane's right edge** to make it wider; double-click that edge to fit
+  it to the longest row.
+- The tools are **folded away by default** — *Filter layers*, *Find shapes*,
+  *Grouping*, *Named views*, *Tags* — each opening on its heading. A heading
+  says what it is doing while folded, so a filter left on (`"pump"`) is never a
+  drawing that mysteriously lost its layers.
+- **+** in the pane's header adds a layer.
+
+### Showing and hiding
+
+- A layer's **checkbox**, or a click anywhere on its row, toggles it.
+- Under *Filter layers*: a **Search layers** box with a filter mode (*Contains*,
+  *Equals*, *Starts with*, *Ends with*, *Doesn't contain*), then **Show
+  matches** / **Hide matches** for what the filter caught, and **Show all** /
+  **Hide all** for the whole page.
+- **Ctrl+Z** takes back the last change to what is shown — *Hide all* is one
+  click and undoing it by hand is one click per layer. **Ctrl+Shift+Z** (or
+  **Ctrl+Y**) puts it back. The history is per page and covers single toggles,
+  the bulk buttons, a group's checkbox, and applying a
+  [named view](#named-views-layer-presets); it is about visibility only, not
+  about edits to the drawing.
 
 ### Grouping layers by a delimiter
 
 Visio has no layer hierarchy — a page carries one flat list. What drawings do
 instead is put the hierarchy in the *name*: `Electrical/HV`, `Electrical/LV`,
-`Plumbing/Cold`. Tick **Group by delimiter** in the Layers sidebar to read that
-convention back out and nest the rows accordingly.
+`Plumbing/Cold`. Open **Grouping** in the Layers sidebar and tick **Group by
+delimiter** to read that convention back out and nest the rows accordingly.
 
-- The box next to it is the **delimiter**, and it is yours to choose — `/`, `.`,
+- The box below it is the **delimiter**, and it is yours to choose — `/`, `.`,
   `::`, anything. It is matched literally, not as a pattern. Emptying it returns
   the list to flat, as does unticking the box.
 - **▾ / ▸** collapses or expands a group; **Collapse all** / **Expand all** does
@@ -94,8 +130,9 @@ place to sit: the tree is derived from the names and nothing else. **So moving a
 layer is renaming it.** Give a layer another group's prefix and that is where it
 appears.
 
-Every row — group or layer — has a **✎** that edits **the full path the row
-stands for**, prefilled so you can retype just the part you want to change:
+Every row — group or layer — offers **Rename…** on its menu (right-click the
+row, or use its **⋯**), which edits **the full path the row stands for**,
+prefilled so you can retype just the part you want to change:
 
 | On a row for… | Typing… | Does |
 | --- | --- | --- |
@@ -115,7 +152,7 @@ Moving a group onto another group's name **merges** the two. That is only a
 clash if it would leave two layers on the page with the same *full* name, which
 is refused for the same reason a duplicate new layer is.
 
-With grouping switched off the same **✎** just renames — there is no path on
+With grouping switched off the same entry just renames — there is no path on
 show — but typing a delimiter into the name still files the layer into a group;
 you simply won't see it as one until you tick **Group by delimiter**.
 
@@ -123,15 +160,17 @@ Renames are ordinary layer renames, so — like the Layer Matrix's *Replace all*
 they live in memory until you **Save VSDX**, and a [named view](#named-views-layer-presets)
 that referred to a layer by its old name no longer matches it.
 
-#### The right-click menu
+#### The row menu
 
-**Right-click any row** — layer or group — for the same actions by name:
+**Right-click any row** — layer or group — or click its **⋯**:
 
 | Menu entry | On a layer row | On a group row |
 | --- | --- | --- |
-| **Rename…** | edits the row's full path (the **✎** above) | re-prefixes every layer under the group |
+| **List shapes** | every shape on the layer | every shape on every layer under the group, each listed once |
+| **Rename…** | edits the row's full path | re-prefixes every layer under the group |
 | **Move to group…** | asks only *which group*, keeping the layer's own name; blank puts it at the top level | moves the whole subtree, name intact |
 | **Edit tags…** | the row's [tags](#layer-tags) | **adds** the tags you type to every layer under the group, keeping the tags each already has |
+| **Delete…** | deletes the layer, keeping its shapes | deletes every layer under the group, asking once |
 
 **Move to group…** is the same edit as a rename with the last segment held
 fixed — useful when the name is long and only its home is wrong. It works with
@@ -139,10 +178,12 @@ grouping switched off too, where it simply prefixes the name.
 
 ### Adding and removing layers
 
-- **+ New layer…** under the bulk controls adds a layer to the page you are on.
-  Names have to be unique on the page — tags and named views identify layers by
-  name, so two layers sharing one would be indistinguishable to both.
-- **🗑** on a layer row deletes it, after telling you how many shapes are on it.
+- **+** in the sidebar's header adds a layer to the page you are on. Names have
+  to be unique on the page — tags and named views identify layers by name, so
+  two layers sharing one would be indistinguishable to both.
+- **Delete…** on a row's menu deletes that layer, after telling you how many
+  shapes are on it. On a group row it deletes every layer under the group,
+  asking once for the lot.
 - **+ New layer…** in a shape's right-click menu creates a layer *and* files
   that shape onto it — handy right after drawing something with the
   [pen](#drawing-new-shapes-pen), which lands unlayered.
@@ -152,7 +193,7 @@ are; a shape that was also on another layer simply loses this one, and a shape
 left on no layer at all appears under the editor-only **Unlayered** row, from
 where **Send Object To Layer** can file it somewhere else.
 
-Both buttons need an editable Visio XML package — a read-only binary `.vsd` or a
+Both need an editable Visio XML package — a read-only binary `.vsd` or a
 stencil has nowhere to write a layer to — and, like every other edit, they only
 change the in-memory document until you **Save VSDX**.
 
@@ -168,8 +209,9 @@ cross-page [Layer Matrix](#layer-visibility-matrix).
 Layers can carry free-form **tags** — "electrical", "draft", "as-built" — so a
 drawing can be sliced by concern rather than by layer name.
 
-- **Tag a layer**: click the 🏷 button on its row in the Layers sidebar and type
-  a comma-separated list, or type into the **Tags** column of the
+- **Tag a layer**: pick **Edit tags…** from its row menu in the Layers sidebar
+  (right-click the row, or use its **⋯**) and type a comma-separated list, or
+  type into the **Tags** column of the
   [Layer Matrix](#layer-visibility-matrix). Tags are trimmed and
   de-duplicated case-insensitively, and each page keeps its own tagging.
 - **Colours**: every tag gets a colour — derived from its name until you pick
@@ -187,7 +229,7 @@ stored in the drawing's Solution XML store — the same channel as named views,
 proven to survive a Microsoft Visio open+save (see
 [visio-roundtrip.md](visio-roundtrip.md)). Layers are matched by name, so tags
 stay attached even if Visio renumbers layers. Like every other edit they live in
-memory until you **Save VSDX** (or **Export SVG**).
+memory until you **Save Visio** (or **Export…**).
 
 ### Sheet tabs
 
@@ -197,7 +239,7 @@ memory until you **Save VSDX** (or **Export SVG**).
 - Drag sheets left or right to reorder them.
 
 At least one foreground sheet is always retained. Deletions and sorting are
-written into the document when you **Save VSDX** or **Export SVG**.
+written into the document when you **Save Visio** or **Export…**.
 
 ### Layer Visibility Matrix
 
@@ -224,13 +266,14 @@ the same diagram.
   again with an existing name overwrites it.
 - **Select a view** from the dropdown to apply it — every page's layers are set
   to that view's recorded settings. (Layers are matched by name, so a view
-  keeps working after layers are reordered.)
+  keeps working after layers are reordered.) **Ctrl+Z** takes the change back on
+  the page you are on if it was not what you wanted.
 - **Update** overwrites the selected view with the current layer settings;
   **Delete** removes it.
 
 Views are stored **inside the `.vsdx`** (in Visio's Solution XML store), so they
 travel with the file: anyone you share it with sees the same named views. Like
-every other edit, they're in memory until you **Save VSDX** (or **Export SVG**),
+every other edit, they're in memory until you **Save Visio** (or **Export…**),
 which bakes them into the downloaded file. They also survive being opened and
 re-saved in the real Microsoft Visio desktop app — see
 [visio-roundtrip.md](visio-roundtrip.md).
@@ -238,7 +281,10 @@ re-saved in the real Microsoft Visio desktop app — see
 ## Inspecting shapes
 
 - **Shape Tree** sidebar: select a shape to see its parent group hierarchy and
-  the style it inherits.
+  the style it inherits. Each row carries a **✎** that renames that shape in
+  place; double-clicking the name does the same once the row is the selected
+  one. **Enter** commits, **Esc** leaves the name alone, and a blank answer
+  clears it.
 - **Right-click a shape** to open its context menu:
   - **Rename…** — set the shape's Visio name (its `Name`/`NameU`, the same field
     Visio's own *Shape Name* dialog edits). It is what the Shape Tree, the
@@ -246,8 +292,7 @@ re-saved in the real Microsoft Visio desktop app — see
     ones you care about — `Feeder cable` rather than `Shape.7` — is worth doing
     before a drawing gets big. The prompt starts from the name it has now;
     leaving it blank clears the name and the shape falls back to its text or its
-    `Type.ID`. The same rename is available by double-clicking a row in the
-    Shape Tree.
+    `Type.ID`. The same rename is on every row of the Shape Tree.
   - **Edit XML** — open the shape's raw XML in an editor; **Apply XML** to
     commit your change or **Cancel** to discard.
   - **Select component** — every shape whose box covers the point you clicked,
@@ -269,7 +314,8 @@ selection, and again to drop it; a plain click selects just that one. Selected
 shapes are outlined on the canvas — solid for the one the Shape Tree and the
 *Send Object To Layer* list are pointed at, dashed for the rest. The same
 ctrl-click works on the rows in *Select component*, the shape search results and
-a layer's object list. Right-clicking a shape that is already selected keeps the
+a layer's object list — and picking a shape from any of them points the Layers
+sidebar at the layer that shape is on. Right-clicking a shape that is already selected keeps the
 whole selection; right-clicking anything else selects that shape instead.
 
 The **Arrange** section of the right-click menu then acts on everything
@@ -301,12 +347,15 @@ they take effect immediately in the editor and land in the file when you
 
 ### Searching for a shape
 
-The **Find shapes** box in the **Layers** sidebar searches the current page —
-type part of a shape's name or its text and the results appear right below,
-including shapes nested inside groups. **Hovering a result draws a selection
-square around that shape on the canvas**, which is the point of the list: it
-answers *where is it?* without changing anything. Clicking a result selects the
-shape and opens the Shape Tree on it, and **Enter** takes the top match.
+The **Find shapes** box — open that section in the **Layers** sidebar — searches
+the current page: type part of a shape's name or its text and the results appear
+right below, including shapes nested inside groups. **Hovering a result draws a
+selection square around that shape on the canvas**, which is the point of the
+list: it answers *where is it?* without changing anything. Clicking a result
+selects the shape, opens the Shape Tree on it, and **highlights the layer it is
+on** in the list below — clearing a filter and expanding any groups that were
+hiding that row, since a row that is not drawn cannot be pointed at. **Enter**
+takes the top match.
 
 - Matching is case-insensitive and matches anywhere in the name or the text.
 - `#7` searches by shape ID instead, on a prefix, so the list narrows as you
@@ -320,12 +369,17 @@ shape and opens the Shape Tree on it, and **Enter** takes the top match.
 
 ### Listing every shape on a layer
 
-Each row in the **Layers** sidebar has a **⊙** button that opens the list of
-every shape on that layer, including shapes nested inside groups. Hovering a row
-draws the same selection square on the canvas; clicking selects the shape. The
-button toggles the list, and opening it never changes the layer's visibility.
-The list and the search results share one panel, so opening a layer's objects
-clears the search box and vice versa.
+**List shapes** on a row's menu in the **Layers** sidebar (right-click the row,
+or use its **⋯**) opens the list of every shape on that layer, including shapes
+nested inside groups. On a [group](#grouping-layers-by-a-delimiter) row it lists
+every shape on every layer under the group, each shape once however many of them
+it is on.
+
+Hovering a row draws the same selection square on the canvas; clicking selects
+the shape and points the sidebar at its layer. Asking again closes the list, and
+opening it never changes the layer's visibility. The list and the search results
+share one panel, so opening a layer's objects clears the search box and vice
+versa.
 
 ## Drawing new shapes (Pen)
 
@@ -374,6 +428,9 @@ Drawing edits the in-memory document; use **Save Visio** to persist them.
 - **Remove Non-selected** — keep only the currently selected shapes.
 
 These edit the in-memory document; use **Save VSDX** to persist the result.
+Pruning rebuilds the whole package and re-reads it, so it takes everything else
+you have changed but not yet saved with it — closed [sheet tabs](#sheet-tabs)
+included, which stay closed.
 
 ## Comparing two files
 
@@ -386,9 +443,69 @@ These edit the in-memory document; use **Save VSDX** to persist the result.
 
 ## Exporting
 
-- **Export SVG** — download the current page as an `.svg`. The source `.vsdx`
-  (with your layer edits applied) is embedded in the SVG as base64
-  `<metadata>`, so an exported `.svg` can be dropped back into the app — or
-  handed to someone else — and opened again as the full drawing, losslessly.
-- **Save Visio** — download an XML drawing or template with all your edits (layer changes, shape
-  XML edits, pruning) applied.
+**Export…** opens a small dialog: pick a format, pick a size, done.
+
+### Format
+
+- **SVG** — the current page as an `.svg`. The source `.vsdx` (with your layer
+  edits applied) is embedded as base64 `<metadata>`, so an exported `.svg` can
+  be dropped back into the app — or handed to someone else — and opened again
+  as the full drawing, losslessly. Untick **Embed the source Visio document**
+  for a plain, much smaller SVG that will not re-open here.
+- **PDF** — see [PDF export](#pdf-export) below.
+- **Save Visio** (on the toolbar, not in this dialog) — download an XML drawing
+  or template with all your edits (layer changes, shape XML edits, pruning)
+  applied.
+
+### Size
+
+The drawing is rendered in its own units — 96 to the paper inch — so a large
+engineering drawing is tens of thousands of units across. SVG is resolution
+independent and does not care, but the programs you hand the file to very much
+do: browsers get sluggish or refuse to rasterise past ~32767px, Inkscape's PDF
+export garbles it, and **a PDF page cannot exceed 200in (14400pt) per side at
+all** — that is a hard limit in the format, not a viewer bug.
+
+So the dialog lets you say how big the file should *claim* to be:
+
+| Size | What it does |
+| --- | --- |
+| **Original size** | The drawing's true dimensions. Exact, and what you want if the target can cope. |
+| **Viewer-safe** | Longest side 19200px (200in) — the largest a PDF page can legally be. |
+| **Screen** | Longest side 4096px, comfortable for any browser. |
+| **Custom longest side** | Any size you like, in px. This one may also enlarge. |
+
+The presets are ceilings, never magnifiers: a drawing already inside the limit
+exports untouched.
+
+**Rescaling costs you nothing.** Only the root `width`/`height` change; the
+`viewBox` and every coordinate in the file are left exactly as they were. The
+result is the same vector drawing at full precision, just labelled with a size
+that ordinary software can handle. The dialog opens on **Viewer-safe** for a
+drawing too big for a PDF page, and on **Original size** for everything else.
+
+### PDF export
+
+PDF needs two libraries this app does not bundle — writing a PDF by hand would
+mean font subsetting, and half a megabyte of dependency for a feature most
+sessions never touch would be a poor trade for something you can run off a USB
+stick. So they are fetched only when you ask for a PDF, and only after you tick
+**Allow this download**:
+
+- [jsPDF](https://github.com/parallax/jsPDF) 4.2.1
+- [svg2pdf.js](https://github.com/yWorks/svg2pdf.js) 2.7.0
+
+Both come from `cdn.jsdelivr.net`, and **the bytes are checked against a
+SHA-256 digest pinned in the source before a single line of them runs**. A CDN
+that is compromised, MITM'd, typosquatted, or that quietly republishes a
+version fails the check, nothing executes, and you get told which library
+failed along with both digests. The libraries are held in memory only, so they
+are re-fetched (and re-verified) next session.
+
+The dialog shows the exact URLs and digests before you agree. If you would
+rather not download anything, export an SVG and convert it yourself — and if
+you are converting through Inkscape, set the size here first, because that is
+the step that usually produces the garbage.
+
+Offline or air-gapped? PDF export will simply fail to download; everything else
+in the app is self-contained as always.

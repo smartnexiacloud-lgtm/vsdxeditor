@@ -178,11 +178,18 @@ export function searchShapes(page, query, options = {}) {
 // Every shape carrying a layer, in paint order. `layerIndex` may be the
 // editor's virtual unlayered marker, in which case it means "no layer at all".
 export function shapesOnLayer(page, layerIndex, options = {}) {
+  return shapesOnLayers(page, [layerIndex], options);
+}
+
+// The same question asked of several layers at once, still in paint order and
+// still one row per shape — a layer group asks it of its whole subtree, where a
+// shape on two of those layers is one shape, not two rows.
+export function shapesOnLayers(page, layerIndexes, options = {}) {
   const unlayeredMarker = options.unlayeredIndex;
-  const wanted = String(layerIndex);
+  const wanted = new Set([...(layerIndexes || [])].map(String));
+  const wantsUnlayered = unlayeredMarker !== undefined && wanted.has(String(unlayeredMarker));
   return collectShapeBoxes(page).filter((entry) => (
-    unlayeredMarker !== undefined && wanted === String(unlayeredMarker)
-      ? isUnlayered(entry.shape)
-      : entry.layerMembers.some(member => String(member) === wanted)
+    (wantsUnlayered && isUnlayered(entry.shape))
+    || entry.layerMembers.some(member => wanted.has(String(member)))
   ));
 }

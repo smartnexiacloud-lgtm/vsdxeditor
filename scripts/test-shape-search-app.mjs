@@ -158,6 +158,49 @@ check('clicking a result selects that shape',
 check('and the Shape Tree opens on it',
   window.document.querySelectorAll('#shape-tree-body .shape-tree-label').length > 0);
 
+// --- 3b. …and points the sidebar at the layer it is on ---------------------
+// "Where is it?" is answered twice over: a square on the canvas, and the row
+// that says whether that square is even visible.
+const focusedRow = () => window.document.querySelector('#layers-list .layer-item.focused');
+const layerRowFor = (index) =>
+  window.document.querySelector(`#layers-list .layer-item[data-layer-index="${index}"]`);
+// A shape's own layer membership is what the renderer writes onto its group, so
+// a result with one is the case worth checking — the rest have nothing to point
+// the sidebar at.
+const layersOf = (shapeId) => (window.document
+  .querySelector(`#svg-container svg g[data-shape-id="${shapeId}"]`)
+  ?.getAttribute('data-layers') || '').split(',').filter(Boolean);
+
+await typeSearch(broad);
+const layeredRow = rows().find(row => layersOf(row.dataset.shapeId).some(index => layerRowFor(index)));
+check(`“${broad}” matched a shape on a layer in the sidebar`, !!layeredRow,
+  rows().map(r => `${r.dataset.shapeId}:[${layersOf(r.dataset.shapeId).join('|')}]`).join(' '));
+
+if (layeredRow) {
+  const wantedLayers = layersOf(layeredRow.dataset.shapeId);
+  layeredRow.click();
+  await sleep(60);
+  check('picking a result highlights the layer that shape is on',
+    wantedLayers.includes(focusedRow()?.dataset.layerIndex),
+    `${focusedRow()?.dataset.layerIndex} not in ${wantedLayers.join(',')}`);
+
+  // A filter that hides the row is cleared rather than leaving nothing to point
+  // at: the row has to exist before it can be highlighted.
+  $('layer-filter-text').value = 'zzz-no-such-layer-zzz';
+  $('layer-filter-text').dispatchEvent(new window.Event('input', { bubbles: true }));
+  await sleep(40);
+  check('the filter emptied the layer list',
+    window.document.querySelectorAll('#layers-list .layer-item').length === 0);
+  await typeSearch(broad);
+  rows().find(row => row.dataset.shapeId === layeredRow.dataset.shapeId)?.click();
+  await sleep(60);
+  check('picking a result clears a filter that hid its layer',
+    $('layer-filter-text').value === '', $('layer-filter-text').value);
+  check('and the layer row is highlighted again',
+    wantedLayers.includes(focusedRow()?.dataset.layerIndex), focusedRow()?.dataset.layerIndex);
+}
+await typeSearch(needle);
+
 // --- 4. Searching by ID ----------------------------------------------------
 await typeSearch(`#${hoveredId}`);
 check('a #ID search finds that shape',
@@ -195,9 +238,12 @@ check('Enter selects the top match',
   rows().some(row => row.dataset.shapeId === topId && row.classList.contains('selected')), topId);
 
 // --- 8. A layer's object list and the search share one panel ---------------
-const objectsButton = window.document.querySelector('#layers-list .layer-objects-btn');
+// "List shapes" is on the row's menu now, and so is everything else a row
+// does — the row itself is a name and a checkbox.
+const objectsButton = window.document.querySelector('#layers-list .layer-item .layer-menu-btn');
 if (objectsButton) {
   objectsButton.click();
+  $('layer-context-menu').querySelector('[data-layer-action="objects"]').click();
   await sleep(60);
   check('opening a layer\'s objects takes over the panel', panelVisible());
   check('and drops the search text so the panel shows one thing',
@@ -206,9 +252,9 @@ if (objectsButton) {
   check('typing again takes the panel back for the search',
     title().includes(needle), title());
   check('and no layer keeps the active mark',
-    !window.document.querySelector('#layers-list .layer-objects-btn.active'));
+    !window.document.querySelector('#layers-list .layer-menu-btn.active'));
 } else {
-  check('fixture has a layer to cross-check the panel with', false, 'no ⊙ button found');
+  check('fixture has a layer to cross-check the panel with', false, 'no row menu found');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

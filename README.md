@@ -30,16 +30,21 @@ portable offline builds.
   one, or open the full **Layer Visibility Matrix** to bulk-edit which layers
   each page shows, filter by page, search/filter layers, and rename layers with
   *Replace all*. Deleting a layer keeps its shapes: any left on no layer move to
-  an editor-only **Unlayered** row.
+  an editor-only **Unlayered** row. A row is its name and its checkbox;
+  everything else it does — list its shapes, rename, tag, delete — is on its
+  right-click menu (or its **⋯**). **Ctrl+Z** takes back the last change to what
+  is shown, so *Hide all* is one click to undo rather than one per layer. The
+  pane is resizable, and its tools (filter, find, grouping, views, tags) fold
+  away until you want them.
 - **Layer folders** — Visio's layers are flat, but drawings fake a hierarchy in
   the name (`Electrical/HV`). **Group by delimiter** turns that convention into
   a collapsible tree on a delimiter you choose, with a per-group checkbox that
   shows or hides everything under it. Since the name *is* the path, moving a
-  layer is renaming it: every row's **✎** edits the full path it stands for, so
+  layer is renaming it: a row's **Rename…** edits the full path it stands for, so
   retyping `Electrical/HV` as `Plumbing/HV` moves that layer and renaming the
-  `Electrical` group moves everything under it. Right-click any row for the same
-  actions by name — rename, move to a group, edit tags — a group row's entries
-  covering everything beneath it. No group is written to the file (the tree is
+  `Electrical` group moves everything under it. A group row's menu entries all
+  speak for its whole subtree — list every shape under it, move it, tag it,
+  delete it. No group is written to the file (the tree is
   derived from the names), but the delimiter and grouping settings are, so they
   survive a Microsoft Visio round-trip and everyone opening the drawing sees the
   same tree.
@@ -52,13 +57,15 @@ portable offline builds.
   different teams care about. Views are embedded in the `.vsdx` itself — they
   travel with the file and survive a Microsoft Visio round-trip
   (see [docs/visio-roundtrip.md](docs/visio-roundtrip.md)).
-- **Shape Tree** — inspect a shape's group hierarchy and inherited style.
+- **Shape Tree** — inspect a shape's group hierarchy and inherited style, and
+  rename any shape from its row.
 - **Find a shape** — search the page by name, text, or `#id` from the **Find
   shapes** box in the Layers sidebar; right-click for **Select component**, which
   lists every shape under the cursor (topmost first, groups included) so you can
-  reach one buried under another; or open a layer's **⊙** button for every shape
-  on that layer. In all three, hovering a row draws a selection square around
-  that shape on the canvas, and clicking selects it.
+  reach one buried under another; or pick **List shapes** from a layer's row menu
+  for everything on that layer. In all three, hovering a row draws a selection
+  square around that shape on the canvas, and clicking selects it *and* points
+  the Layers sidebar at the layer it is on.
 - **Pen tool** — draw new paths onto the drawing: click for a corner, drag to
   pull a bezier handle, with fill and stroke (colour, weight, line pattern,
   opacity) set from a bar above the canvas and previewed as you draw. Curves are
@@ -74,9 +81,13 @@ portable offline builds.
   thousandth of an inch; z-order is the order the shapes are written in, which
   is what Visio reads it from too.
 - **Prune** the drawing: *Remove Non-visible* or *Remove Non-selected* shapes.
-- **Export SVG** of the current page, or **Save VSDX** with your edits applied.
-  Exported SVGs embed the source `.vsdx` as base64 metadata, so dropping an
-  exported `.svg` back into the app round-trips losslessly to the drawing.
+- **Export** the current page as **SVG or PDF**, or **Save VSDX** with your edits
+  applied. Exported SVGs embed the source `.vsdx` as base64 metadata, so dropping
+  an exported `.svg` back into the app round-trips losslessly to the drawing.
+  Large drawings can be exported at a **rescaled** intrinsic size — a metadata-only
+  change that leaves the `viewBox` and every coordinate untouched — so browsers,
+  Inkscape and PDF viewers stop choking on them. PDF export fetches jsPDF and
+  svg2pdf.js on demand, each **pinned by SHA-256** and only after you allow it.
 - **Compare two files** — overlay + side-by-side visual diff that highlights
   moved, added, removed, and modified shapes, and reports layer changes.
 - **Git integration** — readable `git diff` and true 3-way `git merge` for
@@ -91,7 +102,7 @@ portable offline builds.
 3. Use the page tabs, zoom, and **Layers** controls to explore the drawing.
 4. Right-click a shape to edit its XML or move it between layers.
 5. Click **Compare…** and pick a second `.vsdx` to diff the two visually.
-6. **Export SVG** or **Save VSDX** to download your result.
+6. **Export…** (SVG or PDF) or **Save VSDX** to download your result.
 
 A step-by-step tour of every panel is in **[docs/usage.md](docs/usage.md)**.
 

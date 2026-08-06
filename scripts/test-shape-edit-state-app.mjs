@@ -88,7 +88,9 @@ checkbox.dispatchEvent(new window.Event('change', { bubbles: true }));
 check('layer starts out hidden by the user', isHidden(targetName));
 
 promptReply = 'electrical';
-layers[0].querySelector('.layer-tag-edit')?.click();
+// Tagging is on the row's menu: open it, then click the entry.
+layers[0].querySelector('.layer-menu-btn')?.click();
+$('layer-context-menu').querySelector('[data-layer-action="tags"]')?.click();
 await sleep(50);
 check('layer starts out tagged', chipsOf(targetName).includes('electrical'), JSON.stringify(chipsOf(targetName)));
 

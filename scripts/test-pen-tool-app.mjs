@@ -174,6 +174,7 @@ clickAt(7, 6);
 check('a path is in progress again', !!window.document.querySelector('#pen-preview'));
 const capturedBeforeExport = captured.length;
 $('btn-export').click();
+$('export-run').click();
 if (await waitFor(() => captured.length > capturedBeforeExport)) {
   const exported = await captured.at(-1).text();
   check('exported SVG omits the pen overlay', !exported.includes('pen-preview'));

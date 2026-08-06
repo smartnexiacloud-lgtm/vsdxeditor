@@ -181,5 +181,56 @@ check('a blank answer clears the name again',
   !$('shape-context-subtitle').textContent.startsWith('Feeder cable'),
   $('shape-context-subtitle').textContent);
 
+// --- 6. Renaming from the Shape Tree --------------------------------------
+// The tree is where you are when you are reading the names, so it renames too.
+// It used to offer only a double-click, which never landed: the click that
+// selected the row redrew the tree, so the second click hit a different node.
+const treeRows = () => [...window.document.querySelectorAll('#shape-tree-body .shape-tree-node')];
+const treeRowFor = (name) => treeRows().find(row =>
+  (row.querySelector('.shape-tree-label')?.firstChild?.textContent || '') === name);
+const treeEditor = () => window.document.querySelector('#shape-tree-body .shape-tree-editor');
+
+const treeTarget = translated().find(entry => entry.id !== target.id) || translated()[0];
+await rightClickShape(treeTarget);
+window.document.querySelector(`#shape-pick-list .shape-pick-row[data-shape-id="${treeTarget.id}"]`)?.click();
+await sleep(60);
+$('shape-context-menu').classList.remove('visible');
+
+const treeRow = treeRows().find(row => !row.querySelector('.shape-tree-expander:disabled')) || treeRows()[0];
+check('the Shape Tree drew rows to rename', !!treeRow, `${treeRows().length} rows`);
+check('every row offers a rename button', treeRows().every(row => !!row.querySelector('.shape-tree-rename')));
+
+const renameFrom = treeRow.querySelector('.shape-tree-label')?.firstChild?.textContent;
+treeRow.querySelector('.shape-tree-rename').click();
+await sleep(50);
+check('the rename button opens the inline editor', !!treeEditor());
+if (treeEditor()) {
+  const editor = treeEditor();
+  editor.value = 'Tree renamed';
+  editor.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  await sleep(80);
+  check('the tree shows the new name', treeLabels().includes('Tree renamed'), treeLabels().join(','));
+  check('and it replaced the name that row had', !treeLabels().includes(renameFrom) || renameFrom === 'Tree renamed');
+}
+
+// Double-clicking the name still works once the row is the selected one — the
+// selection no longer redraws the tree when it has not actually changed.
+const renamedRow = treeRowFor('Tree renamed');
+if (renamedRow) {
+  const label = renamedRow.querySelector('.shape-tree-label');
+  label.click();
+  await sleep(50);
+  const sameLabel = treeRowFor('Tree renamed')?.querySelector('.shape-tree-label');
+  check('selecting an already-selected row leaves it in place', sameLabel === label);
+  label.dispatchEvent(new window.MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+  await sleep(50);
+  check('double-clicking the name opens the editor too', !!treeEditor());
+  if (treeEditor()) {
+    treeEditor().dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await sleep(50);
+    check('Escape leaves the name alone', treeLabels().includes('Tree renamed'), treeLabels().join(','));
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

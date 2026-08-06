@@ -93,8 +93,20 @@ const rowOrder = () => [...window.document.querySelectorAll('#layers-list > div'
     ? `[${el.querySelector('.layer-group-name').textContent}]`
     : el.querySelector('.layer-name').textContent);
 const indent = (el) => parseInt(el.style.paddingLeft || '0', 10) || 0;
-// One pencil per row, whichever kind of row it is.
-const renameButton = (row) => row.querySelector('.layer-rename, .layer-group-rename');
+// One menu per row, whichever kind of row it is, with the rename on it. This
+// hands back a click()-able stand-in so the checks below still read as
+// "click the rename on this row".
+const renameButton = (row) => {
+  const button = row?.querySelector('.layer-menu-btn');
+  if (!button) return null;
+  return {
+    click: () => {
+      button.click();
+      const entry = $('layer-context-menu').querySelector('[data-layer-action="rename"]');
+      if (!entry.disabled) entry.click();
+    },
+  };
+};
 // The rows drawn between a group and the next row at its own indent.
 const layersUnderRow = (group) => {
   const rows = [...window.document.querySelectorAll('#layers-list > div')];
@@ -386,6 +398,52 @@ check('tagging a group tags every layer under it',
   underSite.map(n => `${n}:${tagsOf(n)}`).join(' '));
 check('without dropping the tags those layers already had',
   tagsOf('HV').includes('as-built') && tagsOf('HV').includes('draft'), tagsOf('HV').join(','));
+
+// Listing a group's shapes answers "what is in Electrical?" when Electrical is
+// a naming convention rather than a layer: it is every shape on every layer
+// under the row, each listed once however many of them it is on.
+const objectRows = () => [...window.document.querySelectorAll('#layer-objects-list .layer-object-row')];
+// The layers made above carry no shapes, so file the drawing's own layer — the
+// one that does — under the group first, and put it back afterwards.
+const drawnLayer = startingNames.find(name => name !== 'Unlayered');
+check('the fixture has a layer with shapes on it', !!drawnLayer, startingNames.join(','));
+if (drawnLayer) {
+  rightClick(layerItem(drawnLayer));
+  promptReply = 'Site';
+  menuItem('move').click();
+  await sleep(60);
+
+  rightClick(layerItem(drawnLayer));
+  menuItem('objects').click();
+  await sleep(60);
+  const ownShapes = objectRows().map(r => r.dataset.shapeId);
+  check('a layer row lists its own shapes', ownShapes.length > 0, `${ownShapes.length} rows`);
+  check('under a title naming the layer',
+    $('layer-objects-title').textContent.includes(drawnLayer), $('layer-objects-title').textContent);
+
+  rightClick(groupRow('Site'));
+  check('a group row offers the same listing',
+    menuItem('objects').textContent === 'List shapes under Site', menuItem('objects').textContent);
+  menuItem('objects').click();
+  await sleep(60);
+  const siteShapes = objectRows().map(r => r.dataset.shapeId);
+  check('which is titled after the group',
+    $('layer-objects-title').textContent.startsWith('Site'), $('layer-objects-title').textContent);
+  check('and lists every shape under it, whichever layer they sit on',
+    ownShapes.length > 0 && ownShapes.every(id => siteShapes.includes(id)),
+    `${ownShapes.join(',')} ⊄ ${siteShapes.join(',')}`);
+  check('each shape once, however many of those layers it is on',
+    new Set(siteShapes).size === siteShapes.length, siteShapes.join(','));
+  $('layer-objects-close').click();
+  await sleep(30);
+
+  rightClick(layerItem(drawnLayer));
+  promptReply = '';
+  menuItem('move').click();
+  await sleep(60);
+  check('and the borrowed layer went back where it was',
+    layerTitles().includes(drawnLayer), layerTitles().join(','));
+}
 
 // --- 8. Back to flat -------------------------------------------------------
 $('layer-tree-enable').checked = false;

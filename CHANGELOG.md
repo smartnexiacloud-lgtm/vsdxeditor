@@ -7,6 +7,77 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Export at a size other programs can cope with.** A drawing is rendered in
+  its own units, 96 to the paper inch, so a large one is tens of thousands of
+  units across. SVG is resolution independent and does not care; the software
+  you hand the file to does — browsers give up rasterising past ~32767px,
+  Inkscape's PDF export garbles it, and **a PDF page cannot exceed 200in
+  (14400pt) per side at all**, which is a limit in the format rather than a
+  viewer bug. **Export…** now opens a dialog offering *Original size*,
+  *Viewer-safe* (longest side 19200px — the largest a PDF page can legally be),
+  *Screen* (4096px), or a custom longest side. Rescaling costs nothing: only the
+  root `width`/`height` change, the `viewBox` and every coordinate are left
+  exactly as they were, so it is the same vector drawing at full precision
+  merely labelled with a size ordinary software can handle. The presets are
+  ceilings and never magnifiers, so a drawing already inside the limit exports
+  untouched, and the dialog opens on *Original size* unless the drawing is too
+  big for a PDF page. Exports also carry a real intrinsic size now — the
+  on-screen SVG says `width="100%"`, which in a file means "100% of nothing" and
+  leaves every program to invent its own answer.
+- **PDF export**, via jsPDF and svg2pdf.js fetched on demand and **pinned by
+  SHA-256**. Writing a PDF from scratch would mean font subsetting, and half a
+  megabyte of dependency for a feature most sessions never touch is the wrong
+  trade for an app you can run off a USB stick — so nothing is downloaded until
+  you choose PDF and tick *Allow this download*, and the bytes are checked
+  against a digest in the source before a single line of them runs. A CDN that
+  is compromised, MITM'd, typosquatted or that quietly republishes a version
+  fails the check, nothing executes, and the dialog names the library and shows
+  both digests. The libraries are held in memory only, so they are re-fetched
+  and re-verified next session. The dialog lists the exact URLs and digests
+  before you agree, and `npm run test:pdf-live` checks the pinned digests
+  against what the CDN actually serves. The page comes out in the drawing's
+  own orientation — jsPDF reorders `format` to agree with `orientation`, so a
+  wide drawing asked for a portrait page would be rendered off the edge of it.
+- **Export a plain SVG.** *Embed the source Visio document* is a checkbox now;
+  untick it for a much smaller SVG that will not re-open in this app.
+- **Undo what you just hid.** **Ctrl+Z** takes back the last change to which
+  layers are shown, **Ctrl+Shift+Z** (or **Ctrl+Y**) puts it back. *Hide all* is
+  one click and undoing it by hand was one click per layer, which is the wrong
+  trade. Visibility is a small, self-contained piece of state — the set of
+  hidden layers — so the history is a stack of those sets rather than a general
+  command history: it covers single toggles, the bulk buttons, a group's
+  checkbox and applying a named view, and nothing else. It is per page, because
+  restoring one page's visibility onto another would be nonsense, and inside a
+  text box the browser's own undo is left alone.
+- **A resizable Layers pane, with its tools folded away.** Layer names are as
+  long as their author made them and a fixed 240px pane truncated half of an
+  `Electrical/HV/Feeders` tree, so the pane's right edge now drags (double-click
+  it to fit the longest row). Filtering layers, finding shapes, choosing a
+  delimiter, named views and tags are each occasional, so each is a section that
+  starts folded and opens on its heading — the list of layers is what the pane
+  is for. A folded heading still says what it is doing (`"pump"`, `on · /`), so
+  a filter left on is never a drawing that mysteriously lost its layers.
+- **One menu per layer row.** A row is its name, its checkbox and its tags;
+  everything else it can do is on its menu, which a right-click opens as does
+  the **⋯** at its end: **List shapes**, **Rename…**, **Move to group…**,
+  **Edit tags…**, **Delete…**. The strip of ⊙ ✎ 🏷 🗑 icons that used to sit on
+  every row is gone, and the name has that width back. On a group row every
+  entry speaks for the whole subtree, *List shapes* included — that lists every
+  shape on every layer under the group, each shape once however many of those
+  layers it is on, which is the only way to ask "what is in Electrical?" when
+  Electrical is a naming convention rather than a layer.
+- **Finding a shape now says which layer it is on.** Picking a shape from the
+  search results, from a layer's object list or from *Select component*
+  highlights the row for its layer in the Layers sidebar — clearing a filter and
+  expanding any collapsed groups that were hiding that row, because a row that
+  is not drawn cannot be pointed at. "Where is it?" has two answers and the
+  second one is the one that says whether you can even see it.
+- **Rename a shape from the Shape Tree row.** Every row has a **✎**; the
+  double-click that was supposed to do this never landed, because the click that
+  selected the row redrew the tree and the second click hit a different element.
+  Selecting a shape that is already selected no longer redraws anything, so the
+  double-click works too.
+
 - **Group layers into a tree by a delimiter.** Visio's layer model is flat, but
   drawings fake a hierarchy in the *name* — `Electrical/HV`, `Electrical/LV`.
   **Group by delimiter** in the Layers sidebar reads that convention back out
@@ -18,8 +89,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   flat, as does unticking the box.
 
   **Moving a layer is renaming it**, because the name *is* the path — nothing in
-  the file records where a layer sits. Every row, group or layer, has a **✎**
-  that edits the full path it stands for: retype `Electrical/HV` as
+  the file records where a layer sits. Every row, group or layer, offers a
+  **Rename…** that edits the full path it stands for: retype `Electrical/HV` as
   `Plumbing/HV` and the layer moves, as `HV` and it moves out to the top level.
   On a group row the same edit re-prefixes every layer beneath it, so renaming
   `Electrical` to `Site/Power` moves the whole subtree; only the part of each
@@ -28,9 +99,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   that would leave two layers on a page sharing a full name is refused, for the
   same reason creating a duplicate is. A row that is both a layer and a parent —
   `Electrical` next to `Electrical/HV` — renames itself and its children
-  together. With grouping off the button is a plain rename, which is also the
-  first way to rename a single layer from the sidebar rather than through the
-  Layer Matrix's *Replace all*.
+  together. With grouping off it is a plain rename, which is also the first way
+  to rename a single layer from the sidebar rather than through the Layer
+  Matrix's *Replace all*.
 
   No group is written to the file — the tree is derived from the layer names
   every time, and every layer keeps its own row and index. The *settings* do
@@ -74,8 +145,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   changing anything. Clicking selects the shape and opens the Shape Tree on it,
   **Enter** takes the top match, **Esc** closes.
 
-  The results share the panel a layer's **⊙** button already used, because both
-  answer the same question with the same list, so opening one clears the other.
+  The results share the panel a layer's own shape list already used, because
+  both answer the same question with the same list, so opening one clears the
+  other.
   Shapes on hidden layers stay listed and are marked `hidden` — a shape you
   cannot see is usually the one you are hunting for. Typing is debounced and the
   list stops at the first 300 matches, since re-walking a large page's shape
@@ -97,8 +169,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   every entry speaks for the whole subtree, and *Add tags to N layers…* adds the
   tags you type to each layer under the group without disturbing the tags they
   already carry.
-- **Add and remove layers.** The Layers sidebar has a **+ New layer…** button,
-  each layer row has a **🗑** to delete it, and a shape's right-click menu can
+- **Add and remove layers.** The Layers sidebar has an add-layer button, each
+  layer row a **Delete…** on its menu, and a shape's right-click menu can
   create a layer and file the shape onto it in one step — the common case after
   drawing something with the pen. Deleting a layer never deletes its drawing:
   shapes on it stay, and any left on no layer at all show up under the
@@ -132,8 +204,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Finding a shape: "Select component" and per-layer object lists.**
   Right-clicking now lists every shape whose box covers that point, topmost
   first and groups included, so a shape buried under another one is reachable —
-  and each layer in the sidebar has a **⊙** button listing every shape on it,
-  nested shapes included. Hovering a row in either list draws a selection square
+  and each layer in the sidebar offers a **List shapes** that lists every shape
+  on it, nested shapes included. Hovering a row in either list draws a selection square
   around that shape on the canvas; clicking selects it. Hidden shapes stay
   listed and are marked as hidden, since a shape you cannot see is usually the
   one you are hunting for.
@@ -152,6 +224,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   already exist.
 
 ### Fixed
+- **Closed sheet tabs came back when you pruned the drawing.** *Remove
+  Non-selected* and *Remove Non-visible* pruned the file bytes as they were last
+  parsed, then re-read the result — so every page you had closed, every sheet
+  you had renamed or reordered, and any tag colours or named views you had not
+  saved came back with it. Both now prune the package with your pending edits
+  already written into it, the same step the pen, arrange and XML-edit paths
+  already took.
 - **Hand-editing a shape's XML no longer resets the layers.** Applying a shape
   edit rebuilds the package and re-parses it, and the sidebar is rebuilt from
   the result — but layer visibility toggles, renames, tags and per-shape layer

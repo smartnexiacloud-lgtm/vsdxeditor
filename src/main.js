@@ -3,10 +3,12 @@ import { embedVsdxInSvg, extractVsdxFromSvg } from './svg-vsdx-embed.js';
 import { parseVsd } from './vsd-parser.js';
 import { renderPage, pageCoordinateWidth } from './svg-renderer.js';
 import { buildPenShapeXml, penPathToSvgD } from './pen-geometry.js';
-import { shapesAtPoint, shapesOnLayer, searchShapes } from './shape-picker.js';
+import { shapesAtPoint, shapesOnLayer, shapesOnLayers, searchShapes } from './shape-picker.js';
 import { planGroupShapes, planUngroupShape, isGroupShape, inheritsFromMaster } from './shape-arrange.js';
 import { openDiffView } from './diff-view.js';
 import { splitLayerPath, buildLayerTree, layersUnder, flattenLayerTree, groupKeys } from './layer-tree.js';
+import { EXPORT_SIZE_MODES, computeExportSize, describeExportSize, applyExportSize, svgViewBoxSize, defaultSizeMode, PDF_MAX_PX } from './export-scale.js';
+import { PINNED_LIBS, loadPdfLibraries, svgToPdfBlob } from './pdf-export.js';
 
 const dropZone = document.getElementById('drop-zone');
 const fileInput = document.getElementById('file-input');
@@ -35,6 +37,7 @@ const layerTreeDelimiterInput = document.getElementById('layer-tree-delimiter');
 const layerTreeToggleAll = document.getElementById('layer-tree-toggle-all');
 const layerContextMenu = document.getElementById('layer-context-menu');
 const layerContextTitle = document.getElementById('layer-context-title');
+const layersResizer = document.getElementById('layers-resizer');
 const layerMatrixModal = document.getElementById('layer-matrix-modal');
 const layerMatrixBody = document.getElementById('layer-matrix-body');
 const layerMatrixClose = document.getElementById('layer-matrix-close');
@@ -83,6 +86,21 @@ const shapeXmlClose = document.getElementById('shape-xml-close');
 const shapeXmlCancel = document.getElementById('shape-xml-cancel');
 const shapeXmlSave = document.getElementById('shape-xml-save');
 const shapeXmlTextarea = document.getElementById('shape-xml-textarea');
+const exportModal = document.getElementById('export-modal');
+const exportClose = document.getElementById('export-close');
+const exportCancel = document.getElementById('export-cancel');
+const exportRun = document.getElementById('export-run');
+const exportFormat = document.getElementById('export-format');
+const exportSize = document.getElementById('export-size');
+const exportCustomRow = document.getElementById('export-custom-row');
+const exportCustomPx = document.getElementById('export-custom-px');
+const exportSummary = document.getElementById('export-summary');
+const exportEmbed = document.getElementById('export-embed');
+const exportEmbedRow = document.getElementById('export-embed-row');
+const exportPdfGate = document.getElementById('export-pdf-gate');
+const exportPdfLibs = document.getElementById('export-pdf-libs');
+const exportPdfConsent = document.getElementById('export-pdf-consent');
+const exportStatus = document.getElementById('export-status');
 const penButton = document.getElementById('btn-pen');
 const penBar = document.getElementById('pen-bar');
 const penStrokeOn = document.getElementById('pen-stroke-on');
@@ -148,8 +166,11 @@ let penDrag = null;
 let penCursor = null;
 let penCommitting = false;
 // Which layer's object list is open in the sidebar, and the shapes offered by
-// the last right-click, topmost first.
+// the last right-click, topmost first. A group row lists the shapes of every
+// layer under it, so the open list is a set of indexes and a title rather than
+// one index.
 let layerObjectsIndex = null;
+let layerObjectsGroup = null;
 let shapeSearchQuery = '';
 let contextPickEntries = [];
 // How close (in device pixels) a click has to land to the first anchor to be
@@ -500,15 +521,132 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') hidePageTabContextMenu();
 });
 
+// ── The sidebar's own furniture ───────────────────────────────────────────
+// Filtering layers, searching shapes, picking a delimiter and saving a view are
+// each occasional; the list of layers is what the pane is for. So every tool
+// folds away, closed until asked for, and the list keeps the room. The state is
+// the `hidden` attribute on the body — nothing else tracks it.
+
+function sectionToggle(name) {
+  return layersSidebar?.querySelector(`[data-section-toggle="${name}"]`) || null;
+}
+
+function sectionBody(name) {
+  return layersSidebar?.querySelector(`[data-section-body="${name}"]`) || null;
+}
+
+function isSectionOpen(name) {
+  const body = sectionBody(name);
+  return Boolean(body && !body.hidden);
+}
+
+function setSectionOpen(name, open) {
+  const body = sectionBody(name);
+  const toggle = sectionToggle(name);
+  if (!body || !toggle) return;
+  body.hidden = !open;
+  toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  const twisty = toggle.querySelector('.sidebar-section-twisty');
+  if (twisty) twisty.textContent = open ? '▾' : '▸';
+}
+
+function toggleSection(name) {
+  setSectionOpen(name, !isSectionOpen(name));
+  if (isSectionOpen(name)) {
+    const body = sectionBody(name);
+    body?.querySelector('input, select, button')?.focus?.();
+  }
+}
+
+// A folded section still has to say what it is doing, or a filter left on looks
+// like a drawing that lost its layers.
+function updateSectionBadges() {
+  const badge = (name, text) => {
+    const el = layersSidebar?.querySelector(`[data-section-badge="${name}"]`);
+    if (el) el.textContent = text || '';
+  };
+  const filter = String(layerFilterText?.value || '').trim();
+  badge('filter', filter ? `“${filter}”` : '');
+  const search = String(shapeSearchInput?.value || '').trim();
+  badge('find', search ? `“${search}”` : '');
+  badge('grouping', layerTreeActive() ? `on · ${layerTreeDelimiter}` : '');
+  const view = selectedViewIndex !== null ? viewTemplates[selectedViewIndex] : null;
+  badge('views', view ? view.name : '');
+  badge('tags', getPageTagUsage().length ? String(getPageTagUsage().length) : '');
+}
+
+layersSidebar?.addEventListener('click', (event) => {
+  const toggle = event.target.closest?.('[data-section-toggle]');
+  if (!toggle) return;
+  toggleSection(toggle.dataset.sectionToggle);
+});
+
+// ── Resizing the pane ─────────────────────────────────────────────────────
+// Layer names are as long as their author made them, and a fixed 240px pane
+// truncates half of a "Electrical/HV/Feeders" tree. The width is the user's,
+// and it outlives page switches because it is a property of the pane, not of
+// what is in it.
+const MIN_SIDEBAR_WIDTH = 160;
+const MAX_SIDEBAR_WIDTH = 720;
+let sidebarWidth = 240;
+
+function setSidebarWidth(width) {
+  sidebarWidth = Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, Math.round(width)));
+  layersSidebar.style.width = `${sidebarWidth}px`;
+  layersSidebar.style.minWidth = `${sidebarWidth}px`;
+}
+
+if (layersResizer) {
+  let dragging = false;
+  const onMove = (event) => {
+    if (!dragging) return;
+    event.preventDefault();
+    setSidebarWidth(event.clientX - layersSidebar.getBoundingClientRect().left);
+  };
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    layersResizer.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  };
+  layersResizer.addEventListener('mousedown', (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    dragging = true;
+    layersResizer.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  });
+  // Double-clicking the handle is the usual "give it what it needs": widen to
+  // the longest row rather than making the user aim for it.
+  layersResizer.addEventListener('dblclick', () => {
+    const rows = [...layersList.querySelectorAll('.layer-item, .layer-group-item')];
+    const widest = rows.reduce((max, row) => Math.max(max, row.scrollWidth || 0), 0);
+    setSidebarWidth(widest ? widest + 48 : 240);
+  });
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function updateSidebarChrome() {
+  const visible = layersSidebar.classList.contains('visible');
+  layersResizer?.classList.toggle('visible', visible);
+}
+
 function buildLayersSidebar() {
   layersList.innerHTML = '';
-  if (!currentPages.length) return;
+  if (!currentPages.length) {
+    updateSidebarChrome();
+    return;
+  }
   const layers = getCurrentLayers();
   refreshTagUI();
 
   if (layers.length === 0) {
     layersSidebar.classList.remove('visible');
     document.getElementById('btn-layers').classList.remove('active');
+    updateSidebarChrome();
     return;
   }
 
@@ -523,6 +661,8 @@ function buildLayersSidebar() {
 
   updateLayersCount(layers.length, visibleLayers.length);
   updateLayerBulkButtons(visibleLayers.length);
+  updateSectionBadges();
+  updateSidebarChrome();
 }
 
 // `label` overrides the visible text without touching the titles or aria
@@ -569,22 +709,8 @@ function createLayerRow(layer, depth = 0, label = null, node = null) {
 
   item.addEventListener('focus', () => focusLayerRow(layer.index, false));
 
-  const objects = document.createElement('button');
-  objects.type = 'button';
-  objects.className = 'layer-objects-btn';
-  if (String(layer.index) === String(layerObjectsIndex)) objects.classList.add('active');
-  objects.textContent = '⊙';
-  objects.tabIndex = -1;
-  objects.title = `List every shape on ${displayName}`;
-  objects.setAttribute('aria-label', `List shapes on ${displayName}`);
-  objects.addEventListener('click', (e) => {
-    e.stopPropagation();
-    openLayerObjects(layer.index);
-  });
-
   item.appendChild(checkbox);
   item.appendChild(name);
-  item.appendChild(objects);
 
   const tags = document.createElement('span');
   tags.className = 'layer-tags';
@@ -598,40 +724,11 @@ function createLayerRow(layer, depth = 0, label = null, node = null) {
   }
   item.appendChild(tags);
 
-  // Tags need somewhere to be written back to, which only editable XML
-  // packages have.
-  if (!isVirtualLayer(layer) && currentPackageEditable) {
-    item.appendChild(createRenameButton(node, layer));
-
-    const tagButton = document.createElement('button');
-    tagButton.type = 'button';
-    tagButton.className = 'layer-tag-edit';
-    tagButton.textContent = '🏷';
-    tagButton.tabIndex = -1;
-    tagButton.title = `Edit tags for ${displayName}`;
-    tagButton.setAttribute('aria-label', `Edit tags for ${displayName}`);
-    // The row click toggles visibility; tagging must not also flip the layer.
-    tagButton.addEventListener('click', (e) => {
-      e.stopPropagation();
-      promptLayerTags(layer);
-    });
-    item.appendChild(tagButton);
-
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.className = 'layer-delete';
-    remove.textContent = '🗑';
-    remove.tabIndex = -1;
-    remove.title = `Delete ${displayName}`;
-    remove.setAttribute('aria-label', `Delete layer ${displayName}`);
-    remove.addEventListener('click', (e) => {
-      e.stopPropagation();
-      deleteLayer(layer);
-    });
-    item.appendChild(remove);
-  }
-
-  if (!isVirtualLayer(layer) && currentPackageEditable) attachLayerContextMenu(item, layer, node);
+  // Everything a row can do other than show and hide is on its menu, which is
+  // also what a right-click opens — the button is there because a right-click
+  // is not a thing anyone tries on a list they have not been told about.
+  item.appendChild(createLayerMenuButton({ layer, node }, displayName));
+  attachLayerContextMenu(item, layer, node);
 
   // Nesting is drawn with padding rather than nested elements, so a row is
   // the same row whether or not the tree view is on.
@@ -912,28 +1009,27 @@ function afterLayerRename() {
   if (layerMatrixModal.classList.contains('visible')) buildLayerMatrix();
 }
 
-// One pencil per row, whatever the row is. `node` is null with grouping off,
-// where a rename is only a rename; with it on, the node is what says how much
-// of each name the row speaks for.
-function createRenameButton(node, layer) {
-  const rename = document.createElement('button');
-  rename.type = 'button';
-  rename.className = node && !node.layer ? 'layer-group-rename' : 'layer-rename';
-  rename.textContent = '✎';
-  rename.tabIndex = -1;
-  const label = node
-    ? (node.children.length
-      ? `Rename or move ${node.path} and everything under it`
-      : `Rename or move ${node.path}`)
-    : `Rename ${getLayerDisplayName(layer)}`;
-  rename.title = label;
-  rename.setAttribute('aria-label', label);
-  rename.addEventListener('click', (e) => {
+// One button per row, whatever the row is: it opens the row's menu, which is
+// the same menu a right-click opens and speaks for the same thing — the layer,
+// or everything under a group.
+function createLayerMenuButton(target, displayName) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'layer-menu-btn';
+  button.textContent = '⋯';
+  button.tabIndex = -1;
+  const label = `Actions for ${displayName}`;
+  button.title = label;
+  button.setAttribute('aria-label', label);
+  button.setAttribute('aria-haspopup', 'menu');
+  if (layerObjectsMatchesTarget(target)) button.classList.add('active');
+  // The row click toggles visibility; opening the menu must not also flip it.
+  button.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (node) renameLayerPath(node);
-    else promptRenameLayer(layer);
+    const rect = button.getBoundingClientRect();
+    showLayerContextMenu(target, rect.left, rect.bottom + 2);
   });
-  return rename;
+  return button;
 }
 
 // A group has no layer of its own to tag, so tagging one means tagging what is
@@ -978,13 +1074,15 @@ function hideLayerContextMenu() {
 }
 
 function showLayerContextMenu(target, x, y) {
-  if (!layerContextMenu || !currentPackageEditable) return;
-  // The virtual "Unlayered" row is an editor fiction: nothing on this menu can
-  // be done to it.
-  if (target.layer && isVirtualLayer(target.layer)) return;
+  if (!layerContextMenu) return;
 
   const node = target.node;
   const isGroup = Boolean(node && !node.layer);
+  // The virtual "Unlayered" row is an editor fiction with nothing to write to,
+  // so it can be listed but not renamed, tagged or deleted. Neither can
+  // anything at all in a package that is not editable.
+  const virtual = Boolean(target.layer && isVirtualLayer(target.layer));
+  const editable = currentPackageEditable && !virtual;
   const label = node ? node.path : getLayerDisplayName(target.layer);
   const under = node ? layersUnder(node).filter(layer => !isVirtualLayer(layer)).length : 1;
 
@@ -992,11 +1090,16 @@ function showLayerContextMenu(target, x, y) {
   if (layerContextTitle) layerContextTitle.textContent = isGroup ? `${label} (${under} layers)` : label;
 
   const item = action => layerContextMenu.querySelector(`[data-layer-action="${action}"]`);
+  item('objects').textContent = isGroup ? `List shapes under ${node.segment}` : 'List shapes';
   item('rename').textContent = isGroup ? 'Rename group…' : 'Rename…';
+  item('rename').disabled = !editable;
   item('move').textContent = isGroup ? 'Move group…' : 'Move to group…';
   // Without a delimiter there is no such thing as a group to move into.
-  item('move').disabled = !layerTreeDelimiter;
+  item('move').disabled = !editable || !layerTreeDelimiter;
   item('tags').textContent = isGroup ? `Add tags to ${under} layers…` : 'Edit tags…';
+  item('tags').disabled = !editable;
+  item('delete').textContent = isGroup ? `Delete ${under} layer${under === 1 ? '' : 's'}…` : 'Delete…';
+  item('delete').disabled = !editable;
 
   layerContextMenu.style.display = 'block';
   const rect = layerContextMenu.getBoundingClientRect();
@@ -1022,7 +1125,10 @@ layerContextMenu?.addEventListener('click', (event) => {
   const action = button.dataset.layerAction;
   hideLayerContextMenu();
 
-  if (action === 'rename') {
+  if (action === 'objects') {
+    if (node && !node.layer) openLayerGroupObjects(node);
+    else openLayerObjects(layer ? layer.index : node.layer.index);
+  } else if (action === 'rename') {
     if (node) renameLayerPath(node);
     else promptRenameLayer(layer);
   } else if (action === 'move') {
@@ -1031,6 +1137,9 @@ layerContextMenu?.addEventListener('click', (event) => {
   } else if (action === 'tags') {
     if (node && !node.layer) promptGroupTags(node);
     else promptLayerTags(layer);
+  } else if (action === 'delete') {
+    if (node && !node.layer) deleteLayers(layersUnder(node).filter(candidate => !isVirtualLayer(candidate)), node.path);
+    else deleteLayers([layer || node.layer]);
   }
 });
 
@@ -1092,11 +1201,8 @@ function createLayerGroupRow(node) {
   count.className = 'layer-group-count';
 
   item.append(createLayerTwisty(node), checkbox, name, count);
-  // Renaming writes to the layers themselves, so it needs somewhere to write.
-  if (currentPackageEditable) {
-    item.appendChild(createRenameButton(node, null));
-    attachLayerContextMenu(item, null, node);
-  }
+  item.appendChild(createLayerMenuButton({ layer: null, node }, node.path));
+  attachLayerContextMenu(item, null, node);
   applyLayerGroupState(item, node);
   return item;
 }
@@ -1457,25 +1563,39 @@ function stripLayerFromShapes(shapes, layerIndex) {
   return changed;
 }
 
-function deleteLayer(layer) {
+// One layer or a whole group of them: a group row's delete means every layer
+// under it, and asking once for the lot beats asking once per layer.
+// `groupLabel` is the group's path when that is what was asked for.
+function deleteLayers(layers, groupLabel = null) {
   const page = currentPages[currentPageIndex];
-  if (!page || !currentPackageEditable || !layer || isVirtualLayer(layer)) return false;
+  const doomed = (layers || []).filter(layer => layer && !isVirtualLayer(layer));
+  if (!page || !currentPackageEditable || !doomed.length) return false;
 
-  const name = getLayerDisplayName(layer);
-  const count = shapesOnLayer(page, layer.index).length;
+  const shapeIds = new Set();
+  for (const layer of doomed) {
+    for (const entry of shapesOnLayer(page, layer.index)) shapeIds.add(String(entry.id));
+  }
+  const count = shapeIds.size;
   // Deleting a layer is not deleting its drawing: shapes that were only on it
   // are orphaned to the editor's Unlayered row, where Send Object To Layer can
   // file them again. Shapes on other layers as well simply lose this one.
   const fate = count
     ? `Its ${count} shape${count === 1 ? '' : 's'} stay in the drawing; any that are on no other layer become unlayered.`
     : 'No shapes are on it.';
-  if (!window.confirm(`Delete layer "${name}"?\n\n${fate}`)) return false;
+  const what = groupLabel
+    ? `Delete the ${doomed.length} layer${doomed.length === 1 ? '' : 's'} under "${groupLabel}"?`
+    : `Delete layer "${getLayerDisplayName(doomed[0])}"?`;
+  if (!window.confirm(`${what}\n\n${fate}`)) return false;
 
-  stripLayerFromShapes(page.shapes, layer.index);
-  page.layers = (page.layers || []).filter(candidate => String(candidate.index) !== String(layer.index));
-  hiddenLayers.delete(layer.index);
-  if (String(focusedLayerIndex) === String(layer.index)) focusedLayerIndex = null;
-  if (String(layerObjectsIndex) === String(layer.index)) closeLayerObjects();
+  const gone = new Set(doomed.map(layer => String(layer.index)));
+  for (const layer of doomed) {
+    stripLayerFromShapes(page.shapes, layer.index);
+    hiddenLayers.delete(layer.index);
+    if (String(focusedLayerIndex) === String(layer.index)) focusedLayerIndex = null;
+  }
+  page.layers = (page.layers || []).filter(candidate => !gone.has(String(candidate.index)));
+  if (layerObjectsIndex !== null && gone.has(String(layerObjectsIndex))) closeLayerObjects();
+  if (layerObjectsGroup) closeLayerObjects();
 
   buildLayersSidebar();
   if (layerMatrixModal.classList.contains('visible')) buildLayerMatrix();
@@ -1531,7 +1651,52 @@ function updateLayerBulkButtons(visibleCount) {
   layersDeselectFiltered.disabled = disabled || visibleCount === 0;
 }
 
+// ── Undoing a change of what is shown ─────────────────────────────────────
+// "Hide all" is one click and undoing it by hand is one click per layer, which
+// is the wrong trade. Visibility is a small, self-contained piece of state — the
+// set of hidden layer indexes — so the undo for it is a stack of those sets
+// rather than a general command history. It is per page, because restoring one
+// page's visibility onto another would be nonsense; switching pages leaves each
+// page's stack where it was.
+const MAX_VISIBILITY_UNDO = 60;
+const visibilityHistoryByPage = new Map();
+
+function visibilityHistory(pageKey = getCurrentPageKey()) {
+  if (!visibilityHistoryByPage.has(pageKey)) visibilityHistoryByPage.set(pageKey, { undo: [], redo: [] });
+  return visibilityHistoryByPage.get(pageKey);
+}
+
+// Called before the change, never after: what is recorded is what to go back to.
+function pushLayerVisibilityUndo() {
+  if (!currentPages.length) return;
+  const history = visibilityHistory();
+  history.undo.push(new Set(hiddenLayers));
+  if (history.undo.length > MAX_VISIBILITY_UNDO) history.undo.shift();
+  // A fresh change is a new branch; anything undone past this point is gone.
+  history.redo.length = 0;
+}
+
+function applyLayerVisibilitySnapshot(hidden) {
+  hiddenLayers = new Set(hidden);
+  for (const layer of getCurrentLayers()) layer.visible = !hiddenLayers.has(layer.index);
+  buildLayersSidebar();
+  applyLayerVisibility();
+}
+
+function stepLayerVisibilityHistory(back) {
+  if (!currentPages.length) return false;
+  const history = visibilityHistory();
+  const from = back ? history.undo : history.redo;
+  const to = back ? history.redo : history.undo;
+  if (!from.length) return false;
+
+  to.push(new Set(hiddenLayers));
+  applyLayerVisibilitySnapshot(from.pop());
+  return true;
+}
+
 function setLayerSelected(layerIndex, selected) {
+  pushLayerVisibilityUndo();
   const layer = getCurrentLayer(layerIndex);
   if (layer) layer.visible = selected;
   if (layerIndex === UNLAYERED_LAYER_INDEX) getUnlayeredLayer(currentPages[currentPageIndex]).visible = selected;
@@ -1559,6 +1724,7 @@ function toggleLayer(layerIndex) {
 }
 
 function setLayerSelection(layers, selected) {
+  pushLayerVisibilityUndo();
   for (const layer of layers) {
     layer.visible = selected;
     if (isVirtualLayer(layer)) getUnlayeredLayer(currentPages[currentPageIndex]).visible = selected;
@@ -1579,7 +1745,9 @@ function focusLayerRow(layerIndex, scrollIntoView = true) {
     item.setAttribute('aria-selected', isFocused ? 'true' : 'false');
     if (isFocused) {
       item.focus({ preventScroll: true });
-      if (scrollIntoView) item.scrollIntoView({ block: 'nearest' });
+      // Optional-called: not every host implements it, and failing to scroll is
+      // never a reason to abandon the rest of a click.
+      if (scrollIntoView) item.scrollIntoView?.({ block: 'nearest' });
     }
   }
 }
@@ -1620,6 +1788,61 @@ function focusLayerFromSvgElement(target) {
     buildLayersSidebar();
   }
   focusLayerRow(layerIndex);
+}
+
+// Finding a shape and finding its layer are the same errand: the answer to
+// "where is it?" is a place on the canvas *and* a row in this sidebar, and the
+// row is the one that says whether you can see it. So picking a shape from any
+// of the lists points the sidebar at the layer it is on — clearing a filter
+// that hides the row, and expanding the groups it is buried under, because a
+// row that is not drawn cannot be highlighted.
+function layerIndexesForShape(shape) {
+  const members = (shape?.layerMembers || []).map(String);
+  if (members.length) return members;
+  // A shape inside a group usually carries no membership of its own; it is on
+  // whatever its group is on.
+  const path = findShapePath(getCurrentPage()?.shapes || [], shape?.id) || [];
+  for (let i = path.length - 2; i >= 0; i--) {
+    const inherited = (path[i].layerMembers || []).map(String);
+    if (inherited.length) return inherited;
+  }
+  return [];
+}
+
+function revealLayerForShape(shape) {
+  if (!shape) return null;
+  const uiLayers = getCurrentLayers();
+  const known = new Set(uiLayers.map(layer => String(layer.index)));
+  const members = layerIndexesForShape(shape).filter(index => known.has(index));
+  const layerIndex = members[0]
+    ?? (known.has(UNLAYERED_LAYER_INDEX) ? UNLAYERED_LAYER_INDEX : null);
+  if (layerIndex === null) return null;
+
+  const layer = uiLayers.find(candidate => String(candidate.index) === String(layerIndex));
+  // A row filtered out of the list, or folded into a collapsed group, has no
+  // element to focus — so make one exist before asking for it.
+  let rebuild = false;
+  if (layer && !layerMatchesFilter(layer)) {
+    layerFilterText.value = '';
+    rebuild = true;
+  }
+  if (layer && layerTreeActive() && collapsedLayerGroups.size) {
+    const segments = parseLayerPathSegments(getLayerDisplayName(layer));
+    for (let i = 1; i < segments.length; i++) {
+      const key = segments.slice(0, i).join(layerTreeDelimiter);
+      if (collapsedLayerGroups.delete(key)) rebuild = true;
+    }
+  }
+  if (rebuild) buildLayersSidebar();
+
+  // Pointing at a row in a pane nobody can see says nothing, so the pane opens
+  // — the same thing clicking the shape on the canvas already does.
+  layersSidebar.classList.add('visible');
+  document.getElementById('btn-layers').classList.add('active');
+  updateSidebarChrome();
+
+  focusLayerRow(layerIndex);
+  return layerIndex;
 }
 
 function findShapeById(shapes, shapeId) {
@@ -1802,11 +2025,23 @@ function getSelectedShapes() {
 
 // Takes any iterable of ids — callers pass an array or the Set they just built.
 function selectShapes(shapeIds, primaryId = null) {
-  selectedShapeIds = new Set([...(shapeIds || [])].map(String));
+  const next = new Set([...(shapeIds || [])].map(String));
   const preferred = primaryId === null || primaryId === undefined ? null : String(primaryId);
-  selectedShapeId = preferred && selectedShapeIds.has(preferred)
+  const nextPrimary = preferred && next.has(preferred)
     ? preferred
-    : ([...selectedShapeIds].pop() ?? null);
+    : ([...next].pop() ?? null);
+
+  // Selecting what is already selected is not a change, and re-rendering for it
+  // would throw away the row that was just clicked — which is what stopped a
+  // double-click on a Shape Tree row from ever reaching its second click.
+  if (nextPrimary === selectedShapeId
+    && next.size === selectedShapeIds.size
+    && [...next].every(id => selectedShapeIds.has(id))) {
+    return;
+  }
+
+  selectedShapeIds = next;
+  selectedShapeId = nextPrimary;
   editingShapeId = null;
   renderCurrentPage();
 }
@@ -1839,6 +2074,15 @@ function setShapeVisible(shapeId, visible) {
   applyShapeVisibility();
   syncSelectedShapeHighlight();
   renderShapeTree();
+}
+
+// Editing happens in the row itself, so the tree is redrawn with that row as an
+// input. A read-only package has nowhere to put the new name.
+function startShapeRename(shapeId) {
+  if (!currentPackageEditable) return false;
+  editingShapeId = String(shapeId);
+  renderShapeTree();
+  return true;
 }
 
 function toggleShapeTreeBranch(shapeId) {
@@ -1932,10 +2176,26 @@ function createShapeTreeNode(shape, depth, rootShapeId) {
     label.addEventListener('click', () => setSelectedShape(shape.id));
     label.addEventListener('dblclick', (e) => {
       e.preventDefault();
-      editingShapeId = String(shape.id);
-      renderShapeTree();
+      startShapeRename(shape.id);
     });
   }
+
+  // Double-clicking the name still works, but only once the row is the selected
+  // one — before that the click that selects it redraws the tree out from under
+  // the second click. A button is a button whatever the row's state.
+  const rename = document.createElement('button');
+  rename.type = 'button';
+  rename.className = 'shape-tree-rename';
+  rename.textContent = '✎';
+  rename.disabled = !currentPackageEditable;
+  rename.title = currentPackageEditable
+    ? `Rename ${getShapeLabel(shape)} (its Visio name)`
+    : 'This package is read-only';
+  rename.setAttribute('aria-label', `Rename ${getShapeLabel(shape)}`);
+  rename.addEventListener('click', (e) => {
+    e.stopPropagation();
+    startShapeRename(shape.id);
+  });
 
   const remove = document.createElement('button');
   remove.type = 'button';
@@ -1955,6 +2215,7 @@ function createShapeTreeNode(shape, depth, rootShapeId) {
   row.appendChild(expander);
   row.appendChild(checkbox);
   row.appendChild(label);
+  if (!isEditing) row.appendChild(rename);
   row.appendChild(editXml);
   row.appendChild(remove);
 
@@ -2337,10 +2598,21 @@ const MAX_SHAPE_SEARCH_RESULTS = 300;
 
 function closeLayerObjects() {
   layerObjectsIndex = null;
+  layerObjectsGroup = null;
   shapeSearchQuery = '';
   if (shapeSearchInput) shapeSearchInput.value = '';
   clearShapeHighlight();
   if (layerObjectsPanel) layerObjectsPanel.hidden = true;
+}
+
+// Whether the row a menu button belongs to is the one whose list is open — the
+// button lights up so the panel is traceable back to what asked for it.
+function layerObjectsMatchesTarget(target) {
+  if (target?.node && !target.node.layer) return layerObjectsGroup?.key === target.node.key;
+  const layer = target?.layer || target?.node?.layer;
+  return layer !== undefined && layer !== null
+    && layerObjectsIndex !== null
+    && String(layer.index) === String(layerObjectsIndex);
 }
 
 // One panel, two questions — "what is on this layer?" and "where is the shape
@@ -2350,7 +2622,7 @@ function renderLayerObjects() {
   if (!layerObjectsPanel) return;
   const page = getCurrentPage();
   const searching = shapeSearchQuery.trim().length > 0;
-  if ((!searching && layerObjectsIndex === null) || !page) {
+  if ((!searching && layerObjectsIndex === null && !layerObjectsGroup) || !page) {
     layerObjectsPanel.hidden = true;
     return;
   }
@@ -2363,6 +2635,10 @@ function renderLayerObjects() {
     const capped = entries.length >= MAX_SHAPE_SEARCH_RESULTS;
     title = `“${shapeSearchQuery.trim()}” — ${capped ? 'first ' : ''}${entries.length} match${entries.length === 1 ? '' : 'es'}`;
     emptyText = 'No shape on this page matches.';
+  } else if (layerObjectsGroup) {
+    entries = shapesOnLayers(page, layerObjectsGroup.indexes, { unlayeredIndex: UNLAYERED_LAYER_INDEX });
+    title = `${layerObjectsGroup.path} — ${entries.length} object${entries.length === 1 ? '' : 's'}`;
+    emptyText = 'No shapes on the layers in this group.';
   } else {
     const layer = getUiLayers(page).find(candidate => String(candidate.index) === String(layerObjectsIndex));
     entries = shapesOnLayer(page, layerObjectsIndex, { unlayeredIndex: UNLAYERED_LAYER_INDEX });
@@ -2386,26 +2662,53 @@ function renderLayerObjects() {
     layerObjectsList.appendChild(createShapePickRow(entry, 'layer-object-row', (picked, event) => {
       if (event?.ctrlKey || event?.metaKey || event?.shiftKey) toggleSelectedShape(picked.id);
       else setSelectedShape(picked.id);
+      // Finding a shape and finding out which layer it is on are the same
+      // question asked twice, so the answer to the second comes for free.
+      revealLayerForShape(picked.shape);
       renderLayerObjects();
     }));
   }
 }
 
 function openLayerObjects(layerIndex) {
-  layerObjectsIndex = String(layerIndex) === String(layerObjectsIndex) ? null : layerIndex;
+  const reopening = layerObjectsGroup === null && String(layerIndex) === String(layerObjectsIndex);
+  layerObjectsGroup = null;
+  layerObjectsIndex = reopening ? null : layerIndex;
   // The panel shows one list at a time, so asking for a layer drops the search.
   shapeSearchQuery = '';
   if (shapeSearchInput) shapeSearchInput.value = '';
   if (layerObjectsIndex === null) closeLayerObjects();
   else renderLayerObjects();
+  buildLayersSidebar();
+}
+
+// A group row's list is every shape on every layer under it, which is the only
+// way to ask "what is in Electrical?" when Electrical is a naming convention
+// rather than a layer.
+function openLayerGroupObjects(node) {
+  const reopening = layerObjectsGroup?.key === node.key;
+  layerObjectsIndex = null;
+  layerObjectsGroup = reopening ? null : {
+    key: node.key,
+    path: node.path,
+    indexes: layersUnder(node).map(layer => String(layer.index)),
+  };
+  shapeSearchQuery = '';
+  if (shapeSearchInput) shapeSearchInput.value = '';
+  if (!layerObjectsGroup) closeLayerObjects();
+  else renderLayerObjects();
+  buildLayersSidebar();
 }
 
 function runShapeSearch(query) {
   shapeSearchQuery = String(query ?? '');
   // A search and a layer's object list compete for the same panel; typing
   // takes it over, and clearing the box hands it back to nothing at all.
-  const hadLayerList = layerObjectsIndex !== null;
-  if (shapeSearchQuery.trim()) layerObjectsIndex = null;
+  const hadLayerList = layerObjectsIndex !== null || layerObjectsGroup !== null;
+  if (shapeSearchQuery.trim()) {
+    layerObjectsIndex = null;
+    layerObjectsGroup = null;
+  }
   clearShapeHighlight();
   renderLayerObjects();
   // Only to drop the ⊙ button's active mark, which the sidebar rows own.
@@ -2425,6 +2728,7 @@ function renderShapePickList() {
       contextShapeId = String(picked.id);
       if (event?.ctrlKey || event?.metaKey || event?.shiftKey) toggleSelectedShape(picked.id);
       else setSelectedShape(picked.id);
+      revealLayerForShape(picked.shape);
       renderShapeContextMenu();
       renderShapePickList();
       renderShapeArrangeSection();
@@ -2828,6 +3132,10 @@ function resetView() {
 }
 
 async function loadFile(file) {
+  // Each document gets its own export default: a size chosen for the last
+  // drawing is meaningless for this one, and the drawing most in need of being
+  // rescaled would otherwise be the one that opens on "Original size".
+  exportSizeMode = null;
   let name = file.name.toLowerCase();
   if (name.endsWith('.svg')) {
     // SVGs exported by this app carry the source document as base64 metadata;
@@ -3451,6 +3759,9 @@ const VIEW_LAYER_CELL_NAMES = {
 
 function applyView(view) {
   if (!view) return;
+  // Picking a view is a bulk change of what is shown, so it is undoable like
+  // any other — on this page, which is the one the undo stack speaks for.
+  pushLayerVisibilityUndo();
   const pageById = new Map(currentPages.map(page => [String(page.id), page]));
   for (const snapshot of (view.pages || [])) {
     const page = pageById.get(String(snapshot.id))
@@ -3477,9 +3788,13 @@ function applyView(view) {
 }
 
 function refreshViewsUI() {
-  // Only meaningful for writable OPC/XML packages.
+  // Only meaningful for writable OPC/XML packages. The whole section goes, not
+  // just its contents: a heading you can open onto nothing is worse than no
+  // heading.
   const enabled = currentPackageEditable;
-  if (layersViews) layersViews.style.display = enabled ? '' : 'none';
+  const viewsSection = layersViews?.closest('.sidebar-section');
+  if (viewsSection) viewsSection.style.display = enabled ? '' : 'none';
+  else if (layersViews) layersViews.style.display = enabled ? '' : 'none';
   if (layerMatrixViews) layerMatrixViews.style.display = enabled ? '' : 'none';
   if (selectedViewIndex !== null && selectedViewIndex >= viewTemplates.length) selectedViewIndex = null;
   for (const select of [viewSelect, layerMatrixViewSelect]) {
@@ -3592,8 +3907,12 @@ removeNonSelectedButton.addEventListener('click', async () => {
   }
 
   try {
+    // Pruning re-parses what it wrote, and the sidebar and tab strip are rebuilt
+    // from that — so anything still only in memory has to be in the bytes first.
+    // Closed tabs are the visible case: the pages they stood for are only gone
+    // once reconciled, and pruning the raw buffer brought every one of them back.
     const { buffer, removedCount } = await saveVsdxWithoutNonSelectedLayers(
-      currentFileBuffer,
+      await getPackageBufferWithPendingEdits(),
       currentPages,
       page.id,
       selectedLayerIndexes
@@ -3621,7 +3940,7 @@ removeNonVisibleButton.addEventListener('click', async () => {
 
   try {
     const { buffer, removedCount } = await saveVsdxWithoutNonVisibleData(
-      currentFileBuffer,
+      await getPackageBufferWithPendingEdits(),
       currentPages,
       page.id,
       hiddenLayerIndexes
@@ -3715,11 +4034,36 @@ layerMatrixBody.addEventListener('keydown', (e) => {
   e.preventDefault();
   focusMatrixInput(nextRow, nextCol);
 });
+// Ctrl+Z / Ctrl+Shift+Z (Ctrl+Y too) take back the last change to what is
+// shown. Inside a text box the browser's own undo is the right one, and while
+// drawing Backspace already owns "take that point back", so neither is touched.
+window.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+  const tag = e.target?.tagName?.toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+  if (shapeXmlModal.classList.contains('visible')) return;
+  if (exportModal.classList.contains('visible')) return;
+
+  const key = e.key.toLowerCase();
+  const undo = key === 'z' && !e.shiftKey;
+  const redo = (key === 'z' && e.shiftKey) || key === 'y';
+  if (!undo && !redo) return;
+
+  e.preventDefault();
+  if (!stepLayerVisibilityHistory(undo)) {
+    showError(undo ? 'Nothing to undo on this page' : 'Nothing to redo on this page');
+  }
+});
+
 window.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && layerMatrixModal.classList.contains('visible')) {
     e.preventDefault();
     layerMatrixSearch.focus();
     layerMatrixSearch.select();
+    return;
+  }
+  if (e.key === 'Escape' && exportModal.classList.contains('visible')) {
+    closeExportDialog();
     return;
   }
   if (e.key === 'Escape' && shapeXmlModal.classList.contains('visible')) {
@@ -3782,37 +4126,206 @@ layersList.addEventListener('keydown', (e) => {
   }
 });
 
-// Export SVG — with the source document embedded as base64 metadata so the
-// exported SVG can be re-opened (or converted back to .vsdx) losslessly.
-document.getElementById('btn-export').addEventListener('click', async () => {
+// ---------------------------------------------------------------------------
+// Export
+//
+// The rendered SVG is sized for the viewport (width/height="100%") and its
+// viewBox is in renderer px, 96 to the inch. A large drawing is therefore tens
+// of thousands of units across with no intrinsic size at all, which is exactly
+// what tips browsers, Inkscape and PDF viewers over. The dialog lets you stamp
+// a sane intrinsic size on the way out — a pure metadata change, the viewBox is
+// never touched — or keep the original if you know what you are doing.
+// ---------------------------------------------------------------------------
+
+let exportSizeMode = null;      // null until the first open picks a default
+let exportCustomValue = PDF_MAX_PX;
+let pdfLibrariesReady = false;
+
+// The SVG as it should leave the app: no live editing scaffolding, and an
+// intrinsic size honouring the chosen scale.
+function buildExportSvg(size) {
   const svg = svgContainer.querySelector('svg');
-  if (!svg) return;
-  const serializer = new XMLSerializer();
+  if (!svg) return null;
   // The pen's live overlay (anchors, handles, rubber band) lives inside the
   // rendered SVG; it is scaffolding, not part of the drawing.
   const exported = svg.cloneNode(true);
   exported.querySelector('#pen-preview')?.remove();
   exported.querySelector('#shape-highlight')?.remove();
-  let svgStr = serializer.serializeToString(exported);
-  try {
-    if (currentFileBuffer) {
-      // Embed what "Save VSDX" would produce, so layer edits and named views
-      // round-trip too.
-      const source = currentPackageEditable
-        ? await saveVsdxLayerPermissions(currentFileBuffer, currentPages, viewTemplates, layerTagColors, currentLayerTreeSettings())
-        : currentFileBuffer;
-      svgStr = embedVsdxInSvg(svgStr, source, fileName.textContent || 'diagram.vsdx');
-    }
-  } catch (e) {
-    console.error('Failed to embed VSDX metadata in SVG, exporting plain SVG:', e);
-  }
-  const blob = new Blob([svgStr], { type: 'image/svg+xml' });
+  return applyExportSize(exported, size);
+}
+
+function currentExportSize() {
+  const svg = svgContainer.querySelector('svg');
+  const { width, height } = svgViewBoxSize(svg);
+  return computeExportSize(width, height, exportSizeMode || 'original', { customPx: exportCustomValue });
+}
+
+function exportBaseName() {
+  return (fileName.textContent || 'diagram').replace(/\.[^.]+$/i, '');
+}
+
+function downloadBlob(blob, name) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = (fileName.textContent || 'diagram').replace(/\.[^.]+$/i, '') + '.svg';
+  a.download = name;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+function setExportStatus(text, kind = '') {
+  exportStatus.textContent = text;
+  exportStatus.className = 'export-status' + (kind ? ' ' + kind : '');
+}
+
+async function exportSvgFile(size) {
+  const exported = buildExportSvg(size);
+  if (!exported) return;
+  let svgStr = new XMLSerializer().serializeToString(exported);
+  if (exportEmbed.checked) {
+    try {
+      if (currentFileBuffer) {
+        // Embed what "Save Visio" would produce, so layer edits and named views
+        // round-trip too.
+        const source = currentPackageEditable
+          ? await saveVsdxLayerPermissions(currentFileBuffer, currentPages, viewTemplates, layerTagColors, currentLayerTreeSettings())
+          : currentFileBuffer;
+        svgStr = embedVsdxInSvg(svgStr, source, fileName.textContent || 'diagram.vsdx');
+      }
+    } catch (e) {
+      console.error('Failed to embed VSDX metadata in SVG, exporting plain SVG:', e);
+    }
+  }
+  downloadBlob(new Blob([svgStr], { type: 'image/svg+xml' }), exportBaseName() + '.svg');
+}
+
+async function exportPdfFile(size) {
+  if (!exportPdfConsent.checked) {
+    setExportStatus('Tick "Allow this download" to let PDF export fetch its libraries.', 'error');
+    return false;
+  }
+  await loadPdfLibraries({
+    scope: window,
+    onProgress: (msg) => setExportStatus(msg, 'busy'),
+  });
+  pdfLibrariesReady = true;
+
+  const exported = buildExportSvg(size);
+  if (!exported) return false;
+  // svg2pdf resolves styles and measures text through getComputedStyle/getBBox,
+  // which only answer for an element that is actually in the document — so the
+  // clone is parked off-screen rather than converted detached.
+  const stage = document.createElement('div');
+  stage.setAttribute('aria-hidden', 'true');
+  stage.style.cssText = 'position:absolute;left:-100000px;top:0;width:1px;height:1px;overflow:hidden';
+  stage.appendChild(exported);
+  document.body.appendChild(stage);
+  try {
+    setExportStatus('Rendering PDF…', 'busy');
+    const blob = await svgToPdfBlob(exported, { widthPt: size.widthPt, heightPt: size.heightPt, scope: window });
+    downloadBlob(blob, exportBaseName() + '.pdf');
+  } finally {
+    stage.remove();
+  }
+  return true;
+}
+
+function renderPdfGate() {
+  const isPdf = exportFormat.value === 'pdf';
+  exportPdfGate.hidden = !isPdf || pdfLibrariesReady;
+  exportEmbedRow.hidden = isPdf;
+  if (!exportPdfLibs.childElementCount) {
+    for (const lib of PINNED_LIBS) {
+      const li = document.createElement('li');
+      li.textContent = `${lib.name} ${lib.version} — ${new URL(lib.url).host}`;
+      const code = document.createElement('code');
+      code.textContent = 'sha256 ' + lib.sha256;
+      li.appendChild(code);
+      exportPdfLibs.appendChild(li);
+    }
+  }
+}
+
+function updateExportSummary() {
+  const size = currentExportSize();
+  exportSummary.textContent = describeExportSize(size);
+  exportCustomRow.hidden = exportSizeMode !== 'custom';
+  const overPdf = exportFormat.value === 'pdf' && size.exceedsPdfLimit;
+  exportRun.disabled = !size.sourceWidth || overPdf;
+  if (overPdf) {
+    setExportStatus('A PDF page cannot exceed 200in (14400pt) per side — pick a smaller size.', 'error');
+  } else if (!exportStatus.classList.contains('busy')) {
+    setExportStatus('');
+  }
+  renderPdfGate();
+}
+
+function openExportDialog() {
+  const svg = svgContainer.querySelector('svg');
+  if (!svg) {
+    showError('Open a drawing before exporting');
+    return;
+  }
+  if (!exportSize.childElementCount) {
+    for (const mode of EXPORT_SIZE_MODES) {
+      const opt = document.createElement('option');
+      opt.value = mode.id;
+      opt.textContent = mode.label;
+      exportSize.appendChild(opt);
+    }
+  }
+  if (exportSizeMode === null) {
+    // Don't silently shrink a drawing that was fine as it was — but don't hand
+    // someone a PDF the format cannot represent, either.
+    const { width, height } = svgViewBoxSize(svg);
+    exportSizeMode = defaultSizeMode(width, height);
+  }
+  exportSize.value = exportSizeMode;
+  exportCustomPx.value = String(Math.round(exportCustomValue));
+  setExportStatus('');
+  updateExportSummary();
+  exportModal.classList.add('visible');
+  exportFormat.focus();
+}
+
+function closeExportDialog() {
+  exportModal.classList.remove('visible');
+}
+
+document.getElementById('btn-export').addEventListener('click', openExportDialog);
+exportClose.addEventListener('click', closeExportDialog);
+exportCancel.addEventListener('click', closeExportDialog);
+exportModal.addEventListener('click', (e) => { if (e.target === exportModal) closeExportDialog(); });
+exportFormat.addEventListener('change', updateExportSummary);
+exportSize.addEventListener('change', () => {
+  exportSizeMode = exportSize.value;
+  updateExportSummary();
+});
+exportCustomPx.addEventListener('input', () => {
+  const value = Number(exportCustomPx.value);
+  if (Number.isFinite(value) && value > 0) exportCustomValue = value;
+  updateExportSummary();
+});
+exportPdfConsent.addEventListener('change', updateExportSummary);
+
+exportRun.addEventListener('click', async () => {
+  const size = currentExportSize();
+  if (!size.sourceWidth) return;
+  exportRun.disabled = true;
+  try {
+    if (exportFormat.value === 'pdf') {
+      if (!await exportPdfFile(size)) return;
+    } else {
+      await exportSvgFile(size);
+    }
+    closeExportDialog();
+  } catch (e) {
+    console.error('Export failed:', e);
+    setExportStatus(e?.message || String(e), 'error');
+  } finally {
+    exportRun.disabled = false;
+    renderPdfGate();
+  }
 });
 
 // Auto-load from URL query params — used by the `git difftool` integration

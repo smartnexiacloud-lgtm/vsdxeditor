@@ -96,8 +96,10 @@ await dropFile(new window.File([srcBytes], 'roundtrip.vsdm'));
 check('app booted and rendered the vsdx',
   !!window.document.querySelector('#svg-container svg'), whyNot());
 
-// 2. Click Export SVG and inspect the blob the user would download.
+// 2. Export SVG (through the export dialog) and inspect the blob the user
+// would download.
 window.document.getElementById('btn-export').click();
+window.document.getElementById('export-run').click();
 // The handler awaits saveVsdxLayerPermissions before it hands over the blob.
 await waitFor(() => captured.some((b) => b.type === 'image/svg+xml'));
 const svgBlob = captured.find((b) => b.type === 'image/svg+xml');

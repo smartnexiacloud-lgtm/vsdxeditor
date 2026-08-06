@@ -228,6 +228,8 @@
       color: #68708d;
       cursor: default;
     }
+    .layer-context-menu .layer-context-danger { color: #ff9b9b; }
+    .layer-context-menu .layer-context-danger:hover:not(:disabled) { background: #5a2436; }
 
     /* Main content area: sidebar + viewport */
     #content-area {
@@ -238,19 +240,34 @@
 
     /* Layers sidebar */
     #layers-sidebar {
-      width: 220px;
-      min-width: 220px;
+      width: 240px;
+      min-width: 160px;
       background: #16213e;
       border-right: 1px solid #0f3460;
       display: none;
       flex-direction: column;
       overflow: hidden;
+      flex: 0 0 auto;
     }
     #layers-sidebar.visible {
       display: flex;
     }
+    /* The sidebar holds names of arbitrary length, so its width is the user's
+       call, not the stylesheet's. */
+    #layers-resizer {
+      width: 5px;
+      margin: 0 -2px;
+      cursor: col-resize;
+      background: transparent;
+      flex: 0 0 auto;
+      display: none;
+      z-index: 5;
+    }
+    #layers-resizer.visible { display: block; }
+    #layers-resizer:hover,
+    #layers-resizer.dragging { background: #2f4d8f; }
     .sidebar-header {
-      padding: 10px 12px;
+      padding: 8px 8px 8px 12px;
       font-size: 12px;
       font-weight: 700;
       text-transform: uppercase;
@@ -258,19 +275,78 @@
       color: #8888aa;
       border-bottom: 1px solid #0f3460;
       flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
     }
-    .layers-filter {
-      padding: 10px 10px 8px;
+    .sidebar-header-title { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+    .sidebar-header button {
+      background: #24345f;
+      color: #f0f0f5;
+      border: 1px solid #35518c;
+      border-radius: 4px;
+      height: 22px;
+      min-width: 24px;
+      padding: 0 6px;
+      cursor: pointer;
+      font-size: 12px;
+      line-height: 1;
+    }
+    .sidebar-header button:hover { background: #304579; }
+    /* Every tool in this pane is something you reach for now and then, so each
+       one folds away and the list of layers keeps the room. */
+    .sidebar-section {
       border-bottom: 1px solid #0f3460;
+      flex-shrink: 0;
+    }
+    .sidebar-section-toggle {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: none;
+      border: 0;
+      color: #9fb0da;
+      font: inherit;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 6px 10px;
+      cursor: pointer;
+      text-align: left;
+    }
+    .sidebar-section-toggle:hover { background: #1b2540; color: #dde5ff; }
+    .sidebar-section-twisty { width: 10px; flex-shrink: 0; }
+    .sidebar-section-title { flex: 1; }
+    .sidebar-section-badge {
+      font-size: 10px;
+      color: #6f7fae;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+    .sidebar-section-body {
+      padding: 2px 10px 10px;
       display: flex;
       flex-direction: column;
       gap: 8px;
-      flex-shrink: 0;
+    }
+    .sidebar-section-body[hidden] { display: none; }
+    /* Sections open and close, so the block above the list has no fixed height.
+       It gives way before the list does, and scrolls rather than pushing the
+       layers off the bottom. */
+    .layers-filter {
+      display: flex;
+      flex-direction: column;
+      flex: 0 1 auto;
+      overflow-y: auto;
+      min-height: 0;
     }
     .layers-filter-row {
       display: flex;
       gap: 6px;
     }
+    .sidebar-section-body select,
+    .sidebar-section-body input,
     .layers-filter select,
     .layers-filter input {
       min-width: 0;
@@ -282,13 +358,20 @@
       font-size: 12px;
       height: 28px;
     }
+    .sidebar-section-body select,
     .layers-filter select {
       flex: 0 0 92px;
       padding: 0 4px;
     }
+    .sidebar-section-body input,
     .layers-filter input {
       flex: 1;
       padding: 0 8px;
+    }
+    .sidebar-section-hint {
+      font-size: 10px;
+      color: #6f7fae;
+      line-height: 1.4;
     }
     .layers-actions {
       display: grid;
@@ -312,33 +395,21 @@
       opacity: 0.45;
       cursor: not-allowed;
     }
+    /* Adding a layer sits in the pane's header, next to its title: one button,
+       always there, taking no room from anything. */
     .layers-manage {
       display: flex;
+      flex: 0 0 auto;
       gap: 6px;
-      margin-top: 6px;
     }
     .layers-find {
       display: flex;
     }
-    .layers-manage button {
-      flex: 1;
-      background: #24345f;
-      color: #f0f0f5;
-      border: 1px solid #35518c;
-      border-radius: 4px;
-      height: 26px;
-      cursor: pointer;
-      font-size: 11px;
-      white-space: nowrap;
-    }
-    .layers-manage button:hover {
-      background: #304579;
-    }
     .layers-tree-opts {
       display: flex;
-      align-items: center;
+      flex-direction: column;
+      align-items: stretch;
       gap: 6px;
-      margin-top: 6px;
       font-size: 11px;
       color: #b6c0e0;
     }
@@ -349,24 +420,39 @@
       cursor: pointer;
       white-space: nowrap;
     }
+    .layers-tree-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    /* The delimiter is one or two characters, but it still needs a box you can
+       click into: in a narrow pane a shrinkable input is squeezed to nothing. */
     .layers-tree-opts #layer-tree-delimiter {
-      width: 34px;
+      flex: 0 0 56px;
+      width: 56px;
+      min-width: 56px;
       text-align: center;
       padding: 0 4px;
-      height: 22px;
+      height: 24px;
       background: #131c33;
       color: #f0f0f5;
       border: 1px solid #35518c;
       border-radius: 4px;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     }
+    .layers-tree-label {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .layers-tree-opts button {
-      margin-left: auto;
       background: #24345f;
       color: #f0f0f5;
       border: 1px solid #35518c;
       border-radius: 4px;
-      height: 22px;
+      height: 24px;
       padding: 0 8px;
       cursor: pointer;
       font-size: 11px;
@@ -407,28 +493,6 @@
       font-size: 10px;
       color: #7d88b5;
     }
-    /* Renaming re-prefixes every layer under the row, so it stays out of the
-       way until the row is hovered — same as the per-layer buttons. */
-    .layer-group-rename,
-    .layer-item .layer-rename {
-      flex-shrink: 0;
-      background: none;
-      border: none;
-      padding: 0 2px;
-      color: #8e9ac6;
-      font-size: 11px;
-      line-height: 1;
-      cursor: pointer;
-      opacity: 0;
-    }
-    .layer-group-item:hover .layer-group-rename,
-    .layer-item:hover .layer-rename,
-    .layer-group-rename:focus,
-    .layer-rename:focus {
-      opacity: 1;
-    }
-    .layer-group-rename:hover,
-    .layer-rename:hover { color: #f0f0f5; }
     .layer-twisty {
       flex-shrink: 0;
       width: 14px;
@@ -449,10 +513,10 @@
       color: #8888aa;
       font-size: 11px;
       line-height: 1.2;
+      padding: 6px 10px;
+      border-bottom: 1px solid #0f3460;
     }
     #layers-views {
-      padding: 8px 10px;
-      border-bottom: 1px solid #0f3460;
       display: flex;
       flex-direction: column;
       gap: 6px;
@@ -505,7 +569,8 @@
       color: #b8c0df;
     }
     #layers-list {
-      flex: 1;
+      flex: 1 1 auto;
+      min-height: 80px;
       overflow-y: auto;
       padding: 4px 0;
       outline: none;
@@ -621,29 +686,28 @@
       font-size: 10px;
       color: #7d88b5;
     }
-    .layer-item .layer-objects-btn,
-    .layer-item .layer-delete,
-    .layer-item .layer-tag-edit {
+    /* A row is mostly a name and a checkbox. Everything else it can do — list
+       its shapes, rename, tag, delete — is one menu behind a single button, so
+       the name keeps the width instead of a strip of icons. */
+    .layer-menu-btn {
       flex-shrink: 0;
       background: none;
       border: none;
       padding: 0 2px;
-      font-size: 12px;
+      font-size: 13px;
       line-height: 1;
       cursor: pointer;
       opacity: 0.35;
       color: inherit;
     }
-    .layer-item:hover .layer-tag-edit,
-    .layer-item.focused .layer-tag-edit,
-    .layer-item:hover .layer-objects-btn,
-    .layer-item.focused .layer-objects-btn,
-    .layer-item:hover .layer-delete,
-    .layer-item.focused .layer-delete {
+    .layer-item:hover .layer-menu-btn,
+    .layer-item.focused .layer-menu-btn,
+    .layer-group-item:hover .layer-menu-btn,
+    .layer-menu-btn:focus {
       opacity: 1;
     }
-    .layer-item .layer-objects-btn.active { opacity: 1; color: #b79cf0; }
-    .layer-item .layer-delete:hover { color: #ff8f8f; }
+    .layer-menu-btn.active { opacity: 1; color: #b79cf0; }
+    .layer-menu-btn:hover { color: #f0f0f5; }
     .toolbar button.active {
       background: #533483;
       border-color: #7b52b9;
@@ -719,7 +783,7 @@
     #viewport.pen-active { cursor: crosshair; }
 
     .layer-objects {
-      margin-top: 8px;
+      margin: 8px 10px 0;
       border: 1px solid #3a3a5c;
       border-radius: 4px;
       background: #1f1b33;
@@ -811,6 +875,123 @@
       margin-top: 4px;
       border: 1px solid #3a3a5c;
       border-radius: 3px;
+    }
+
+    .export-panel {
+      width: min(560px, 100%);
+    }
+    .export-body {
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      overflow-y: auto;
+    }
+    .export-field {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 12px;
+    }
+    .export-field > span:first-child {
+      flex: 0 0 78px;
+      color: #b9c2e0;
+    }
+    .export-field select {
+      flex: 1 1 auto;
+      min-width: 0;
+      background: #0f1730;
+      color: #f0f0f5;
+      border: 1px solid #35518c;
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-size: 12px;
+    }
+    .export-custom {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: #b9c2e0;
+    }
+    .export-custom input {
+      width: 110px;
+      background: #0f1730;
+      color: #f0f0f5;
+      border: 1px solid #35518c;
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-size: 12px;
+    }
+    .export-summary {
+      margin: 0;
+      padding: 8px 10px;
+      background: #0f1730;
+      border: 1px solid #2b3f6b;
+      border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      color: #d9e2ff;
+    }
+    .export-hint,
+    .export-gate-note {
+      margin: 0;
+      font-size: 11px;
+      line-height: 1.5;
+      color: #9aa6c9;
+    }
+    .export-check {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      font-size: 12px;
+      color: #d0d7ee;
+    }
+    .export-check input {
+      margin-top: 2px;
+      flex: 0 0 auto;
+    }
+    .export-gate {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 10px;
+      border: 1px solid #6b5a2b;
+      background: #23200f;
+      border-radius: 4px;
+    }
+    .export-gate-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: #f0dc9a;
+    }
+    .export-gate-libs {
+      margin: 0;
+      padding-left: 16px;
+      font-size: 11px;
+      color: #d0d7ee;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .export-gate-libs code {
+      display: block;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 10px;
+      color: #8fa4d8;
+      word-break: break-all;
+    }
+    .export-status {
+      margin: 0;
+      min-height: 16px;
+      font-size: 11px;
+      color: #9aa6c9;
+    }
+    .export-status.error {
+      color: #ff9d9d;
+      white-space: pre-wrap;
+    }
+    .export-status.busy {
+      color: #9ad2f0;
     }
 
     .matrix-modal {
@@ -1269,6 +1450,7 @@
       opacity: 0.6;
     }
     .shape-tree-expander,
+    .shape-tree-rename,
     .shape-tree-xml,
     .shape-tree-delete {
       width: 22px;
@@ -1283,6 +1465,7 @@
       line-height: 1;
     }
     .shape-tree-expander:disabled,
+    .shape-tree-rename:disabled,
     .shape-tree-xml:disabled,
     .shape-tree-delete:disabled {
       opacity: 0.35;
@@ -1420,7 +1603,7 @@
       <button id="btn-remove-non-selected" disabled>Remove Non-selected</button>
       <button id="btn-remove-non-visible" disabled>Remove Non-visible</button>
       <button id="btn-save-vsdx" disabled>Save Visio</button>
-      <button id="btn-export">Export SVG</button>
+      <button id="btn-export" title="Export this page as SVG or PDF, at original or rescaled size">Export&hellip;</button>
       <button id="btn-compare" disabled>Compare…</button>
       <button id="btn-pen" disabled title="Pen: click to add a corner, drag to pull a curve. Enter or double-click finishes, Esc cancels.">&#9998; Pen</button>
       <select id="stroke-mode" aria-label="Thin line rendering" title="How thin lines (Visio hairlines) are drawn">
@@ -1464,40 +1647,106 @@
     <div id="page-tabs"></div>
     <div id="content-area">
       <div id="layers-sidebar">
-        <div class="sidebar-header">Layers</div>
+        <div class="sidebar-header">
+          <span class="sidebar-header-title">Layers</span>
+          <span id="layers-manage" class="layers-manage">
+            <button id="layers-add" type="button" title="Add a layer to this page" aria-label="Add a layer to this page">+</button>
+          </span>
+        </div>
         <div class="layers-filter">
-          <div class="layers-filter-row">
-            <select id="layer-filter-mode" aria-label="Layer filter mode">
-              <option value="contains">Contains</option>
-              <option value="starts">Starts with</option>
-              <option value="ends">Ends with</option>
-              <option value="equals">Equals</option>
-              <option value="notContains">Doesn't contain</option>
-            </select>
-            <input id="layer-filter-text" type="search" placeholder="Search layers" aria-label="Search layers">
+          <div class="sidebar-section" data-section="filter">
+            <button type="button" class="sidebar-section-toggle" data-section-toggle="filter" aria-expanded="false">
+              <span class="sidebar-section-twisty">&#9656;</span>
+              <span class="sidebar-section-title">Filter layers</span>
+              <span class="sidebar-section-badge" data-section-badge="filter"></span>
+            </button>
+            <div class="sidebar-section-body" data-section-body="filter" hidden>
+              <div class="layers-filter-row">
+                <select id="layer-filter-mode" aria-label="Layer filter mode">
+                  <option value="contains">Contains</option>
+                  <option value="starts">Starts with</option>
+                  <option value="ends">Ends with</option>
+                  <option value="equals">Equals</option>
+                  <option value="notContains">Doesn't contain</option>
+                </select>
+                <input id="layer-filter-text" type="search" placeholder="Search layers" aria-label="Search layers">
+              </div>
+              <div class="layers-actions">
+                <button id="layers-select-filtered" type="button" title="Show every layer the filter matches">Show matches</button>
+                <button id="layers-deselect-filtered" type="button" title="Hide every layer the filter matches">Hide matches</button>
+              </div>
+              <div class="sidebar-section-hint">Whole page, ignoring the filter:</div>
+              <div class="layers-actions">
+                <button id="layers-select-all" type="button">Show all</button>
+                <button id="layers-deselect-all" type="button">Hide all</button>
+              </div>
+            </div>
           </div>
-          <div class="layers-actions">
-            <button id="layers-select-all" type="button">Select all</button>
-            <button id="layers-deselect-all" type="button">Deselect all</button>
-            <button id="layers-select-filtered" type="button">Select filter</button>
-            <button id="layers-deselect-filtered" type="button">Deselect filter</button>
+          <div class="sidebar-section" data-section="find">
+            <button type="button" class="sidebar-section-toggle" data-section-toggle="find" aria-expanded="false">
+              <span class="sidebar-section-twisty">&#9656;</span>
+              <span class="sidebar-section-title">Find shapes</span>
+              <span class="sidebar-section-badge" data-section-badge="find"></span>
+            </button>
+            <div class="sidebar-section-body" data-section-body="find" hidden>
+              <div class="layers-find">
+                <input id="shape-search" type="search" placeholder="Find shapes (name, text, #id)"
+                       aria-label="Find shapes on this page"
+                       title="Search this page's shapes by name, text, or #ID — hover a result to highlight it on the canvas">
+              </div>
+            </div>
           </div>
-          <div id="layers-manage" class="layers-manage">
-            <button id="layers-add" type="button" title="Add a layer to this page">+ New layer…</button>
+          <div class="sidebar-section" data-section="grouping">
+            <button type="button" class="sidebar-section-toggle" data-section-toggle="grouping" aria-expanded="false">
+              <span class="sidebar-section-twisty">&#9656;</span>
+              <span class="sidebar-section-title">Grouping</span>
+              <span class="sidebar-section-badge" data-section-badge="grouping"></span>
+            </button>
+            <div class="sidebar-section-body" data-section-body="grouping" hidden>
+              <div class="layers-tree-opts">
+                <label for="layer-tree-enable" title="Visio layers are flat; this groups them into a tree by splitting their names on a delimiter">
+                  <input type="checkbox" id="layer-tree-enable">
+                  Group by delimiter
+                </label>
+                <div class="layers-tree-row">
+                  <input id="layer-tree-delimiter" type="text" value="/" maxlength="4" spellcheck="false"
+                         aria-label="Layer name delimiter" title="Delimiter that separates the levels in a layer name">
+                  <span class="layers-tree-label">splits <code>Electrical/HV</code></span>
+                </div>
+                <button id="layer-tree-toggle-all" type="button" title="Collapse or expand every group">Collapse all</button>
+              </div>
+            </div>
           </div>
-          <div class="layers-tree-opts">
-            <label for="layer-tree-enable" title="Visio layers are flat; this groups them into a tree by splitting their names on a delimiter">
-              <input type="checkbox" id="layer-tree-enable">
-              Group by delimiter
-            </label>
-            <input id="layer-tree-delimiter" type="text" value="/" maxlength="4" spellcheck="false"
-                   aria-label="Layer name delimiter" title="Delimiter that separates the levels in a layer name">
-            <button id="layer-tree-toggle-all" type="button" title="Collapse or expand every group">Collapse all</button>
+          <div class="sidebar-section" data-section="views">
+            <button type="button" class="sidebar-section-toggle" data-section-toggle="views" aria-expanded="false">
+              <span class="sidebar-section-twisty">&#9656;</span>
+              <span class="sidebar-section-title">Named views</span>
+              <span class="sidebar-section-badge" data-section-badge="views"></span>
+            </button>
+            <div class="sidebar-section-body" data-section-body="views" hidden>
+              <div id="layers-views">
+                <select id="view-select" aria-label="Named views">
+                  <option value="">— Select a view —</option>
+                </select>
+                <div class="views-actions">
+                  <button id="btn-view-save" type="button" title="Save the current layer settings as a named view">Save view…</button>
+                  <button id="btn-view-update" type="button" title="Overwrite the selected view with the current layer settings" disabled>Update</button>
+                  <button id="btn-view-delete" type="button" title="Delete the selected view" disabled>Delete</button>
+                </div>
+                <div class="views-hint">Views are stored inside the Visio XML package and persist when you save it.</div>
+              </div>
+            </div>
           </div>
-          <div class="layers-find">
-            <input id="shape-search" type="search" placeholder="Find shapes (name, text, #id)"
-                   aria-label="Find shapes on this page"
-                   title="Search this page's shapes by name, text, or #ID — hover a result to highlight it on the canvas">
+          <div class="sidebar-section" data-section="tags" id="layers-tags" style="display:none">
+            <button type="button" class="sidebar-section-toggle" data-section-toggle="tags" aria-expanded="false">
+              <span class="sidebar-section-twisty">&#9656;</span>
+              <span class="sidebar-section-title">Tags</span>
+              <span class="sidebar-section-badge" data-section-badge="tags"></span>
+            </button>
+            <div class="sidebar-section-body" data-section-body="tags" hidden>
+              <div id="layers-tag-legend" class="tag-legend"></div>
+              <div class="views-hint">Click a tag to filter, or its swatch to recolour. Tags are stored inside the Visio XML package.</div>
+            </div>
           </div>
           <div id="layer-objects" class="layer-objects" hidden>
             <div class="layer-objects-header">
@@ -1508,25 +1757,9 @@
           </div>
           <div id="layers-count" class="layers-count"></div>
         </div>
-        <div id="layers-views">
-          <div class="views-label">Named views</div>
-          <select id="view-select" aria-label="Named views">
-            <option value="">— Select a view —</option>
-          </select>
-          <div class="views-actions">
-            <button id="btn-view-save" type="button" title="Save the current layer settings as a named view">Save view…</button>
-            <button id="btn-view-update" type="button" title="Overwrite the selected view with the current layer settings" disabled>Update</button>
-            <button id="btn-view-delete" type="button" title="Delete the selected view" disabled>Delete</button>
-          </div>
-          <div class="views-hint">Views are stored inside the Visio XML package and persist when you save it.</div>
-        </div>
-        <div id="layers-tags" style="display:none">
-          <div class="views-label">Tags</div>
-          <div id="layers-tag-legend" class="tag-legend"></div>
-          <div class="views-hint">Click a tag to filter, or its swatch to recolour. Tags are stored inside the Visio XML package.</div>
-        </div>
         <div id="layers-list" tabindex="0" role="listbox" aria-label="Layers"></div>
       </div>
+      <div id="layers-resizer" role="separator" aria-orientation="vertical" aria-label="Resize the layers pane" title="Drag to resize the layers pane"></div>
       <div id="viewport">
         <div id="svg-container"></div>
       </div>
@@ -1584,9 +1817,11 @@
   </div>
   <div id="layer-context-menu" class="layer-context-menu" role="menu">
     <div id="layer-context-title" class="layer-context-title"></div>
+    <button type="button" role="menuitem" data-layer-action="objects">List shapes</button>
     <button type="button" role="menuitem" data-layer-action="rename">Rename…</button>
     <button type="button" role="menuitem" data-layer-action="move">Move to group…</button>
     <button type="button" role="menuitem" data-layer-action="tags">Edit tags…</button>
+    <button type="button" role="menuitem" data-layer-action="delete" class="layer-context-danger">Delete…</button>
   </div>
   <div id="shape-context-menu" class="shape-context-menu">
     <div id="shape-pick-section" class="shape-pick-section">
@@ -1629,6 +1864,54 @@
         <div class="shape-xml-actions">
           <button id="shape-xml-cancel" type="button">Cancel</button>
           <button id="shape-xml-save" class="shape-xml-save" type="button">Apply XML</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="export-modal" class="matrix-modal" role="dialog" aria-modal="true" aria-labelledby="export-title">
+    <div class="matrix-panel export-panel">
+      <div class="matrix-header">
+        <div id="export-title" class="matrix-title">Export drawing</div>
+        <div class="matrix-tools">
+          <button id="export-close" class="matrix-close" type="button" aria-label="Close export options">&times;</button>
+        </div>
+      </div>
+      <div class="matrix-body export-body">
+        <label class="export-field">
+          <span>Format</span>
+          <select id="export-format">
+            <option value="svg">SVG &mdash; vector, re-opens in this app</option>
+            <option value="pdf">PDF &mdash; needs a one-time library download</option>
+          </select>
+        </label>
+        <label class="export-field">
+          <span>Size</span>
+          <select id="export-size"></select>
+        </label>
+        <label class="export-field" id="export-custom-row" hidden>
+          <span>Longest side</span>
+          <span class="export-custom"><input type="number" id="export-custom-px" min="16" step="1" value="19200"> px</span>
+        </label>
+        <p id="export-summary" class="export-summary"></p>
+        <p class="export-hint">Rescaling only changes the size the file claims to be &mdash; the viewBox keeps full precision, so no detail is lost and the drawing stays as editable. Original size is exact, but very large drawings make browsers, Inkscape and PDF viewers misbehave, and a PDF page cannot exceed 200in (14400pt) per side at all.</p>
+        <label class="export-check" id="export-embed-row">
+          <input type="checkbox" id="export-embed" checked>
+          <span>Embed the source Visio document, so the SVG re-opens here</span>
+        </label>
+        <div id="export-pdf-gate" class="export-gate" hidden>
+          <div class="export-gate-title">PDF export downloads two libraries</div>
+          <ul id="export-pdf-libs" class="export-gate-libs"></ul>
+          <p class="export-gate-note">Each download is checked against the SHA-256 digest above before a single line of it runs, and is kept in memory only. Nothing is fetched until you allow it.</p>
+          <label class="export-check">
+            <input type="checkbox" id="export-pdf-consent">
+            <span>Allow this download</span>
+          </label>
+        </div>
+        <p id="export-status" class="export-status" role="status"></p>
+        <div class="shape-xml-actions">
+          <button id="export-cancel" type="button">Cancel</button>
+          <button id="export-run" class="shape-xml-save" type="button">Export</button>
         </div>
       </div>
     </div>

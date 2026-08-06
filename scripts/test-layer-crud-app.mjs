@@ -81,8 +81,18 @@ const layerItems = () => [...window.document.querySelectorAll('#layers-list .lay
 const layerNames = () => layerItems().map(i => i.querySelector('.layer-name')?.textContent);
 const layerItem = (name) => layerItems().find(i => i.querySelector('.layer-name')?.textContent === name);
 const objectRows = () => [...window.document.querySelectorAll('#layer-objects-list .layer-object-row')];
+// A row's actions live on its menu: open the menu, click the entry. Returns
+// false when the row does not offer that action at all.
+const menuEntry = (action) => $('layer-context-menu').querySelector(`[data-layer-action="${action}"]`);
+const rowAction = (row, action) => {
+  row.querySelector('.layer-menu-btn').click();
+  const entry = menuEntry(action);
+  if (!entry || entry.disabled) return false;
+  entry.click();
+  return true;
+};
 const openObjects = async (name) => {
-  layerItem(name).querySelector('.layer-objects-btn').click();
+  rowAction(layerItem(name), 'objects');
   await sleep(50);
   return objectRows().map(r => r.textContent);
 };
@@ -105,7 +115,8 @@ check('the new layer is listed', layerNames().includes('Survey notes'), layerNam
 check('it did not disturb the existing layers',
   startingNames.every(name => layerNames().includes(name)), layerNames().join(','));
 check('a new layer starts visible', layerItem('Survey notes')?.querySelector('input[type=checkbox]').checked === true);
-check('a new layer can be tagged like any other', !!layerItem('Survey notes')?.querySelector('.layer-tag-edit'));
+check('a new layer offers the same row menu as any other',
+  !!layerItem('Survey notes')?.querySelector('.layer-menu-btn'));
 
 // --- 2. Names that cannot work are refused ---------------------------------
 const countBefore = layerItems().length;
@@ -157,9 +168,9 @@ const doomed = layerItems().find(i => !i.classList.contains('virtual-layer')
 const doomedName = doomed?.querySelector('.layer-name').textContent;
 check('found a populated layer to delete', !!doomed);
 
-check('the editor-only Unlayered row offers no delete',
+check('the editor-only Unlayered row cannot be deleted',
   layerItems().filter(i => i.classList.contains('virtual-layer'))
-    .every(i => !i.querySelector('.layer-delete')));
+    .every(i => rowAction(i, 'delete') === false));
 
 const shapesOnDoomed = doomed ? (await openObjects(doomedName)) : [];
 $('layer-objects-close').click();
@@ -167,12 +178,12 @@ await sleep(30);
 
 if (doomed) {
   confirmReply = false;
-  doomed.querySelector('.layer-delete').click();
+  rowAction(doomed, 'delete');
   await sleep(50);
   check('cancelling the confirm keeps the layer', layerNames().includes(doomedName));
 
   confirmReply = true;
-  layerItem(doomedName).querySelector('.layer-delete').click();
+  rowAction(layerItem(doomedName), 'delete');
   await sleep(80);
   check('confirming removes it from the sidebar', !layerNames().includes(doomedName), layerNames().join(','));
   check('its shapes were not deleted with it', !!currentSvg().querySelector('g[data-shape-id]'));
@@ -181,7 +192,7 @@ if (doomed) {
     const unlayered = layerItems().find(i => i.classList.contains('virtual-layer'));
     check('the drawing now has an Unlayered row for the orphans', !!unlayered);
     if (unlayered) {
-      unlayered.querySelector('.layer-objects-btn').click();
+      rowAction(unlayered, 'objects');
       await sleep(50);
       const orphanIds = objectRows().map(r => r.textContent);
       check('the orphaned shapes are listed as unlayered',

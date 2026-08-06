@@ -138,10 +138,14 @@ if (layerRow) {
   const wasVisible = layerRow.querySelector('input[type=checkbox]').checked;
   check('the object list starts closed', $('layer-objects').hidden === true);
 
-  const objectsButton = [...layerRow.querySelectorAll('button')]
-    .find(b => (b.getAttribute('aria-label') || '').startsWith('List shapes on'));
-  check('each layer offers a "list shapes" button', !!objectsButton);
-  objectsButton.click();
+  // Listing a layer's shapes is one entry on the row's menu, which is what the
+  // row's single button (and a right-click on it) opens.
+  const menuButton = layerRow.querySelector('.layer-menu-btn');
+  check('each layer offers a row menu', !!menuButton);
+  menuButton.click();
+  const objectsEntry = $('layer-context-menu').querySelector('[data-layer-action="objects"]');
+  check('the menu offers "list shapes"', !!objectsEntry && !objectsEntry.disabled);
+  objectsEntry.click();
   await sleep(50);
 
   check('the object list opened', $('layer-objects').hidden === false);
@@ -173,14 +177,18 @@ if (layerRow) {
   hover(objectRows()[0]);
   const before = captured.length;
   $('btn-export').click();
+  $('export-run').click();
   if (await waitFor(() => captured.length > before)) {
     const svgText = await captured.at(-1).text();
     check('exported SVG omits the selection square', !svgText.includes('shape-highlight'));
   }
 
-  objectsButton.click();
+  // The rows were rebuilt when the list opened, so ask the sidebar for the
+  // row's menu again rather than clicking a button that is no longer in it.
+  window.document.querySelector('#layers-list .layer-item .layer-menu-btn').click();
+  $('layer-context-menu').querySelector('[data-layer-action="objects"]').click();
   await sleep(30);
-  check('the button toggles the list closed again', $('layer-objects').hidden === true);
+  check('asking again toggles the list closed', $('layer-objects').hidden === true);
   check('closing the list clears the square', !highlight());
 }
 
