@@ -7,6 +7,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **The Layers pane splits where you want it to, not where the stylesheet
+  said.** Its width was already yours to drag; the division between the tool
+  sections at the top and the list of layers below was not, so opening Filter,
+  Find and Grouping at once left the list a sliver. There is now a handle
+  between the two. Until you touch it the split is automatic, exactly as
+  before — the tools take what they need and the list takes the rest. Drag it
+  and the split is pinned, so folding a section open or shut no longer moves
+  it; it cannot be dragged so far that the list has no room, nor past what the
+  tools actually fill, and a window that shrinks re-clamps it rather than
+  leaving no list at all. Double-click the handle to go back to automatic.
 - **Export at a size other programs can cope with.** A drawing is rendered in
   its own units, 96 to the paper inch, so a large one is tens of thousands of
   units across. SVG is resolution independent and does not care; the software
@@ -224,6 +234,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   already exist.
 
 ### Fixed
+- **"Select component" missed shapes that were behind the one you clicked.**
+  The list was built from one question — which shapes' bounding boxes cover
+  this point — asked in page inches. That leans on the app's own screen→page
+  transform being right, and on a box standing in for the shape, which it is
+  not once a piece is rotated or L-shaped. When it came up short there was
+  nothing to do but send the shape on top to the back and pick what was
+  underneath, which is a workaround for a list that failed to offer it. The
+  browser already knows the answer for what it drew: `elementsFromPoint`
+  returns the whole stack at a point, completely covered entries included,
+  hit-tested against the real outline with none of our arithmetic in the way.
+  Both questions are now asked and the answers merged, deduplicated and put
+  back in paint order. Where the browser has no such API, the box test still
+  answers on its own, exactly as before.
+- **Shapes on a background page could be seen but not picked.** A page that
+  names a background page is drawn as that page's shapes with its own on top —
+  the renderer has always merged the two. Everything that answered "what is
+  under the cursor", though, asked the foreground page alone, so a title block
+  or frame living on the backdrop was a shape you could see, right-click
+  straight through, and never reach: *Select component* offered the shapes in
+  front of it and nothing behind. The hit test now runs against the page as
+  drawn. Backdrop shapes are listed and marked `background`, hover highlights
+  them and clicking selects them; the rest of the menu then says the shape
+  belongs to the background page instead of offering it one of this page's
+  layers, whose numbering means nothing to it.
+
 - **Closed sheet tabs came back when you pruned the drawing.** *Remove
   Non-selected* and *Remove Non-visible* pruned the file bytes as they were last
   parsed, then re-read the result — so every page you had closed, every sheet

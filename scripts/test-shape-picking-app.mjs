@@ -192,5 +192,72 @@ if (layerRow) {
   check('closing the list clears the square', !highlight());
 }
 
+// --- 3. Everything that passes through the point, not just the box test ----
+// Geometry alone answers in page inches, so it leans on this app's screen→page
+// transform and on a bounding box standing in for the shape. The browser knows
+// the truth for what it drew: elementsFromPoint returns the whole stack at a
+// point, occluded entries included. Both are asked and merged, so a shape you
+// would otherwise have to send to the back before you could pick it is offered
+// straight away. jsdom implements no hit testing at all, so the browser's half
+// is stood up here by hand.
+const allDrawn = [...window.document.querySelectorAll('#svg-container svg g[data-shape-id]')];
+const anchor = allDrawn
+  .map(g => ({ g, t: /^translate\(\s*(-?[\d.]+)[\s,]+(-?[\d.]+)\s*\)$/.exec(g.getAttribute('transform') || '') }))
+  .find(entry => entry.t);
+check('the page has shapes to stack and one to click', allDrawn.length >= 3 && !!anchor,
+  `${allDrawn.length} drawn`);
+
+if (allDrawn.length >= 3 && anchor) {
+  const at = { clientX: Number(anchor.t[1]) + 4, clientY: Number(anchor.t[2]) + 4 };
+  const rightClick = async () => {
+    // A right-click that offers nothing leaves the previous list in place, so
+    // every probe below clicks a point that really does open the menu.
+    currentSvg().dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, ...at }));
+    await sleep(40);
+    return pickRows().map(r => r.dataset.shapeId);
+  };
+
+  delete window.document.elementsFromPoint;
+  const baseline = await rightClick();
+  check('the box test finds something on its own', baseline.length >= 1, baseline.join(','));
+
+  // A shape the box test does not claim at this point — the one the user would
+  // otherwise have to send to the back to reach.
+  const hidden = allDrawn.map(g => g.getAttribute('data-shape-id')).find(id => !baseline.includes(id));
+  check('and there is a shape it does not claim here, to go looking for', !!hidden,
+    `baseline ${baseline.join(',')} of ${allDrawn.length}`);
+
+  if (hidden) {
+    const hiddenEl = allDrawn.find(g => g.getAttribute('data-shape-id') === hidden);
+    window.document.elementsFromPoint = () => [hiddenEl];
+    const merged = await rightClick();
+    check('a shape the box test never claimed is offered once the browser reports it',
+      merged.includes(hidden), `wanted ${hidden}, got ${merged.join(',')}`);
+    check('and nothing the box test found was dropped to make room',
+      baseline.every(id => merged.includes(id)), `${baseline.join(',')} → ${merged.join(',')}`);
+    check('the merged list is in paint order, topmost first',
+      merged.every((id, i) => i === 0 || Number(orderOf(id)) <= Number(orderOf(merged[i - 1]))),
+      merged.join(','));
+
+    // The same shape reported by both halves must appear once.
+    window.document.elementsFromPoint = () => allDrawn;
+    const both = await rightClick();
+    check('a shape both halves report is listed once, not twice',
+      new Set(both).size === both.length, both.join(','));
+
+    delete window.document.elementsFromPoint;
+    const without = await rightClick();
+    check('and a browser without that API is no worse off than before',
+      without.length === baseline.length && baseline.every(id => without.includes(id)),
+      `${baseline.join(',')} → ${without.join(',')}`);
+  }
+}
+
+// Paint order is the document order of the <g> elements the renderer emitted.
+function orderOf(shapeId) {
+  return [...window.document.querySelectorAll('#svg-container svg g[data-shape-id]')]
+    .findIndex(g => g.getAttribute('data-shape-id') === String(shapeId));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

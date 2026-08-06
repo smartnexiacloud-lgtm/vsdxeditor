@@ -61,8 +61,9 @@ portable offline builds.
   rename any shape from its row.
 - **Find a shape** — search the page by name, text, or `#id` from the **Find
   shapes** box in the Layers sidebar; right-click for **Select component**, which
-  lists every shape under the cursor (topmost first, groups included) so you can
-  reach one buried under another; or pick **List shapes** from a layer's row menu
+  lists everything passing through the point (topmost first, groups and shapes
+  on the background page included) so you can reach one buried under another
+  without sending anything to the back; or pick **List shapes** from a layer's row menu
   for everything on that layer. In all three, hovering a row draws a selection
   square around that shape on the canvas, and clicking selects it *and* points
   the Layers sidebar at the layer it is on.

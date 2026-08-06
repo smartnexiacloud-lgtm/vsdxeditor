@@ -52,6 +52,13 @@ to **True size** first if you want an export with untouched line weights.
 Click **Layers** to open the layers sidebar. Each layer has a visibility toggle;
 turning one off hides its shapes in the rendered page.
 
+The pane resizes both ways. Drag its right-hand edge to make it wider — long
+layer names need the room — and drag the line between the tool sections and the
+list of layers to decide how the height is split between them. Until you drag it
+the split is automatic: the tools take what they need and the list takes the
+rest. Once you drag it, it stays put even as you fold sections open and shut.
+Double-click the handle to hand the split back to the layout.
+
 A layer's row is its name, its checkbox and its tags — nothing else. Everything
 else a row can do is on **its menu**, which a right-click on the row opens, as
 does the **⋯** at its end:
@@ -295,13 +302,22 @@ re-saved in the real Microsoft Visio desktop app — see
     `Type.ID`. The same rename is on every row of the Shape Tree.
   - **Edit XML** — open the shape's raw XML in an editor; **Apply XML** to
     commit your change or **Cancel** to discard.
-  - **Select component** — every shape whose box covers the point you clicked,
-    topmost first, so you can reach a shape sitting underneath another one or
-    pick the group instead of the part inside it. Hovering a row draws a
+  - **Select component** — everything that passes through the point you
+    clicked, topmost first, so you can reach a shape sitting underneath another
+    one or pick the group instead of the part inside it. You should never have
+    to send a shape to the back to get at what is behind it. The list is the
+    union of two answers: every shape whose bounding box covers the point, and
+    every shape the browser itself reports at that point — which includes ones
+    that are completely covered up, and which is hit-tested against the real
+    drawn outline rather than a box. Hovering a row draws a
     selection square around that shape on the canvas; clicking selects it and
     points the rest of the menu at it. Nesting is shown with `›` markers, and
     shapes currently hidden are marked `hidden` — they stay listed, because a
-    shape you cannot see is often the one you are looking for.
+    shape you cannot see is often the one you are looking for. If the page has a
+    background page, its shapes are drawn underneath this page's, so they are
+    listed too and marked `background`. You can highlight and select one; the
+    rest of the menu then says it belongs to the background page, because its
+    layers are that page's and assigning it one of this page's would be wrong.
   - **Arrange** — see below.
   - **Send Object To Layer** — move the shape onto a different layer (filter the
     layer list with the search box), or **+ New layer…** to create one and file

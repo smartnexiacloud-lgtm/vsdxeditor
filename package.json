@@ -8,7 +8,7 @@
     "postbuild": "node scripts/build-docs.mjs && node -e \"require('fs').copyFileSync('src/index.html','dist/app.html')\"",
     "package:portable": "npm run build && npm run postbuild && node scripts/build-portable.mjs",
     "dev": "npm run postbuild && node scripts/dev-server.mjs",
-    "test": "npm run test:vsdx-diff && npm run test:diff-view && npm run test:svg-roundtrip && npm run test:app-svg-roundtrip && npm run test:export-scale && npm run test:export-app && npm run test:view-templates && npm run test:view-templates-app && npm run test:layer-tags && npm run test:layer-tags-app && npm run test:render-strokes && npm run test:render-modes-app && npm run test:pen-geometry && npm run test:pen-tool-app && npm run test:shape-edit-state-app && npm run test:shape-rename-app && npm run test:shape-search-app && npm run test:shape-arrange && npm run test:shape-arrange-app && npm run test:shape-picker && npm run test:shape-picking-app && npm run test:shape-picking-app-groups && npm run test:layers-ui-app && npm run test:layer-crud && npm run test:layer-crud-app && npm run test:layer-tree && npm run test:layer-tree-app && npm run test:layer-tree-roundtrip",
+    "test": "npm run test:vsdx-diff && npm run test:diff-view && npm run test:svg-roundtrip && npm run test:app-svg-roundtrip && npm run test:export-scale && npm run test:export-app && npm run test:view-templates && npm run test:view-templates-app && npm run test:layer-tags && npm run test:layer-tags-app && npm run test:render-strokes && npm run test:render-modes-app && npm run test:pen-geometry && npm run test:pen-tool-app && npm run test:shape-edit-state-app && npm run test:shape-rename-app && npm run test:shape-search-app && npm run test:shape-arrange && npm run test:shape-arrange-app && npm run test:shape-picker && npm run test:shape-picking-app && npm run test:shape-picking-app-groups && npm run test:backdrop-picking-app && npm run test:layers-ui-app && npm run test:layer-crud && npm run test:layer-crud-app && npm run test:layer-tree && npm run test:layer-tree-app && npm run test:layer-tree-roundtrip",
     "vsdx:unpack": "node scripts/vsdx-serialize.mjs unpack",
     "vsdx:pack": "node scripts/vsdx-serialize.mjs pack",
     "vsdx:verify": "node scripts/vsdx-serialize.mjs verify",
@@ -40,6 +40,7 @@
     "test:shape-arrange-app": "node scripts/test-shape-arrange-app.mjs",
     "test:shape-picker": "node scripts/test-shape-picker.mjs",
     "test:shape-picking-app": "node scripts/test-shape-picking-app.mjs",
+    "test:backdrop-picking-app": "node scripts/test-backdrop-picking-app.mjs",
     "test:shape-picking-app-groups": "node scripts/test-shape-picking-app.mjs test-files/test3_house.vsdx",
     "vsdx:install-difftool": "node scripts/install-git-integration.mjs"
   },

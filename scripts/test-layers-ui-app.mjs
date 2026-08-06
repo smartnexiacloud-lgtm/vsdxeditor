@@ -165,6 +165,97 @@ check('a drag that ended is over',
     return $('layers-sidebar').style.width === before;
   })(), $('layers-sidebar').style.width);
 
+// --- 3b. And as tall as you drag it, between the tools and the list --------
+// The width was the user's call; the split down the middle of the pane was
+// still the stylesheet's, so opening three sections left the list a sliver.
+const hResizer = $('layers-hresizer');
+const toolsPane = $('layers-sidebar').querySelector('.layers-filter');
+check('the tools and the list have a drag handle between them', !!hResizer);
+check('it sits between them, not somewhere else in the pane',
+  hResizer?.previousElementSibling === toolsPane && hResizer?.nextElementSibling === $('layers-list'),
+  `${hResizer?.previousElementSibling?.className} | ${hResizer?.nextElementSibling?.id}`);
+check('it says which way it splits', hResizer?.getAttribute('aria-orientation') === 'horizontal');
+check('and until it is touched the split is automatic',
+  !toolsPane.style.height && !toolsPane.classList.contains('manual-height'),
+  toolsPane.getAttribute('style') || '(none)');
+
+hResizer.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true, button: 0, clientY: 200 }));
+window.document.dispatchEvent(new window.MouseEvent('mousemove', { bubbles: true, clientY: 300 }));
+window.document.dispatchEvent(new window.MouseEvent('mouseup', { bubbles: true }));
+await sleep(20);
+check('dragging it down gives the tools the room', toolsPane.style.height === '300px', toolsPane.style.height);
+check('and pins the split so a folded section no longer moves it',
+  toolsPane.classList.contains('manual-height')
+  && /\.layers-filter\.manual-height\s*\{[^}]*flex:\s*0 0/.test(html),
+  toolsPane.className);
+
+sectionToggle('filter').click();
+await sleep(20);
+check('folding a section leaves the pinned split alone', toolsPane.style.height === '300px', toolsPane.style.height);
+sectionToggle('filter').click();
+await sleep(20);
+
+hResizer.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true, button: 0, clientY: 300 }));
+window.document.dispatchEvent(new window.MouseEvent('mousemove', { bubbles: true, clientY: 2 }));
+window.document.dispatchEvent(new window.MouseEvent('mouseup', { bubbles: true }));
+await sleep(20);
+check('and it cannot be dragged shut past the first section heading',
+  parseInt(toolsPane.style.height, 10) >= 26, toolsPane.style.height);
+
+check('a drag that ended is over here too', (() => {
+  const before = toolsPane.style.height;
+  window.document.dispatchEvent(new window.MouseEvent('mousemove', { bubbles: true, clientY: 400 }));
+  return toolsPane.style.height === before;
+})(), toolsPane.style.height);
+
+// jsdom has no layout engine, so every rect it reports is zero and the two
+// bounds that depend on measurement are never reached above. Feed it the
+// measurements a browser would give and the arithmetic is testable here.
+const measure = (el, rect) =>
+  Object.defineProperty(el, 'getBoundingClientRect', { value: () => rect, configurable: true });
+const unmeasure = (el, prop) => delete el[prop];
+measure($('layers-sidebar'), { top: 40, bottom: 600, height: 560 });
+measure(toolsPane, { top: 40, bottom: 300, height: 260 });
+Object.defineProperty(hResizer, 'offsetHeight', { value: 5, configurable: true });
+Object.defineProperty(toolsPane, 'scrollHeight', { value: 900, configurable: true });
+
+const dragTo = (y) => {
+  hResizer.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true, button: 0, clientY: 100 }));
+  window.document.dispatchEvent(new window.MouseEvent('mousemove', { bubbles: true, clientY: y }));
+  window.document.dispatchEvent(new window.MouseEvent('mouseup', { bubbles: true }));
+};
+
+dragTo(5000);
+await sleep(20);
+// 600 bottom − 40 top − 5 handle = 555 of room, less the list's own 80 minimum.
+check('the tools cannot be dragged over the whole pane — the list keeps its floor',
+  toolsPane.style.height === '475px', toolsPane.style.height);
+
+Object.defineProperty(toolsPane, 'scrollHeight', { value: 120, configurable: true });
+dragTo(5000);
+await sleep(20);
+check('nor past what the tools actually fill, which would be blank space',
+  toolsPane.style.height === '120px', toolsPane.style.height);
+
+// A split that was legal in a tall window leaves no list at all in a short one.
+measure($('layers-sidebar'), { top: 40, bottom: 200, height: 160 });
+Object.defineProperty(toolsPane, 'scrollHeight', { value: 900, configurable: true });
+window.dispatchEvent(new window.Event('resize'));
+await sleep(20);
+check('and a window that shrinks re-clamps a split it no longer has room for',
+  toolsPane.style.height === '75px', toolsPane.style.height);
+
+unmeasure($('layers-sidebar'), 'getBoundingClientRect');
+unmeasure(toolsPane, 'getBoundingClientRect');
+unmeasure(toolsPane, 'scrollHeight');
+unmeasure(hResizer, 'offsetHeight');
+
+hResizer.dispatchEvent(new window.MouseEvent('dblclick', { bubbles: true }));
+await sleep(20);
+check('double-clicking the handle hands the split back to the layout',
+  !toolsPane.style.height && !toolsPane.classList.contains('manual-height'),
+  toolsPane.getAttribute('style') || '(none)');
+
 // --- 4. Hiding everything can be taken back --------------------------------
 // "Hide all" is one click; undoing it by hand is one click per layer.
 const total = layerItems().length;

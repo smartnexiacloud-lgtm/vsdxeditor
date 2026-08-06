@@ -137,19 +137,40 @@ export function collectShapeBoxes(page) {
   return entries;
 }
 
+// Paint order puts the topmost last; the user expects it first. Ties on a group
+// and its child resolve to the child, which is the more specific pick. Exported
+// because callers that merge these entries with hits from somewhere else have
+// to put the result back in one order, and it must be this one.
+export function topmostFirst(entries) {
+  return [...entries].sort((a, b) => (b.order - a.order) || (b.depth - a.depth));
+}
+
+// Drop repeats, keeping the first occurrence — the caller has already decided
+// which list it trusts to come first.
+export function dedupeById(entries) {
+  const seen = new Set();
+  const out = [];
+  for (const entry of entries || []) {
+    const id = String(entry?.id);
+    if (!entry || seen.has(id)) continue;
+    seen.add(id);
+    out.push(entry);
+  }
+  return out;
+}
+
 // Every shape whose box contains the point, topmost first. Groups are included
 // alongside their children so the menu can offer either the component or the
 // individual part inside it.
 export function shapesAtPoint(page, x, y, options = {}) {
   const slop = Number.isFinite(options.slop) ? options.slop : 0;
-  const hits = collectShapeBoxes(page).filter((entry) => {
+  const entries = options.entries || collectShapeBoxes(page);
+  const hits = entries.filter((entry) => {
     const b = entry.bounds;
     return x >= b.minX - slop && x <= b.maxX + slop && y >= b.minY - slop && y <= b.maxY + slop;
   });
 
-  // Paint order puts the topmost last; the user expects it first. Ties on a
-  // group and its child resolve to the child, which is the more specific pick.
-  return hits.sort((a, b) => (b.order - a.order) || (b.depth - a.depth));
+  return topmostFirst(hits);
 }
 
 // Every shape whose name or text matches, in paint order. Visio's own Find

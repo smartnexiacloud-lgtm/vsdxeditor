@@ -3,7 +3,10 @@ import { embedVsdxInSvg, extractVsdxFromSvg } from './svg-vsdx-embed.js';
 import { parseVsd } from './vsd-parser.js';
 import { renderPage, pageCoordinateWidth } from './svg-renderer.js';
 import { buildPenShapeXml, penPathToSvgD } from './pen-geometry.js';
-import { shapesAtPoint, shapesOnLayer, shapesOnLayers, searchShapes } from './shape-picker.js';
+import {
+  shapesAtPoint, shapesOnLayer, shapesOnLayers, searchShapes,
+  collectShapeBoxes, topmostFirst, dedupeById
+} from './shape-picker.js';
 import { planGroupShapes, planUngroupShape, isGroupShape, inheritsFromMaster } from './shape-arrange.js';
 import { openDiffView } from './diff-view.js';
 import { splitLayerPath, buildLayerTree, layersUnder, flattenLayerTree, groupKeys } from './layer-tree.js';
@@ -38,6 +41,8 @@ const layerTreeToggleAll = document.getElementById('layer-tree-toggle-all');
 const layerContextMenu = document.getElementById('layer-context-menu');
 const layerContextTitle = document.getElementById('layer-context-title');
 const layersResizer = document.getElementById('layers-resizer');
+const layersHResizer = document.getElementById('layers-hresizer');
+const layersFilterPane = layersSidebar?.querySelector('.layers-filter') || null;
 const layerMatrixModal = document.getElementById('layer-matrix-modal');
 const layerMatrixBody = document.getElementById('layer-matrix-body');
 const layerMatrixClose = document.getElementById('layer-matrix-close');
@@ -299,19 +304,24 @@ function updateRerenderState() {
     : 'Re-render this page for the current zoom';
 }
 
+// A page that names a background page is *drawn* as that page's shapes with its
+// own on top. Everything that answers "what is under the cursor" has to ask the
+// same drawing the renderer built, or the shapes behind are ones you can see and
+// cannot pick — which is the whole point of a backdrop.
+function backgroundPageFor(page) {
+  if (!page?.backPage) return null;
+  return currentPages.find(p => String(p.id) === String(page.backPage)) || null;
+}
+
+function composedPage(page) {
+  const bgPage = backgroundPageFor(page);
+  return bgPage ? { ...page, shapes: [...bgPage.shapes, ...page.shapes] } : page;
+}
+
 function renderCurrentPage() {
   if (!currentPages.length) return;
   const page = currentPages[currentPageIndex];
-  let renderedPage = page;
-
-  // Render background page first if referenced
-  if (page.backPage) {
-    const bgPage = currentPages.find(p => p.id === page.backPage);
-    if (bgPage) {
-      // Merge background shapes into current page for rendering
-      renderedPage = { ...page, shapes: [...bgPage.shapes, ...page.shapes] };
-    }
-  }
+  const renderedPage = composedPage(page);
 
   renderPage(renderedPage, svgContainer, { minStrokeWidth: currentMinStrokeWidth(renderedPage) });
   renderedZoom = zoom;
@@ -627,6 +637,77 @@ if (layersResizer) {
   });
   document.addEventListener('mousemove', onMove);
   document.addEventListener('mouseup', onUp);
+}
+
+// The same argument one axis over. How the pane's height divides between the
+// tools and the list depends on which of the two you are working in: opening
+// three sections to build a filter leaves the list a sliver, and someone
+// scrolling two hundred layers wants the tools out of the way. Neither split is
+// right for everyone, so it is a handle rather than a rule. Automatic until
+// dragged, and a double-click puts it back.
+const MIN_TOOLS_HEIGHT = 26;       // one folded section header stays reachable
+const MIN_LAYER_LIST_HEIGHT = 80;  // matches #layers-list's own min-height
+let toolsHeight = null;            // null = size to content, as the CSS does
+
+function toolsHeightBounds() {
+  // A pane that is hidden, or not laid out at all, measures zero — clamping to
+  // that would collapse the tools to nothing the moment it became visible. So
+  // bounds only apply where there is a measurement to apply them to.
+  const room = layersSidebar.getBoundingClientRect().bottom
+    - layersFilterPane.getBoundingClientRect().top
+    - layersHResizer.offsetHeight;
+  const max = [];
+  if (room > 0) max.push(room - MIN_LAYER_LIST_HEIGHT);
+  // Handing the tools more room than their content fills buys blank space and
+  // takes it off the list, so the natural height is the far end of the drag.
+  if (layersFilterPane.scrollHeight > 0) max.push(layersFilterPane.scrollHeight);
+  return { min: MIN_TOOLS_HEIGHT, max: max.length ? Math.max(MIN_TOOLS_HEIGHT, Math.min(...max)) : Infinity };
+}
+
+function setToolsHeight(height) {
+  if (!layersFilterPane) return;
+  if (height === null) {
+    toolsHeight = null;
+    layersFilterPane.classList.remove('manual-height');
+    layersFilterPane.style.removeProperty('height');
+    return;
+  }
+  const { min, max } = toolsHeightBounds();
+  toolsHeight = Math.max(min, Math.min(max, Math.round(height)));
+  layersFilterPane.classList.add('manual-height');
+  layersFilterPane.style.height = `${toolsHeight}px`;
+}
+
+if (layersHResizer && layersFilterPane) {
+  let dragging = false;
+  const onMove = (event) => {
+    if (!dragging) return;
+    event.preventDefault();
+    setToolsHeight(event.clientY - layersFilterPane.getBoundingClientRect().top);
+  };
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    layersHResizer.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  };
+  layersHResizer.addEventListener('mousedown', (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    dragging = true;
+    layersHResizer.classList.add('dragging');
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+  });
+  layersHResizer.addEventListener('dblclick', () => setToolsHeight(null));
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+  // A split that was legal in a tall window can leave no list at all in a short
+  // one, so a pinned height is re-clamped whenever the room changes.
+  window.addEventListener('resize', () => {
+    if (toolsHeight !== null) setToolsHeight(toolsHeight);
+  });
 }
 
 function updateSidebarChrome() {
@@ -1859,10 +1940,8 @@ function findPageForShape(shapeId) {
   if (!currentPage) return null;
 
   if (findShapeById(currentPage.shapes || [], shapeId)) return currentPage;
-  if (currentPage.backPage) {
-    const bgPage = currentPages.find(page => String(page.id) === String(currentPage.backPage));
-    if (bgPage && findShapeById(bgPage.shapes || [], shapeId)) return bgPage;
-  }
+  const bgPage = backgroundPageFor(currentPage);
+  if (bgPage && findShapeById(bgPage.shapes || [], shapeId)) return bgPage;
   return null;
 }
 
@@ -1878,6 +1957,25 @@ function findShapePath(shapes, shapeId, path = []) {
 
 function getCurrentPage() {
   return currentPages[currentPageIndex] || null;
+}
+
+// The page as drawn, for hit tests. Identical to getCurrentPage() unless this
+// page has a backdrop.
+function getComposedPage() {
+  return composedPage(getCurrentPage());
+}
+
+// Which of the shapes under the cursor came from the backdrop rather than from
+// this page. Only the roots are listed; a nested shape is judged by the root it
+// descends from, which is what `ancestors` records.
+function backgroundRootIds(page = getCurrentPage()) {
+  const bgPage = backgroundPageFor(page);
+  return new Set((bgPage?.shapes || []).map(shape => String(shape.id)));
+}
+
+function isBackgroundEntry(entry, roots = backgroundRootIds()) {
+  if (!roots.size || !entry) return false;
+  return roots.has(String(entry.ancestors?.[0] ?? entry.id));
 }
 
 function getCurrentPageKey() {
@@ -2252,7 +2350,14 @@ function renderShapeTree() {
 }
 
 function getContextShape() {
-  return contextShapeId !== null ? findShapeById(currentPages[currentPageIndex]?.shapes || [], contextShapeId) : null;
+  // The backdrop is searched too, or picking one of its shapes out of the list
+  // would find nothing and shut the menu the user just opened.
+  return contextShapeId !== null ? findShapeById(getComposedPage()?.shapes || [], contextShapeId) : null;
+}
+
+function isContextShapeOnBackdrop() {
+  if (contextShapeId === null) return false;
+  return !findShapeById(getCurrentPage()?.shapes || [], contextShapeId);
 }
 
 function hideShapeXmlEditor() {
@@ -2332,8 +2437,25 @@ function renderShapeContextMenu() {
 
   const currentLayer = String(shape.layerMembers?.[0] || '');
   const layers = (page.layers || []).filter(isRealLayer).filter(layerMatchesContextFilter);
-  shapeContextSubtitle.textContent = `${shape.title || shape.name || `Shape ${shape.id}`} · current layer ${currentLayer || 'none'}`;
   shapeContextList.innerHTML = '';
+
+  // A backdrop shape is drawn here but lives on another page, and its layer
+  // numbers mean nothing in this page's table. Say so rather than offering an
+  // assignment that would write the wrong layer onto the wrong page.
+  if (isContextShapeOnBackdrop()) {
+    const backdrop = backgroundPageFor(page);
+    shapeContextSubtitle.textContent =
+      `${shape.title || shape.name || `Shape ${shape.id}`} · on the background page`;
+    const note = document.createElement('div');
+    note.className = 'shape-context-empty';
+    note.textContent = backdrop?.name
+      ? `This shape belongs to the background page “${backdrop.name}” and is edited there.`
+      : 'This shape belongs to the background page and is edited there.';
+    shapeContextList.appendChild(note);
+    return;
+  }
+
+  shapeContextSubtitle.textContent = `${shape.title || shape.name || `Shape ${shape.id}`} · current layer ${currentLayer || 'none'}`;
 
   if (!layers.length) {
     const empty = document.createElement('div');
@@ -2547,6 +2669,9 @@ function highlightShapeBox(entry) {
 // A shape the user cannot currently see is still worth listing — it is often
 // exactly what they are hunting for — but it has to say so.
 function isEntryHidden(entry) {
+  // A backdrop shape's layer numbers index the backdrop page's own layer table,
+  // not this page's, so this page's hidden set says nothing about it.
+  if (isBackgroundEntry(entry)) return false;
   if (getHiddenShapeIds().has(String(entry.id))) return true;
   if (!entry.layerMembers.length) return hiddenLayers.has(UNLAYERED_LAYER_INDEX);
   return entry.layerMembers.every(member => hiddenLayers.has(String(member)));
@@ -2573,6 +2698,7 @@ function createShapePickRow(entry, className, onPick) {
   meta.className = 'shape-pick-meta';
   const bits = [`#${entry.id}`];
   if (entry.isGroup) bits.push('group');
+  if (isBackgroundEntry(entry)) bits.push('background');
   if (isEntryHidden(entry)) bits.push('hidden');
   meta.textContent = bits.join(' · ');
 
@@ -2728,7 +2854,9 @@ function renderShapePickList() {
       contextShapeId = String(picked.id);
       if (event?.ctrlKey || event?.metaKey || event?.shiftKey) toggleSelectedShape(picked.id);
       else setSelectedShape(picked.id);
-      revealLayerForShape(picked.shape);
+      // A backdrop shape's layer numbers belong to the backdrop's table, so
+      // jumping to the row they happen to match here would point at a stranger.
+      if (!isBackgroundEntry(picked)) revealLayerForShape(picked.shape);
       renderShapeContextMenu();
       renderShapePickList();
       renderShapeArrangeSection();
@@ -2736,6 +2864,52 @@ function renderShapePickList() {
     if (contextShapeId !== null && String(entry.id) === String(contextShapeId)) row.classList.add('active');
     shapePickList.appendChild(row);
   }
+}
+
+// --- What is under the cursor ----------------------------------------------
+// Two ways of asking, because neither is right on its own.
+//
+// Geometry — every shape whose box covers the point — is the question the menu
+// wants, but it is answered in page inches, so it is only as good as this app's
+// screen→page transform, and a box is not the shape: a rotated or L-shaped
+// piece claims corners it does not occupy.
+//
+// The browser already knows the answer for what it actually drew.
+// elementsFromPoint returns the whole stack at a client point — everything
+// underneath included, not just the top one — hit-tested against real geometry
+// with no coordinate maths of ours in the way. What it misses is the inside of
+// an unfilled shape, which has no hit region at all.
+//
+// So both are asked and the answers merged. That is what "everything that
+// passes through this point" has to mean: a shape you have to send to the back
+// before you can pick it is a shape this list failed to offer.
+function domShapeEntriesAt(clientX, clientY, byId) {
+  if (typeof document.elementsFromPoint !== 'function') return [];
+  const found = [];
+  for (const el of document.elementsFromPoint(clientX, clientY) || []) {
+    // Walk up from each hit: a nested shape's <g> sits inside its group's, and
+    // both are worth offering.
+    for (let node = el; node && node.getAttribute; node = node.parentNode) {
+      const id = node.getAttribute('data-shape-id');
+      if (id && byId.has(String(id))) found.push(byId.get(String(id)));
+    }
+  }
+  return found;
+}
+
+function shapesUnderCursor(clientX, clientY) {
+  const page = getComposedPage();
+  if (!page) return [];
+  const entries = collectShapeBoxes(page);
+  const byId = new Map(entries.map(entry => [String(entry.id), entry]));
+
+  const point = clientToPageUnits(clientX, clientY);
+  // A few device pixels of slop, so a hairline is still catchable.
+  const geometric = point
+    ? shapesAtPoint(page, point.x, point.y, { slop: pageInchesPerDevicePixel(page) * 3, entries })
+    : [];
+
+  return topmostFirst(dedupeById([...geometric, ...domShapeEntriesAt(clientX, clientY, byId)]));
 }
 
 function attachSvgLayerFocusHandlers() {
@@ -2753,13 +2927,7 @@ function attachSvgLayerFocusHandlers() {
   });
   svg.addEventListener('contextmenu', (e) => {
     if (penActive) return;
-    const page = getCurrentPage();
-    const point = clientToPageUnits(e.clientX, e.clientY);
-    // Everything whose box covers the click, topmost first, with a few pixels
-    // of slop so a hairline is still catchable.
-    const entries = page && point
-      ? shapesAtPoint(page, point.x, point.y, { slop: pageInchesPerDevicePixel(page) * 3 })
-      : [];
+    const entries = shapesUnderCursor(e.clientX, e.clientY);
 
     const group = e.target.closest?.('g[data-shape-id]');
     const targetId = group?.getAttribute('data-shape-id') ?? entries[0]?.id ?? null;
