@@ -24,7 +24,9 @@ portable offline builds.
 - **Multi-page** documents with page tabs.
 - **Zoom** (in / out / fit-to-window) and pan, down to 0.02% — a Visio site
   plan can be thousands of inches across, and opening a page fits all of it on
-  screen. There is a **Hairlines** control that
+  screen. Get around by wheel, Shift+wheel, drag, scrollbars or the arrow keys;
+  Ctrl+wheel and a trackpad pinch zoom about the pointer, and the drawing
+  cannot be dragged out of the window. There is a **Hairlines** control that
   either keeps Visio's hairlines at least a pixel wide at the current zoom or
   draws every line at its true Visio weight (**⟳ Update** re-renders for the
   zoom you are at).

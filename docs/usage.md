@@ -27,14 +27,30 @@ switch pages.
 
 | Control | Action |
 | --- | --- |
-| **+** / **−** | Zoom in / out |
+| Wheel | Scroll up and down |
+| **Shift** + wheel | Scroll left and right |
+| **Ctrl** / **⌘** + wheel, or a trackpad pinch | Zoom about the pointer |
+| **+** / **−** | Zoom in / out about the middle of the window |
 | **Fit** | Scale the page to fit the window — including *up*, for a drawing smaller than the window |
 | Drag on empty canvas | Pan (dragging a *selected* shape moves it instead — see [Select](#moving-resizing-and-turning-shapes-select)) |
+| Scrollbars | Drag a thumb, or click its track to jump |
+| **←** **↑** **→** **↓** | Pan a step; hold **Shift** for a bigger one |
+| **Page Up** / **Page Down** | Pan a screenful |
+| **Home** / **End** | Jump to the top-left / bottom-right corner of the drawing |
 | `zoom-info` readout | Shows the current zoom percentage |
+
+The arrow keys act on the canvas once it has the focus, which pressing on it
+gives it.
 
 Zoom is applied to the SVG's own size rather than as a transform on top of it,
 so the drawing is re-drawn at every zoom instead of magnified as pixels — no
-soft edges while you wheel, and none left behind afterwards.
+soft edges while you wheel, and none left behind afterwards. The flip side is
+that the drawing is *placed* by a transform too, so the browser has no
+scrollable box here and would draw no scrollbars of its own: the ones at the
+right and bottom edges are drawn from the same pan the drag uses. They appear
+only when part of the drawing is off screen, and the drawing itself can no
+longer be flung out of the window — a drag stops when its edge reaches the
+window's.
 
 **A page opens showing all of itself.** A Visio drawing is not necessarily a
 sheet of paper: a site plan or a floor layout is measured at full size, and one

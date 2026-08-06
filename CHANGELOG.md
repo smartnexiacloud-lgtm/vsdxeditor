@@ -347,6 +347,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   already exist.
 
 ### Fixed
+- **There was no way to scroll the canvas, and no scrollbars.** The drawing is
+  *placed* by a CSS transform rather than by scrolling — that is what keeps the
+  vectors crisp at any zoom — and the cost of it was that the viewport was not a
+  scrollable box: the browser drew no scrollbars, the wheel only ever zoomed,
+  and the arrow keys did nothing. Dragging was the only way to move, and a drag
+  went as far as the hand did, so a drawing could be flung right out of the
+  window with nothing left on screen to say which way it had gone. So:
+  - the wheel scrolls, **Shift**+wheel scrolls sideways, and **Ctrl**/**⌘**+wheel
+    (and a trackpad pinch) zooms about the pointer — what Visio does, and what
+    the browser does;
+  - the arrow keys pan a step and **Shift**+arrow a bigger one, **Page Up** /
+    **Page Down** move a screenful, and **Home** / **End** jump to the corners.
+    Pressing on the canvas focuses it, so the keys reach it;
+  - scrollbars are drawn at the right and bottom edges, from the same pan the
+    drag uses. They appear only when part of the drawing is off screen; the
+    thumb is as long as the share of the drawing you can see, and its track can
+    be clicked to jump;
+  - the drawing can no longer be lost: a pan stops when the drawing's edge meets
+    the window's, and one smaller than the window stays inside it. A drag that
+    runs into the edge and comes back still follows the hand rather than
+    creeping, because it is anchored to where the press was.
+
+  **+** and **−** now zoom about the middle of the window rather than the
+  top-left corner, which used to walk the drawing out of view a step at a time.
+- **Dragging the canvas felt heavy on a large drawing.** A mouse delivers moves
+  faster than the screen refreshes, and each one wrote a transform — on a page
+  of 8,470 shapes and 99,519 SVG elements, that is a lot of layout work thrown
+  away unseen. Moves are now accumulated and written once on the next animation
+  frame, and the drawing is put on its own compositor layer while a gesture is
+  in flight so a pan moves it rather than repainting it.
 - **A large drawing could not be zoomed out far enough to see.** Fixing the
   zoom blur had a consequence nobody wanted: the SVG used to be laid out at
   `width: 100%` with its natural size as a maximum, so the browser quietly shrank

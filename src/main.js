@@ -307,11 +307,61 @@ function formatZoom(value) {
   return `${percent.toPrecision(2)}%`;
 }
 
-function updateTransform() {
+// The size of the drawing on screen right now, in screen pixels, and how far it
+// may be pushed around inside the window. A drawing bigger than the window may
+// be pulled until either edge meets the window's; one smaller than the window
+// stays wholly inside it. Both come out of the same two numbers, which is why
+// the range is written as a min and a max of the same expression rather than as
+// two cases.
+function contentScreenSize() {
+  const svg = svgContainer.querySelector('svg');
+  if (!svg) return null;
+  const { width, height } = svgViewBoxSize(svg);
+  if (!(width > 0 && height > 0)) return null;
+  return { width: width * zoom, height: height * zoom };
+}
+
+function panRange() {
+  const content = contentScreenSize();
+  const view = viewportEl?.getBoundingClientRect?.();
+  if (!content || !view || !(view.width > 0 && view.height > 0)) return null;
+  const slackX = view.width - content.width;
+  const slackY = view.height - content.height;
+  return {
+    minX: Math.min(0, slackX), maxX: Math.max(0, slackX),
+    minY: Math.min(0, slackY), maxY: Math.max(0, slackY),
+    // What the scrollbars need: how much of the drawing is off screen, and
+    // where in that travel we currently are.
+    travelX: Math.abs(slackX), travelY: Math.abs(slackY),
+    view, content
+  };
+}
+
+// Losing the drawing off the side of the window was always possible and never
+// wanted, and it is the scrollbars that make it visible: a thumb has to sit
+// somewhere on its track.
+function clampPan() {
+  const range = panRange();
+  if (!range) return;
+  panX = Math.min(range.maxX, Math.max(range.minX, panX));
+  panY = Math.min(range.maxY, Math.max(range.minY, panY));
+}
+
+// The transform and nothing else. Dragging writes this every frame, so anything
+// that reads layout, writes text or touches a timer stays out of it.
+function applyPanTransform() {
   const residual = zoom / (layoutZoom || 1);
-  svgContainer.style.transform = `translate(${panX}px, ${panY}px) scale(${residual})`;
+  svgContainer.style.transform = residual === 1
+    ? `translate(${panX}px, ${panY}px)`
+    : `translate(${panX}px, ${panY}px) scale(${residual})`;
+}
+
+function updateTransform() {
+  clampPan();
+  applyPanTransform();
   zoomInfo.textContent = formatZoom(zoom);
   updateRerenderState();
+  updateScrollbars();
   scheduleLayoutZoom();
 }
 
@@ -330,7 +380,8 @@ function commitLayoutZoom() {
   // The renderer pins max-width to the drawing's natural width to keep it from
   // stretching; past 100% that is exactly what we are asking for.
   svg.style.maxWidth = 'none';
-  svgContainer.style.transform = `translate(${panX}px, ${panY}px)`;
+  applyPanTransform();
+  updateScrollbars();
 }
 
 function scheduleLayoutZoom() {
@@ -4045,21 +4096,216 @@ dropZone.addEventListener('click', () => fileInput.click());
 // Pan & zoom on viewer
 const viewportEl = document.getElementById('viewport');
 
-viewportEl.addEventListener('wheel', (e) => {
-  e.preventDefault();
-  const delta = e.deltaY > 0 ? 0.9 : 1.1;
+// Zoom about a point on screen: whatever is under the cursor stays under it.
+// Written as "where is this screen point in the drawing" and then "put it back
+// there", because the clamp may refuse part of the move and the arithmetic has
+// to survive that.
+function zoomAbout(newZoom, clientX, clientY) {
   const rect = viewportEl.getBoundingClientRect();
-  const mx = e.clientX - rect.left;
-  const my = e.clientY - rect.top;
-
-  // Zoom towards mouse position
-  const newZoom = Math.max(MIN_ZOOM, Math.min(zoom * delta, MAX_ZOOM));
-  const scale = newZoom / zoom;
+  const mx = clientX - rect.left;
+  const my = clientY - rect.top;
+  const target = Math.max(MIN_ZOOM, Math.min(newZoom, MAX_ZOOM));
+  const scale = target / zoom;
   panX = mx - scale * (mx - panX);
   panY = my - scale * (my - panY);
-  zoom = newZoom;
+  zoom = target;
   updateTransform();
+}
+
+// A wheel notch in line mode is a line, not a pixel; in page mode it is a
+// screenful. Chrome sends pixels, Firefox lines.
+function wheelPixels(e) {
+  const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? viewportEl.clientHeight || 600 : 1;
+  return { x: e.deltaX * unit, y: e.deltaY * unit };
+}
+
+// The wheel scrolls and Ctrl+wheel zooms, which is what Visio does, what the
+// browser does, and what a trackpad pinch already sends. Shift swaps the axis
+// for a mouse that only has the one wheel.
+viewportEl.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  if (e.ctrlKey || e.metaKey) {
+    // A pinch arrives as a large ctrl+wheel deltaY; a notch arrives as a small
+    // one. Scaling by the delta keeps both proportionate.
+    zoomAbout(zoom * Math.exp(-wheelPixels(e).y / 320), e.clientX, e.clientY);
+    return;
+  }
+  const delta = wheelPixels(e);
+  const dx = e.shiftKey ? delta.y || delta.x : delta.x;
+  const dy = e.shiftKey ? 0 : delta.y;
+  panBy(-dx, -dy);
 }, { passive: false });
+
+// --- Scrolling -------------------------------------------------------------
+// Panning is a transform rather than a scroll — that is what keeps the vectors
+// crisp at any zoom, see commitLayoutZoom — so the browser has no scrollable
+// box here and would show no scrollbars and honour no wheel. Both are drawn and
+// driven from the same pan the drag uses.
+
+const scrollbarX = document.getElementById('viewport-scroll-x');
+const scrollbarY = document.getElementById('viewport-scroll-y');
+const scrollThumbX = document.getElementById('viewport-scroll-x-thumb');
+const scrollThumbY = document.getElementById('viewport-scroll-y-thumb');
+const MIN_THUMB = 24;
+
+// Every pan goes through here, so nothing has to remember to clamp or to move
+// the thumbs. The transform itself is written on the next frame: a drag or a
+// trackpad flick delivers events faster than the screen refreshes, and writing
+// a transform per event on a drawing this size is what makes it feel heavy.
+let panFrame = null;
+function panBy(dx, dy) {
+  panX += dx;
+  panY += dy;
+  clampPan();
+  if (panFrame !== null) return;
+  const schedule = typeof requestAnimationFrame === 'function'
+    ? requestAnimationFrame
+    : (fn) => setTimeout(fn, 16);
+  panFrame = schedule(() => {
+    panFrame = null;
+    applyPanTransform();
+    updateScrollbars();
+  });
+}
+
+// Held while a gesture is in flight so the compositor keeps the drawing on its
+// own layer and a pan is a move rather than a repaint of every path.
+let panIdleTimer = null;
+function markPanActive() {
+  svgContainer.style.willChange = 'transform';
+  if (panIdleTimer !== null) clearTimeout(panIdleTimer);
+  panIdleTimer = setTimeout(() => {
+    panIdleTimer = null;
+    svgContainer.style.removeProperty('will-change');
+  }, 400);
+}
+
+function updateScrollbars() {
+  if (!scrollbarX || !scrollbarY) return;
+  const range = panRange();
+  if (!range) {
+    scrollbarX.hidden = true;
+    scrollbarY.hidden = true;
+    return;
+  }
+  layoutScrollbar(scrollbarX, scrollThumbX, 'width', 'left',
+    range.view.width - 12, range.view.width, range.content.width, range.maxX - panX, range.travelX);
+  layoutScrollbar(scrollbarY, scrollThumbY, 'height', 'top',
+    range.view.height - 12, range.view.height, range.content.height, range.maxY - panY, range.travelY);
+}
+
+// `offset` is how far the drawing has been pulled away from its furthest
+// top-left position, and `travel` is how far it can go — the same pair a real
+// scrollbar is built from, just measured off the pan.
+//
+// A drawing smaller than the window has travel too — the margin it can be
+// nudged about in — but a bar for that says "there is more over there" when
+// there is not, so the test is whether the drawing overflows the window.
+function layoutScrollbar(bar, thumb, sizeProp, posProp, track, view, content, offset, travel) {
+  if (!(content - view > 0.5) || !(travel > 0.5) || !(track > 0)) {
+    bar.hidden = true;
+    return;
+  }
+  bar.hidden = false;
+  const length = Math.max(MIN_THUMB, Math.min(track, track * (track / content)));
+  const position = travel > 0 ? (offset / travel) * (track - length) : 0;
+  thumb.style[sizeProp] = `${length}px`;
+  thumb.style[posProp] = `${Math.min(track - length, Math.max(0, position))}px`;
+  thumb.setAttribute('aria-valuemin', '0');
+  thumb.setAttribute('aria-valuemax', '100');
+  thumb.setAttribute('aria-valuenow', String(Math.round(travel > 0 ? (offset / travel) * 100 : 0)));
+}
+
+// Dragging a thumb, and clicking the track to jump. Both work in the pan's own
+// units: a thumb moved by one pixel of its track moves the drawing by however
+// much of it that pixel stands for.
+function bindScrollbar(bar, thumb, axis) {
+  if (!bar || !thumb) return;
+  let dragging = null;
+
+  const trackLength = () => (axis === 'x' ? bar.clientWidth : bar.clientHeight)
+    || ((axis === 'x' ? viewportEl.getBoundingClientRect().width : viewportEl.getBoundingClientRect().height) - 12);
+  const thumbLength = () => parseFloat(axis === 'x' ? thumb.style.width : thumb.style.height) || MIN_THUMB;
+
+  thumb.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragging = { at: axis === 'x' ? e.clientX : e.clientY, panAt: axis === 'x' ? panX : panY };
+    bar.classList.add('active');
+    markPanActive();
+  });
+
+  bar.addEventListener('mousedown', (e) => {
+    if (e.target === thumb) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const range = panRange();
+    if (!range) return;
+    const travel = axis === 'x' ? range.travelX : range.travelY;
+    const rect = bar.getBoundingClientRect();
+    const at = axis === 'x' ? e.clientX - rect.left : e.clientY - rect.top;
+    const room = trackLength() - thumbLength();
+    if (!(room > 0) || !(travel > 0)) return;
+    const wanted = Math.min(1, Math.max(0, (at - thumbLength() / 2) / room));
+    const target = (axis === 'x' ? range.maxX : range.maxY) - wanted * travel;
+    panBy(axis === 'x' ? target - panX : 0, axis === 'x' ? 0 : target - panY);
+  });
+
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const range = panRange();
+    if (!range) return;
+    const travel = axis === 'x' ? range.travelX : range.travelY;
+    const room = trackLength() - thumbLength();
+    if (!(room > 0) || !(travel > 0)) return;
+    const moved = (axis === 'x' ? e.clientX : e.clientY) - dragging.at;
+    const target = dragging.panAt - (moved / room) * travel;
+    markPanActive();
+    panBy(axis === 'x' ? target - panX : 0, axis === 'x' ? 0 : target - panY);
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = null;
+    bar.classList.remove('active');
+  });
+}
+
+bindScrollbar(scrollbarX, scrollThumbX, 'x');
+bindScrollbar(scrollbarY, scrollThumbY, 'y');
+
+// A narrower window means less room to scroll through, and a drawing that was
+// wholly on screen may no longer be.
+window.addEventListener('resize', () => {
+  if (!svgContainer.querySelector('svg')) return;
+  clampPan();
+  applyPanTransform();
+  updateScrollbars();
+});
+
+// Arrow keys pan, the page keys pan a screenful, Home goes back to the corner.
+// The canvas has to be focused for this, which is what its tabindex is for.
+viewportEl.addEventListener('keydown', (e) => {
+  if (isTypingTarget(e.target)) return;
+  const view = viewportEl.getBoundingClientRect();
+  const step = e.shiftKey ? 240 : 60;
+  const range = panRange();
+  let dx = 0, dy = 0;
+  switch (e.key) {
+    case 'ArrowLeft': dx = step; break;
+    case 'ArrowRight': dx = -step; break;
+    case 'ArrowUp': dy = step; break;
+    case 'ArrowDown': dy = -step; break;
+    case 'PageUp': dy = view.height * 0.9; break;
+    case 'PageDown': dy = -view.height * 0.9; break;
+    case 'Home': if (range) { dx = range.maxX - panX; dy = range.maxY - panY; } break;
+    case 'End': if (range) { dx = range.minX - panX; dy = range.minY - panY; } break;
+    default: return;
+  }
+  e.preventDefault();
+  markPanActive();
+  panBy(dx, dy);
+});
 
 viewportEl.addEventListener('mousedown', (e) => {
   if (penActive && e.button === 0) {
@@ -4073,11 +4319,15 @@ viewportEl.addEventListener('mousedown', (e) => {
     e.preventDefault();
     return;
   }
-  if (e.button === 0) {
+  if (e.button === 0 || e.button === 1) {
+    // The canvas takes focus so the arrow keys pan the drawing the user just
+    // put their hand on rather than whichever panel was last clicked.
+    viewportEl.focus?.({ preventScroll: true });
     isPanning = true;
     panStartX = e.clientX - panX;
     panStartY = e.clientY - panY;
     viewportEl.style.cursor = 'grabbing';
+    markPanActive();
   }
 });
 
@@ -4088,9 +4338,10 @@ window.addEventListener('mousemove', (e) => {
     return;
   }
   if (!isPanning) return;
-  panX = e.clientX - panStartX;
-  panY = e.clientY - panStartY;
-  updateTransform();
+  // Anchored to where the press was, so a drag that runs into the edge and
+  // comes back lands where the hand says rather than where the clamp left it.
+  markPanActive();
+  panBy((e.clientX - panStartX) - panX, (e.clientY - panStartY) - panY);
 });
 
 window.addEventListener('mouseup', () => {
@@ -4661,14 +4912,20 @@ document.addEventListener('keydown', (e) => {
 });
 
 // Toolbar buttons
-document.getElementById('btn-zoom-in').addEventListener('click', () => {
-  zoom = Math.min(zoom * 1.2, MAX_ZOOM);
-  updateTransform();
-});
-document.getElementById('btn-zoom-out').addEventListener('click', () => {
-  zoom = Math.max(zoom / 1.2, MIN_ZOOM);
-  updateTransform();
-});
+// The buttons zoom about the middle of the window, which is where the thing
+// being looked at is. Zooming about the corner instead walks the drawing out of
+// the window a step at a time.
+function zoomAboutCentre(factor) {
+  const view = viewportEl.getBoundingClientRect();
+  if (view.width > 0 && view.height > 0) {
+    zoomAbout(zoom * factor, view.left + view.width / 2, view.top + view.height / 2);
+  } else {
+    zoom = Math.max(MIN_ZOOM, Math.min(zoom * factor, MAX_ZOOM));
+    updateTransform();
+  }
+}
+document.getElementById('btn-zoom-in').addEventListener('click', () => zoomAboutCentre(1.2));
+document.getElementById('btn-zoom-out').addEventListener('click', () => zoomAboutCentre(1 / 1.2));
 document.getElementById('btn-zoom-fit').addEventListener('click', () => {
   // Fit means fit, including on a drawing smaller than the window.
   if (!fitToWindow({ magnify: true })) resetView();
