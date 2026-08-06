@@ -22,7 +22,9 @@ portable offline builds.
 - **Open & render** `.vsdx`, `.vsdm`, `.vstx`, `.vstm`, `.vssx`, `.vssm`,
   `.vsd`, `.vst`, and `.vss` files, drawing each page or stencil master to SVG.
 - **Multi-page** documents with page tabs.
-- **Zoom** (in / out / fit-to-window) and pan, with a **Hairlines** control that
+- **Zoom** (in / out / fit-to-window) and pan, down to 0.02% — a Visio site
+  plan can be thousands of inches across, and opening a page fits all of it on
+  screen. There is a **Hairlines** control that
   either keeps Visio's hairlines at least a pixel wide at the current zoom or
   draws every line at its true Visio weight (**⟳ Update** re-renders for the
   zoom you are at).
@@ -61,8 +63,11 @@ portable offline builds.
   marked. Hovering a row draws a box round that shape on the canvas and its
   tooltip shows the text the shape holds; right-clicking a row opens the same
   menu the canvas does. Rename, inspect inherited style, or delete from a row.
-  It walks under the **arrow keys** — ↑↓ through the rows, → into a group and ←
-  back out, **Enter** to select, **Space** to show/hide, **F2** to rename —
+  **Collapse all**, **Expand all** and **Collapse unselected** fold the tree in
+  one go, the last of them leaving open only the way down to the shape you are
+  working in. It walks under the **arrow keys** — ↑↓ through the rows, → into a
+  group and ← back out, **Enter** to select, **Space** to show/hide, **F2** to
+  rename —
   and the cursor only *points* at a shape (drawing the same box a hover does),
   so you can look around a drawing without losing the selection you have.
 - **Find a shape** — search the page by name, text, or `#id` from the **Find
@@ -109,12 +114,16 @@ portable offline builds.
   Inkscape and PDF viewers stop choking on them. PDF export fetches jsPDF and
   svg2pdf.js on demand, each **pinned by SHA-256** and only after you allow it.
 - **Edit the SVG elsewhere and bring it back** — open an exported SVG in
-  Inkscape, delete things, draw things, then drop it back on the app. It
-  compares the picture with the drawing embedded in it and offers to apply what
-  you deleted and what you drew; new paths become real Visio geometry (curves
+  Inkscape, delete things, draw things, move things, drag a point, then drop it
+  back on the app. It compares the picture with the drawing embedded in it and
+  offers to apply what it finds. New paths become real Visio geometry (curves
   stay curves), and a path drawn into an Inkscape layer lands on the Visio layer
-  of the same name. Edits *inside* an existing shape are not read back — that
-  would flatten it into a dumb outline; use the Select tool for those.
+  of the same name. Changes to shapes that are already there are written as
+  *cells*, never as a replacement outline: a move becomes Pin/Angle, a dragged
+  point becomes that one row's X/Y, an inherited row gains an override holding
+  only the cell that changed, and a coordinate Visio wrote as `Width*0.6` stays
+  a proportion. Anything it cannot express that way — a scale, a skew, points
+  added to an outline — is reported with a reason rather than approximated.
 - **Compare two files** — overlay + side-by-side visual diff that highlights
   moved, added, removed, and modified shapes, and reports layer changes.
 - **Git integration** — readable `git diff` and true 3-way `git merge` for
@@ -239,7 +248,8 @@ npm run test:diff-view    # side-by-side diff rendering
 | `src/shape-arrange.js` | Group / ungroup / move / resize / rotate geometry: what a shape's cells become |
 | `src/svg-layers.js` | Grouping the exported SVG's shapes into real (Inkscape) layers |
 | `src/svg-path.js` | SVG path data → the pen's node model (arcs, quadratics and shorthands expanded) |
-| `src/svg-import.js` | Reading an edited SVG back: what was deleted, what was drawn |
+| `src/svg-import.js` | Reading an edited SVG back: what was deleted, drawn, or changed |
+| `src/svg-geometry-map.js` | The inverse of the renderer: which cell drew which number of a path |
 | `src/vsdx-diff.js` / `src/diff-view.js` | Diff engine + diff UI |
 | `scripts/vsdx-serialize.mjs` | Canonical serialize / pack / textconv / merge driver |
 | `scripts/git-difftool-serve.mjs` | `git difftool` server that opens the browser visual diff |

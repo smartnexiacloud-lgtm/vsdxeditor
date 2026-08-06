@@ -22,17 +22,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     `RelCubBezTo` rows rather than being flattened, because that row *is* SVG's
     cubic `C`; quadratics, `S`/`T` shorthands and elliptical arcs are converted
     exactly (arcs to within 0.02% of their radius), and a path drawn into an
-    Inkscape layer lands on the Visio layer of the same name.
+    Inkscape layer lands on the Visio layer of the same name;
+  - **shapes you changed** — a shape you moved, turned or whose points you
+    dragged. The page is re-rendered from the embedded document and compared
+    with the file you bring back, and the difference is written as *cells*, not
+    as a replacement outline: a changed transform becomes Pin/Angle/Flip, every
+    coordinate moving together becomes a move rather than a rewrite of every
+    row, and one dragged point becomes that row's X/Y (or a bezier's A/B/C/D)
+    and nothing else. A row inherited from a master gains an override holding
+    only the cell that changed, so everything else it inherits it goes on
+    inheriting, and a coordinate Visio wrote as `Width*0.6` stays a proportion —
+    it is rewritten as `Width*0.72`, not replaced by the number it happened to
+    equal. Points *added to* or *removed from* an outline, a scale or a skew,
+    and a coordinate driven by a formula that is not a plain proportion are all
+    reported with a reason instead of being approximated.
 
   Nothing is applied without being asked first, and the dialog says what it
-  found. What it deliberately does not do is guess at *modifications*: an edit
-  inside an existing shape's group cannot be told from the shape as exported
-  without replaying the render, and a shape's rendered path is a lossy view of
-  its Visio geometry (masters, formulas, inherited style), so reading one back
-  would quietly flatten the shape into a dumb outline. Moving and resizing are
-  better done with the Select tool, where the drawing keeps its structure. An
-  SVG whose shape ids have been stripped (by an "optimised SVG" export, say) is
-  refused outright rather than read as *everything was deleted*.
+  found. An SVG whose shape ids have been stripped (by an "optimised SVG"
+  export, say) is refused outright rather than read as *everything was
+  deleted*.
+- **Collapse all, Expand all and Collapse unselected on the Shape Tree**, and
+  **Collapse unselected** on the layer tree. Tidying a drawing where everything
+  is inside a group used to be one click per group. *Collapse unselected* folds
+  everything except the way down to the shape (or layer) you are working in.
+  Fixed alongside it: the Shape Tree reopened the branch holding the selected
+  shape on *every* redraw, so folding the branch you were in came undone the
+  moment anything else changed. It now reveals a shape when you select it and
+  leaves your folding alone after that.
 - **Exported SVGs have real layers.** The export used to tag each shape with a
   `data-layers` attribute, which no SVG editor reads: opening the file gave one
   flat pile of paths and an empty layer panel. Shapes are now grouped into
@@ -331,6 +347,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   already exist.
 
 ### Fixed
+- **A large drawing could not be zoomed out far enough to see.** Fixing the
+  zoom blur had a consequence nobody wanted: the SVG used to be laid out at
+  `width: 100%` with its natural size as a maximum, so the browser quietly shrank
+  a big drawing to the window and "100%" meant "as big as fits". Sizing the SVG
+  in layout made 100% mean 100% — and a Visio drawing is not necessarily a sheet
+  of paper. A site plan in this repo is **3962 × 2618 inches**, which is 380,372
+  renderer pixels across and fits a window at 0.32%; against a zoom floor of 10%
+  it simply could not be pulled back far enough, and **−** stopped doing
+  anything. So the floor is now 0.02%, opening a page genuinely fits it to the
+  window (rather than fitting by accident), **Fit** actually fits — including
+  magnifying a drawing smaller than the window, which it never did — and the
+  readout no longer rounds every one of those zooms to `0%`.
 - **Zooming blurred the whole drawing until you moved.** Zoom was a `scale()`
   on the container, and scaling a composited layer does not redraw it — the
   compositor stretches the pixels it already has, which is why the picture went

@@ -195,7 +195,13 @@ let contextPickEntries = [];
 // How close (in device pixels) a click has to land to the first anchor to be
 // read as "close the path" rather than "place another point".
 const PEN_CLOSE_PX = 8;
-const MIN_ZOOM = 0.1;
+// A drawing is not necessarily a sheet of paper. Visio measures a site plan or
+// a floor layout at full size — a real one in this repo's fixtures is 3962 by
+// 2618 inches, which is 380,372 renderer pixels across — and seeing all of that
+// at once in a 1200px window is 0.32%. A floor of 10% put the whole drawing
+// permanently out of reach, so the floor is set by what the biggest drawings
+// actually need rather than by what a page-sized one does.
+const MIN_ZOOM = 0.0002;
 const MAX_ZOOM = 2000;
 const XML_VISIO_EXTENSIONS = new Set(['.vsdx', '.vsdm', '.vstx', '.vstm', '.vssx', '.vssm']);
 const BINARY_VISIO_EXTENSIONS = new Set(['.vsd', '.vst', '.vss']);
@@ -291,10 +297,20 @@ function showViewer() {
 // would stutter — and the picture resolves a frame or two after you stop.
 //
 // Pan stays a transform: a translate never resamples anything.
+// Rounding to whole percent is fine at reading zooms and useless below them:
+// the zoom that fits a site plan on screen is a third of one percent, and
+// "0%" tells nobody anything, least of all whether the − button did anything.
+function formatZoom(value) {
+  const percent = value * 100;
+  if (percent >= 10) return `${Math.round(percent)}%`;
+  if (percent >= 1) return `${percent.toFixed(1)}%`;
+  return `${percent.toPrecision(2)}%`;
+}
+
 function updateTransform() {
   const residual = zoom / (layoutZoom || 1);
   svgContainer.style.transform = `translate(${panX}px, ${panY}px) scale(${residual})`;
-  zoomInfo.textContent = `${Math.round(zoom * 100)}%`;
+  zoomInfo.textContent = formatZoom(zoom);
   updateRerenderState();
   scheduleLayoutZoom();
 }
@@ -384,6 +400,9 @@ function renderCurrentPage() {
   // in progress to keep smooth.
   layoutZoom = 1;
   commitLayoutZoom();
+  // A page opens showing all of itself. This is here rather than in resetView
+  // because there is nothing to measure until the SVG is in the document.
+  if (pendingFit && fitToWindow()) pendingFit = false;
   renderedZoom = zoom;
   updateRerenderState();
   applyLayerVisibility();
@@ -951,6 +970,33 @@ function toggleAllLayerGroups() {
   const keys = groupKeys(currentLayerTree(getFilteredLayers()));
   if (collapsedLayerGroups.size) collapsedLayerGroups.clear();
   else for (const key of keys) collapsedLayerGroups.add(key);
+  buildLayersSidebar();
+}
+
+// Fold every group except the ones the layer in focus lives under. On a drawing
+// with a hundred layers in a dozen folders that is the difference between
+// finding your way back to what you were doing and scrolling for it.
+function collapseUnfocusedLayerGroups() {
+  if (!layerTreeActive()) return;
+  const keys = groupKeys(currentLayerTree(getFilteredLayers()));
+  collapsedLayerGroups.clear();
+  for (const key of keys) collapsedLayerGroups.add(key);
+
+  // Open the way back down to the layer in focus, by the tree's own keys rather
+  // than by rebuilding its paths — two layers can share a name, and the second
+  // one's node is deliberately keyed differently.
+  const openTo = (nodes, trail = []) => {
+    for (const node of nodes || []) {
+      const here = [...trail, node.key];
+      if (node.layer && String(node.layer.index) === String(focusedLayerIndex)) {
+        for (const key of here) collapsedLayerGroups.delete(key);
+        return true;
+      }
+      if (openTo(node.children, here)) return true;
+    }
+    return false;
+  };
+  if (focusedLayerIndex !== null) openTo(currentLayerTree(getFilteredLayers()));
   buildLayersSidebar();
 }
 
@@ -2349,6 +2395,41 @@ function toggleShapeTreeBranch(shapeId) {
   renderShapeTree();
 }
 
+// Every shape on the page that has something inside it — the rows that can be
+// folded at all.
+function shapeTreeBranchIds(shapes = shapeTreeRoots(), out = []) {
+  for (const shape of shapes || []) {
+    if (shape.subShapes?.length) {
+      out.push(String(shape.id));
+      shapeTreeBranchIds(shape.subShapes, out);
+    }
+  }
+  return out;
+}
+
+// A drawing where everything is inside something is a tree nobody can read at a
+// glance. Fold it, open it, or fold everything except the branch you are
+// working in — which is the useful one, and the one that has to survive
+// renderShapeTree opening the path to the selection again.
+function setShapeTreeFolding(mode) {
+  const collapsed = getCollapsedShapeIds();
+  const branches = shapeTreeBranchIds();
+  collapsed.clear();
+  if (mode === 'expand') {
+    renderShapeTree();
+    return;
+  }
+  for (const id of branches) collapsed.add(id);
+  if (mode === 'others') {
+    // expandToSelectedShape reopens the path down to the selected shape, and a
+    // selected group is worth opening too — collapsing it would hide the thing
+    // that was just asked about.
+    const path = selectedShapeId === null ? null : findShapePath(shapeTreeRoots(), selectedShapeId);
+    for (const ancestor of path || []) collapsed.delete(String(ancestor.id));
+  }
+  renderShapeTree();
+}
+
 // The row's ✕. It used to splice the shape out of the in-memory page only,
 // which looked like a delete and then quietly came back on Save VSDX, because
 // saving patches the original package and simply skips shapes it no longer
@@ -2544,8 +2625,17 @@ function shapeTreeRoots() {
 
 // A selected shape inside a folded group has no row to be marked on, so the
 // branches leading to it are opened.
+// Picking a shape shows you where it lives. Doing that on *every* render is
+// something else: it means a branch you folded springs open again the next time
+// anything at all redraws the tree, so folding the branch you are working in —
+// or folding the lot — never sticks. So the path is opened when the selection
+// moves to a shape, and left alone after that.
+let revealedShapeId = null;
+
 function expandToSelectedShape() {
-  if (selectedShapeId === null) return;
+  if (selectedShapeId === null) { revealedShapeId = null; return; }
+  if (String(selectedShapeId) === String(revealedShapeId)) return;
+  revealedShapeId = String(selectedShapeId);
   const path = findShapePath(shapeTreeRoots(), selectedShapeId);
   if (!path) return;
   const collapsed = getCollapsedShapeIds();
@@ -3740,11 +3830,52 @@ function applyLayerVisibility() {
   }
 }
 
+// Opening a page shows all of it. That used to happen by accident: the SVG was
+// laid out at width:100% with its natural size as a maximum, so the browser
+// shrank a large drawing to the window and "100%" meant "as big as fits".
+// Sizing the SVG in layout — which is what stopped zooming from going blurry —
+// made 100% mean 100%, and a drawing hundreds of feet across opened hundreds of
+// screens wide with no way to pull far enough back. So the fit is now done
+// deliberately, and the zoom the drawing opens at is the fit.
+let pendingFit = false;
+
 function resetView() {
   zoom = 1;
   panX = 0;
   panY = 0;
+  pendingFit = true;
   updateTransform();
+}
+
+// The scale at which the whole page is on screen at once. `magnify` allows a
+// drawing smaller than the window to be blown up to fill it — what the Fit
+// button should do, but not what opening a business card should do.
+function fitZoom({ magnify = false } = {}) {
+  const svg = svgContainer.querySelector('svg');
+  if (!svg) return null;
+  const { width, height } = svgViewBoxSize(svg);
+  const view = viewportEl.getBoundingClientRect();
+  const room = { width: view.width - 32, height: view.height - 32 };
+  if (!(width > 0 && height > 0 && room.width > 0 && room.height > 0)) return null;
+  const scale = Math.min(room.width / width, room.height / height);
+  return Math.max(MIN_ZOOM, Math.min(magnify ? scale : Math.min(scale, 1), MAX_ZOOM));
+}
+
+function fitToWindow(options = {}) {
+  const scale = fitZoom(options);
+  if (scale === null) return false;
+  zoom = scale;
+  const svg = svgContainer.querySelector('svg');
+  const { width, height } = svgViewBoxSize(svg);
+  const view = viewportEl.getBoundingClientRect();
+  // Centre what is left over, so a wide drawing in a tall window sits in the
+  // middle rather than against the top-left corner.
+  panX = Math.max(0, (view.width - width * scale) / 2);
+  panY = Math.max(0, (view.height - height * scale) / 2);
+  layoutZoom = 1;
+  commitLayoutZoom();
+  updateTransform();
+  return true;
 }
 
 // An SVG this app exported carries the whole drawing inside it, so re-opening
@@ -3771,7 +3902,7 @@ async function applySvgPictureEdits(svgText, embedded) {
     if (plan.reason) showError(`Opened the embedded drawing without checking for edits: ${plan.reason}`);
     return original;
   }
-  if (!plan.added.length && !plan.removed.length) {
+  if (!plan.added.length && !plan.removed.length && !plan.modified.length) {
     if (plan.skipped.length) showError(describeSkippedSvgElements(plan));
     return original;
   }
@@ -3784,6 +3915,8 @@ async function applySvgPictureEdits(svgText, embedded) {
     ...(plan.added.length > 8 ? [`  + …and ${plan.added.length - 8} more`] : []),
     ...plan.removed.slice(0, 8).map(entry => `  − ${entry.label}`),
     ...(plan.removed.length > 8 ? [`  − …and ${plan.removed.length - 8} more`] : []),
+    ...plan.modified.slice(0, 8).map(entry => `  ~ ${entry.label} (${entry.kinds.join(', ')})`),
+    ...(plan.modified.length > 8 ? [`  ~ …and ${plan.modified.length - 8} more`] : []),
     ...(plan.skipped.length ? ['', describeSkippedSvgElements(plan)] : []),
     '',
     'Apply them to the drawing? Cancel opens the drawing as it was exported.'
@@ -4537,7 +4670,8 @@ document.getElementById('btn-zoom-out').addEventListener('click', () => {
   updateTransform();
 });
 document.getElementById('btn-zoom-fit').addEventListener('click', () => {
-  resetView();
+  // Fit means fit, including on a drawing smaller than the window.
+  if (!fitToWindow({ magnify: true })) resetView();
 });
 // Thin-line handling is deliberately not applied live: the minimum is part of
 // the SVG, so following the zoom would mean re-rendering the whole page on
@@ -4992,6 +5126,10 @@ layerTreeEnable?.addEventListener('change', () => setLayerTreeEnabled(layerTreeE
 // error, so it needs no validation beyond taking the text as typed.
 layerTreeDelimiterInput?.addEventListener('input', () => setLayerTreeDelimiter(layerTreeDelimiterInput.value));
 layerTreeToggleAll?.addEventListener('click', toggleAllLayerGroups);
+document.getElementById('layer-tree-collapse-others')?.addEventListener('click', collapseUnfocusedLayerGroups);
+document.getElementById('shape-tree-collapse-all')?.addEventListener('click', () => setShapeTreeFolding('all'));
+document.getElementById('shape-tree-expand-all')?.addEventListener('click', () => setShapeTreeFolding('expand'));
+document.getElementById('shape-tree-collapse-others')?.addEventListener('click', () => setShapeTreeFolding('others'));
 
 layersList.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowDown') {

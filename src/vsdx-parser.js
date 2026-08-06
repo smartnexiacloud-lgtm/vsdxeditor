@@ -2340,6 +2340,99 @@ export async function transformVsdxShapes(arrayBuffer, pageId, updates) {
   });
 }
 
+// Move a point of a shape's outline: write single cells of single Geometry
+// rows, leaving everything else in the section alone.
+//
+// A shape's geometry is not necessarily on the shape. Rows merge with the
+// master's by section IX and row IX, and a shape commonly holds only the cells
+// that differ from what it inherits — so "row 3 of section 0" may be an element
+// that does not exist yet, and writing the whole row would drop the inherited
+// cells it does not mention. Both cases are handled the same way: find or
+// create the Section, find or create the Row, and set only the named cells.
+// Everything the shape was inheriting it goes on inheriting.
+//
+// Cells carrying a formula are the caller's problem: overwriting the current
+// answer to `Width*0.5` with a number silently de-parametrises the shape, and
+// the caller (which has the parsed formulas) is the only one in a position to
+// know whether the user meant that. This writer refuses rather than guesses.
+function findGeometrySection(shapeEl, sectionIx) {
+  return getDirectChildren(shapeEl, 'Section').find(section =>
+    section.getAttribute('N') === 'Geometry' && String(section.getAttribute('IX')) === String(sectionIx)) || null;
+}
+
+function ensureGeometrySection(doc, shapeEl, sectionIx) {
+  const existing = findGeometrySection(shapeEl, sectionIx);
+  if (existing) return existing;
+  const section = doc.createElementNS(shapeEl.namespaceURI || VISIO_MAIN_NS, 'Section');
+  section.setAttribute('N', 'Geometry');
+  section.setAttribute('IX', String(sectionIx));
+  // Sections come after the cells and after <Text>; appending is right unless
+  // a later Geometry section is already there, in which case IX order is kept.
+  const later = getDirectChildren(shapeEl, 'Section').find(candidate =>
+    candidate.getAttribute('N') === 'Geometry'
+    && Number(candidate.getAttribute('IX')) > Number(sectionIx));
+  shapeEl.insertBefore(section, later || null);
+  return section;
+}
+
+function ensureGeometryRow(doc, sectionEl, rowIx, rowType) {
+  const existing = getDirectChildren(sectionEl, 'Row').find(row => String(row.getAttribute('IX')) === String(rowIx));
+  if (existing) return existing;
+  const row = doc.createElementNS(sectionEl.namespaceURI || VISIO_MAIN_NS, 'Row');
+  // A row the shape is inheriting has its type from the master; repeating it
+  // is what Visio's own overrides do, and a row with no T at all is invalid.
+  if (rowType) row.setAttribute('T', String(rowType));
+  row.setAttribute('IX', String(rowIx));
+  const later = getDirectChildren(sectionEl, 'Row').find(candidate =>
+    Number(candidate.getAttribute('IX')) > Number(rowIx));
+  sectionEl.insertBefore(row, later || null);
+  return row;
+}
+
+function setRowCell(doc, rowEl, name, value, formula) {
+  let cell = getDirectChildren(rowEl, 'Cell').find(candidate => candidate.getAttribute('N') === name);
+  if (!cell) {
+    cell = doc.createElementNS(rowEl.namespaceURI || VISIO_MAIN_NS, 'Cell');
+    cell.setAttribute('N', name);
+    rowEl.appendChild(cell);
+  }
+  cell.setAttribute('V', value);
+  // A formula the caller supplies replaces the old one; with none, whatever
+  // formula used to produce this value is gone, and leaving F behind would have
+  // Visio recompute straight over the top of the number just written.
+  if (formula) cell.setAttribute('F', formula);
+  else cell.removeAttribute('F');
+}
+
+/**
+ * `updates` is a list of `{ id, sectionIx, rowIx, rowType, cells }`, where
+ * `cells` maps Visio cell names (X, Y, A, B, C, D…) to a number, or to
+ * `{ value, formula }` when the cell should go on being computed.
+ */
+export async function setVsdxGeometryCells(arrayBuffer, pageId, updates) {
+  return withPageDocument(arrayBuffer, pageId, (doc, root) => {
+    const wanted = (updates || []).filter(update => update && update.id !== undefined
+      && update.cells && Object.keys(update.cells).length);
+    if (!wanted.length) throw new Error('Nothing to change');
+
+    const touched = new Set();
+    for (const { id, sectionIx, rowIx, rowType, cells } of wanted) {
+      const shapeEl = findShapeElementById(root, String(id));
+      if (!shapeEl) throw new Error(`Could not find shape ${id} on this page`);
+      const section = ensureGeometrySection(doc, shapeEl, sectionIx);
+      const row = ensureGeometryRow(doc, section, rowIx, rowType);
+      for (const [name, entry] of Object.entries(cells)) {
+        const value = typeof entry === 'object' && entry !== null ? entry.value : entry;
+        const formula = typeof entry === 'object' && entry !== null ? entry.formula : null;
+        if (!Number.isFinite(value)) continue;
+        setRowCell(doc, row, name, formatShapeNumber(value), formula || null);
+      }
+      touched.add(String(id));
+    }
+    return { shapeIds: [...touched] };
+  });
+}
+
 // A Visio layer exists in exactly one place: a Row in the page's Layer
 // section. So adding or removing a layer is adding or removing a Row here, and
 // the in-memory page is the source of truth — a Row whose IX no longer appears

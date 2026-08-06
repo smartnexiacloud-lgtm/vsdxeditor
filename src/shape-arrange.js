@@ -324,6 +324,25 @@ export function planMoveShapes(page, shapeIds, dx, dy) {
 }
 
 /**
+ * Place a shape by the matrix its *own* group carries — the local→parent
+ * transform the renderer emits for it. Returns `{id, cells}`.
+ *
+ * This is how an edit made to the picture somewhere else comes back
+ * (src/svg-import.js): SVG nests a shape's transform inside its parent's
+ * exactly as Visio measures a child's cells in its parent's coordinates, so a
+ * changed transform on one group is a changed placement of one shape, whatever
+ * its ancestors did.
+ */
+export function planPlaceShapeLocally(page, shapeId, localMatrix) {
+  const { entry, parentMatrix, parentHeight } = contextOf(page, shapeId);
+  rejectFlatConnector(entry.shape, 'move');
+  return {
+    id: String(shapeId),
+    cells: cellsForNewParent(multiply(parentMatrix, localMatrix), entry.shape, parentMatrix, parentHeight)
+  };
+}
+
+/**
  * Turn shapes by `deltaRad` (Visio's sense: counter-clockwise), each about its
  * own pin. Returns [{id, cells}].
  */

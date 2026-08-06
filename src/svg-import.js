@@ -16,17 +16,43 @@
 //             Its geometry is translated into a Visio shape the same way the
 //             pen tool's is; it is, after all, the same node model.
 //
-// What this deliberately does not attempt is *modification*. An edit inside an
-// existing shape's group is indistinguishable from the shape as exported unless
-// the whole render is replayed and compared, and a shape's rendered path is a
-// lossy view of its Visio geometry (masters, formulas, inherited style), so
-// reading one back would quietly flatten the shape into a dumb outline. Moving
-// a shape is better done with the Select tool, where the drawing keeps its
-// structure.
+//   modified — a shape whose group is still there but no longer draws what the
+//             drawing says it draws. Telling that apart from the shape as
+//             exported means replaying the render and comparing, which is
+//             exactly what this does: the page is re-rendered from the embedded
+//             document and every shape's transform and outline are compared
+//             with the edited file's.
+//
+// Reading a *modification* back is where it would be easy to do real damage. A
+// shape's rendered path is a lossy view of its Visio geometry — rows inherited
+// from a master, coordinates driven by formulas, a Width the outline is
+// expressed as a fraction of — so importing the drawn outline wholesale would
+// flatten a parametric shape into a dumb one that happens to look the same
+// today. So nothing is ever replaced wholesale:
+//
+//   * a changed transform becomes Pin/Angle/Flip cells, which is exactly what
+//     it means (and a scale or skew, which those cells cannot express, is
+//     refused rather than approximated);
+//   * every coordinate of the outline moving by the same amount is a move, and
+//     is written as one, rather than as a rewrite of every row;
+//   * a moved point becomes that one row's X/Y (or a bezier's A/B/C/D) and
+//     nothing else — an inherited row gains an override holding only the cell
+//     that changed, so everything else it inherits it goes on inheriting;
+//   * a coordinate whose cell carries a formula, or that came out of a row type
+//     with no single cell behind it (arcs, splines, NURBS), is refused with a
+//     reason. Replacing `Width*0.5` with the number it happens to equal today
+//     looks like nothing changed and quietly breaks the shape.
+//
+// What stays out of reach is a change to the *structure* of an outline — points
+// added or removed — since there is no row to attribute them to. Those are
+// reported, not guessed at.
 
 import { pathToSubpaths } from './svg-path.js';
 import { buildPenShapeXml } from './pen-geometry.js';
-import { addVsdxShapeToPage, deleteVsdxShapes } from './vsdx-parser.js';
+import { addVsdxShapeToPage, deleteVsdxShapes, transformVsdxShapes, setVsdxGeometryCells } from './vsdx-parser.js';
+import { renderPage } from './svg-renderer.js';
+import { planPlaceShapeLocally } from './shape-arrange.js';
+import { mapPathSpans, cellValueFor, formulaFor, whyNotWritable, pathNumbers, pathCommands } from './svg-geometry-map.js';
 
 const DPI = 96;
 const IDENTITY = [1, 0, 0, 1, 0, 0];
@@ -419,9 +445,237 @@ export function matchPage(root, pages, hintedPageId = null) {
   return scored[0].page;
 }
 
+// ── What changed inside a shape ──────────────────────────────────────────────
+
+// How far a number has to move before it counts as an edit. SVG editors rewrite
+// path data to their own precision, so every coordinate in a file that has been
+// through one differs a little from the one this app wrote. A hundredth of a
+// renderer pixel is a ten-thousandth of an inch — far below anything anybody
+// drew on purpose, and far above the rounding.
+const MOVED_PX = 0.01;
+
+const matrixIsRigid = (m) => {
+  // The renderer only ever emits translate · rotate · flip, so the linear part
+  // is orthonormal. Anything else — a scale, a skew — has no home in Visio's
+  // transform cells, which hold a pin, an angle and two flip flags.
+  const [a, b, c, d] = m;
+  return Math.abs(a * a + b * b - 1) < 1e-6
+    && Math.abs(c * c + d * d - 1) < 1e-6
+    && Math.abs(a * c + b * d) < 1e-6;
+};
+
+const matricesMatch = (m, n) =>
+  m.slice(0, 4).every((value, i) => Math.abs(value - n[i]) < 1e-9)
+  && Math.abs(m[4] - n[4]) < MOVED_PX && Math.abs(m[5] - n[5]) < MOVED_PX;
+
+function directPaths(group) {
+  const out = [];
+  for (let node = group.firstElementChild; node; node = node.nextElementSibling) {
+    if (node.localName === 'path') out.push(node);
+  }
+  return out;
+}
+
+// Only path data made of plain x,y pairs can be read as "everything moved by
+// the same amount" — an arc command's numbers are radii and flags, not points.
+const isPairwise = (commands) => /^[MLCQZ]*$/.test(commands);
+
+function uniformShift(pairs) {
+  if (!pairs.length) return null;
+  const [dx, dy] = pairs[0];
+  if (Math.abs(dx) < MOVED_PX && Math.abs(dy) < MOVED_PX) return null;
+  const same = pairs.every(([x, y]) => Math.abs(x - dx) < MOVED_PX && Math.abs(y - dy) < MOVED_PX);
+  return same ? { dx, dy } : null;
+}
+
+/**
+ * Compare every shape still present in the edited SVG with what the drawing
+ * says it should look like. Returns `{ modified, skipped }`, where each
+ * modification is `{ id, label, kinds, transformCells, geometry }` and
+ * `geometry` is a list of `{ sectionIx, rowIx, rowType, cells }` ready for
+ * setVsdxGeometryCells.
+ */
+export function readShapeModifications(root, page, byId) {
+  const modified = [];
+  const skipped = [];
+
+  const container = typeof document !== 'undefined' ? document.createElement('div') : null;
+  if (!container) return { modified, skipped };
+
+  const pathSpans = new Map();
+  let reference;
+  try {
+    reference = renderPage(page, container, { pathSpans });
+  } catch (e) {
+    skipped.push({ tag: 'page', label: 'the page', reason: `it could not be re-rendered to compare against (${e.message})` });
+    return { modified, skipped };
+  }
+
+  for (const refGroup of reference.querySelectorAll('[data-shape-id]')) {
+    const id = String(refGroup.getAttribute('data-shape-id'));
+    const editedGroup = root.querySelector(`[data-shape-id="${id}"]`);
+    if (!editedGroup) continue;               // deleted; that is a removal, not an edit
+    const shape = byId.get(id);
+    if (!shape) continue;
+    const label = shape.name || shape.nameU || `Shape ${id}`;
+
+    const kinds = [];
+    const reasons = [];
+    let transformCells = null;
+
+    // ── where the shape sits ────────────────────────────────────────────────
+    const refMatrix = parseTransform(refGroup.getAttribute('transform'));
+    const editedMatrix = parseTransform(editedGroup.getAttribute('transform'));
+    let placement = refMatrix;
+    if (!matricesMatch(refMatrix, editedMatrix)) {
+      if (!matrixIsRigid(editedMatrix)) {
+        reasons.push('it was scaled or skewed, which a Visio shape transform cannot express — resize it here instead');
+      } else {
+        placement = editedMatrix;
+        kinds.push('moved');
+      }
+    }
+
+    // ── what the shape draws ────────────────────────────────────────────────
+    const refPaths = directPaths(refGroup);
+    const editedPaths = directPaths(editedGroup);
+    const cellUpdates = new Map();
+    let localShift = null;
+    let geometryBlocked = false;
+
+    if (refPaths.length !== editedPaths.length) {
+      reasons.push(`its outline went from ${refPaths.length} path${refPaths.length === 1 ? '' : 's'} to ${editedPaths.length}`);
+      geometryBlocked = true;
+    } else {
+      const shiftPairs = [];
+      let allPairwise = true;
+
+      for (let i = 0; i < refPaths.length && !geometryBlocked; i++) {
+        const before = refPaths[i].getAttribute('d') || '';
+        const after = editedPaths[i].getAttribute('d') || '';
+        const commands = pathCommands(before);
+        if (commands !== pathCommands(after)) {
+          reasons.push('points were added to or removed from its outline, and there is no row to attribute them to');
+          geometryBlocked = true;
+          break;
+        }
+        const from = pathNumbers(before);
+        const to = pathNumbers(after);
+        if (from.length !== to.length) {
+          reasons.push('its outline no longer has the same number of coordinates');
+          geometryBlocked = true;
+          break;
+        }
+        if (!isPairwise(commands)) allPairwise = false;
+        else for (let k = 0; k + 1 < from.length; k += 2) shiftPairs.push([to[k] - from[k], to[k + 1] - from[k + 1]]);
+
+        const changed = [];
+        for (let k = 0; k < from.length; k++) {
+          if (Math.abs(to[k] - from[k]) > MOVED_PX) changed.push(k);
+        }
+        if (!changed.length) continue;
+
+        const spans = pathSpans.get(refPaths[i]);
+        if (!spans) {
+          reasons.push('its outline is drawn from its endpoints rather than from geometry rows');
+          geometryBlocked = true;
+          break;
+        }
+        const descriptors = mapPathSpans(spans);
+        if (descriptors.length !== from.length) {
+          // The map and the renderer disagree about what was emitted, so no
+          // number here can be named with confidence.
+          reasons.push('its outline could not be traced back to the rows that drew it');
+          geometryBlocked = true;
+          break;
+        }
+
+        for (const k of changed) {
+          const descriptor = descriptors[k];
+          const why = whyNotWritable(descriptor);
+          if (why) {
+            reasons.push(why);
+            geometryBlocked = true;
+            break;
+          }
+          const value = cellValueFor(descriptor, to[k], shape.width, shape.height);
+          if (!Number.isFinite(value)) {
+            reasons.push('the shape has no size for its outline to be measured against');
+            geometryBlocked = true;
+            break;
+          }
+          const key = `${descriptor.section?.ix}|${descriptor.row.ix}`;
+          if (!cellUpdates.has(key)) {
+            cellUpdates.set(key, {
+              sectionIx: descriptor.section?.ix ?? descriptor.row.sectionIx,
+              rowIx: descriptor.row.ix,
+              rowType: descriptor.row.type,
+              cells: {}
+            });
+          }
+          const entry = cellUpdates.get(key);
+          const existing = entry.cells[descriptor.cell];
+          if (existing !== undefined && Math.abs(existing.value - value) > 1e-9) {
+            // The same row is drawn twice (a filled outline is stroked as a
+            // second path) and the two copies were edited differently.
+            reasons.push('the same point was edited to two different places');
+            geometryBlocked = true;
+            break;
+          }
+          // A coordinate Visio wrote as a proportion of the shape stays a
+          // proportion of the shape; only the proportion changes.
+          entry.cells[descriptor.cell] = {
+            value,
+            formula: formulaFor(descriptor, value, shape.width, shape.height)
+          };
+        }
+      }
+
+      // Every coordinate moving together is the shape moving, not its outline
+      // being redrawn — and that is what an SVG editor writes when it is set to
+      // bake transforms into path data, which is the usual default.
+      if (!geometryBlocked && allPairwise && cellUpdates.size) {
+        localShift = uniformShift(shiftPairs);
+      }
+    }
+
+    if (localShift) {
+      cellUpdates.clear();
+      // Shifting every local coordinate by (dx, dy) is the same as translating
+      // the shape's own transform by it.
+      placement = [
+        placement[0], placement[1], placement[2], placement[3],
+        placement[4] + placement[0] * localShift.dx + placement[2] * localShift.dy,
+        placement[5] + placement[1] * localShift.dx + placement[3] * localShift.dy
+      ];
+      if (!kinds.includes('moved')) kinds.push('moved');
+    } else if (cellUpdates.size) {
+      kinds.push(`${cellUpdates.size} point${cellUpdates.size === 1 ? '' : 's'} moved`);
+    }
+
+    if (kinds.includes('moved')) {
+      try {
+        transformCells = planPlaceShapeLocally(page, id, placement).cells;
+      } catch (e) {
+        reasons.push(e.message);
+        transformCells = null;
+        kinds.splice(kinds.indexOf('moved'), 1);
+      }
+    }
+
+    if (reasons.length) {
+      skipped.push({ tag: 'shape', label, reason: [...new Set(reasons)].join('; ') });
+    }
+    if (!transformCells && !cellUpdates.size) continue;
+    modified.push({ id, label, kinds, transformCells, geometry: [...cellUpdates.values()] });
+  }
+
+  return { modified, skipped };
+}
+
 // ── The plan ─────────────────────────────────────────────────────────────────
 
-const NOTHING = { ok: false, reason: null, page: null, removed: [], added: [], skipped: [] };
+const NOTHING = { ok: false, reason: null, page: null, removed: [], added: [], modified: [], skipped: [] };
 
 /**
  * Compare an edited SVG against the drawing it was exported from.
@@ -521,7 +775,10 @@ export function readSvgEdits(svgText, drawing, options = {}) {
     }
   }
 
-  return { ok: true, reason: null, page, removed, added, skipped };
+  const changes = readShapeModifications(root, page, byId);
+  skipped.push(...changes.skipped);
+
+  return { ok: true, reason: null, page, removed, added, modified: changes.modified, skipped };
 }
 
 /**
@@ -533,6 +790,23 @@ export async function applySvgEdits(arrayBuffer, plan) {
   const pageId = plan.page.id;
   const removedIds = [];
   const addedIds = [];
+  const modifiedIds = [];
+
+  // Modifications first: they name shapes by the id they have now, and a
+  // deletion elsewhere on the page must not have moved anything underneath.
+  const placements = (plan.modified || [])
+    .filter(entry => entry.transformCells)
+    .map(entry => ({ id: entry.id, cells: entry.transformCells }));
+  if (placements.length) {
+    buffer = (await transformVsdxShapes(buffer, pageId, placements)).buffer;
+    modifiedIds.push(...placements.map(entry => entry.id));
+  }
+  const rowEdits = (plan.modified || []).flatMap(entry =>
+    (entry.geometry || []).map(row => ({ ...row, id: entry.id })));
+  if (rowEdits.length) {
+    buffer = (await setVsdxGeometryCells(buffer, pageId, rowEdits)).buffer;
+    modifiedIds.push(...rowEdits.map(entry => entry.id));
+  }
 
   if (plan.removed.length) {
     const result = await deleteVsdxShapes(buffer, pageId, plan.removed.map(entry => entry.id));
@@ -544,7 +818,7 @@ export async function applySvgEdits(arrayBuffer, plan) {
     buffer = result.buffer;
     addedIds.push(result.shapeId);
   }
-  return { buffer, addedIds, removedIds };
+  return { buffer, addedIds, removedIds, modifiedIds: [...new Set(modifiedIds)] };
 }
 
 /** One line per change, for the confirmation the user is shown. */
@@ -553,6 +827,7 @@ export function summarizeSvgEdits(plan) {
   const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
   if (plan.added.length) lines.push(`${count(plan.added.length, 'shape', 'shapes')} added`);
   if (plan.removed.length) lines.push(`${count(plan.removed.length, 'shape', 'shapes')} deleted`);
+  if (plan.modified?.length) lines.push(`${count(plan.modified.length, 'shape', 'shapes')} changed`);
   if (plan.skipped.length) lines.push(`${count(plan.skipped.length, 'element', 'elements')} skipped`);
   return lines.join(', ');
 }

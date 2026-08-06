@@ -28,13 +28,21 @@ switch pages.
 | Control | Action |
 | --- | --- |
 | **+** / **−** | Zoom in / out |
-| **Fit** | Scale the page to fit the window |
+| **Fit** | Scale the page to fit the window — including *up*, for a drawing smaller than the window |
 | Drag on empty canvas | Pan (dragging a *selected* shape moves it instead — see [Select](#moving-resizing-and-turning-shapes-select)) |
 | `zoom-info` readout | Shows the current zoom percentage |
 
 Zoom is applied to the SVG's own size rather than as a transform on top of it,
 so the drawing is re-drawn at every zoom instead of magnified as pixels — no
 soft edges while you wheel, and none left behind afterwards.
+
+**A page opens showing all of itself.** A Visio drawing is not necessarily a
+sheet of paper: a site plan or a floor layout is measured at full size, and one
+that is 3962 × 2618 *inches* is 380,372 renderer pixels across — it fits a
+1200-pixel window at 0.32%. So opening a page fits it to the window, **Fit**
+returns you there at any time, and zoom goes down to 0.02% for the drawings that
+need it. Below 10% the readout switches to decimals, because `0%` tells you
+nothing about whether **−** did anything.
 
 ### Thin lines (hairlines)
 
@@ -122,7 +130,8 @@ delimiter** to read that convention back out and nest the rows accordingly.
   `::`, anything. It is matched literally, not as a pattern. Emptying it returns
   the list to flat, as does unticking the box.
 - **▾ / ▸** collapses or expands a group; **Collapse all** / **Expand all** does
-  the lot.
+  the lot, and **Collapse unselected** folds everything except the way down to
+  the layer you last picked.
 - A group's **checkbox** shows or hides every layer under it, and reads as
   half-ticked when only part of the group is showing. Its count (`2/3`) says how
   many.
@@ -307,6 +316,12 @@ re-saved in the real Microsoft Visio desktop app — see
   renames the shape in place (double-clicking the name does the same once the
   row is the selected one; **Enter** commits, **Esc** leaves it alone, a blank
   answer clears it) and a **×** that deletes it from the drawing.
+- **Folding the tree.** A drawing where everything is inside a group is a tree
+  nobody can read at a glance, so three buttons act on the lot: **Collapse all**,
+  **Expand all**, and **Collapse unselected** — which folds everything except
+  the way down to the shape you are working in. Selecting a shape opens the
+  branches leading to it, and then leaves your folding alone; folding a branch
+  you are inside stays folded.
 - **Walking the tree from the keyboard.** Tab into the tree (or click a row) and
   the arrows take over. The cursor is *not* the selection: moving it only points
   at a shape — it draws the same box hovering a row does — so you can walk a
@@ -625,17 +640,36 @@ in it, tells you what it found, and asks before applying anything:
 | **Deleted a whole layer** | The shapes on it are gone, so they are deleted. The layer itself stays — remove it from the Layers sidebar. |
 | **Drew a new path or shape** | `path`, `rect`, `circle`, `ellipse`, `line`, `polyline` and `polygon` become real Visio shapes: geometry, fill, stroke colour, width, dashes and opacity. Curves stay curves — Visio's `RelCubBezTo` row *is* SVG's cubic `C` — and quadratics, the `S`/`T` shorthands and elliptical arcs are converted exactly. |
 | **Drew into an Inkscape layer** | The new shape lands on the Visio layer of the same name, if the drawing has one. |
+| **Moved or turned a shape** | Its Pin/Angle/Flip cells, which is exactly what a move or a turn is in Visio. This works whether your editor moved the shape by giving it a transform or by rewriting all of its coordinates — every coordinate shifting by the same amount is read as a move, not as a redrawn outline. |
+| **Dragged a point of a shape** | That one row's `X`/`Y` (or a bezier's `A`/`B`/`C`/`D`) and nothing else. |
 
 Cancel and the drawing opens exactly as it was exported, edits ignored.
 
-**What it will not do is guess at changes to existing shapes.** An edit inside a
-shape's own group cannot be told apart from the shape as exported without
-replaying the whole render and comparing, and even then a shape's rendered path
-is a lossy view of its Visio geometry — masters, formulas, inherited style —
-so reading one back would quietly flatten a parametric shape into a dumb
-outline. Moving, resizing and turning are better done here with the
-[Select tool](#moving-resizing-and-turning-shapes-select), where the drawing
-keeps its structure.
+**Changes to an existing shape are written as cells, never as a replacement
+outline.** This matters more than it sounds. A shape's rendered path is a lossy
+view of its Visio geometry: rows inherited from a master, coordinates driven by
+formulas, an outline expressed as fractions of the shape's own Width. Importing
+the drawn path wholesale would flatten a parametric shape into a dumb one that
+happens to look the same today and stops resizing properly tomorrow. So:
+
+- a row your shape **inherits from a master** gains an override holding *only*
+  the cell that changed — everything else it inherits, it goes on inheriting;
+- a coordinate Visio wrote as **`Width*0.6`** stays a proportion. Drag it and it
+  becomes `Width*0.72`, not the number that happened to equal today;
+- anything else formula-driven is **refused with a reason**, because replacing a
+  formula with its current answer looks like nothing changed and quietly breaks
+  the shape.
+
+And three kinds of edit are reported rather than guessed at, because there is no
+honest cell to write them to:
+
+- **points added to or removed from an outline** — there is no geometry row to
+  attribute them to;
+- **scaling or skewing a shape** — Visio's shape transform is a pin, an angle
+  and two flip flags; it has no scale and no skew. Resize it
+  [here](#moving-resizing-and-turning-shapes-select) instead;
+- **an outline drawn from arcs, splines or NURBS**, where a single number on the
+  page does not come from a single cell.
 
 Two more things it declines to convert rather than get wrong:
 

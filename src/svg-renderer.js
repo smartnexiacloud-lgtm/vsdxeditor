@@ -151,18 +151,29 @@ function catmullRomToBezier(points) {
 
 // Convert geometry rows to SVG path data
 // Coordinates are in shape-local space (0,0 to width,height) with Y-up
+//
+// `options.spans`, when given an array, is filled with `{ row, text }` for each
+// row in turn — the exact slice of path data that row produced, and null for
+// the implicit opening MoveTo that belongs to no row. That is what lets an edit
+// to the drawn path be traced back to the cell it came from
+// (src/svg-geometry-map.js); it costs nothing when nobody asks for it, and
+// deliberately measures what was emitted rather than predicting it, so a row
+// type this file grows later cannot silently fall out of step.
 function geometryToPath(rows, width, height, options = {}) {
   let d = '';
   let curX = 0, curY = 0;
   let startX = 0, startY = 0;
+  const spans = Array.isArray(options.spans) ? options.spans : null;
 
   // If first row is not a MoveTo, add implicit MoveTo(0,0)
   if (rows.length > 0 && rows[0].type !== 'MoveTo' && rows[0].type !== 'RelMoveTo') {
     d += `M 0 ${inToPx(height)} `;
+    if (spans) spans.push({ row: null, text: d });
   }
 
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
     const row = rows[rowIndex];
+    const spanStart = d.length;
     const x = row.x !== null ? inToPx(row.x) : curX;
     // Flip Y: Visio Y-up → SVG Y-down within shape local coords
     const y = row.y !== null ? inToPx(height - row.y) : curY;
@@ -362,6 +373,7 @@ function geometryToPath(rows, width, height, options = {}) {
         // Unknown row type - skip
         break;
     }
+    if (spans) spans.push({ row, text: d.slice(spanStart) });
   }
   return d.trim();
 }
@@ -1075,6 +1087,11 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
       const paintStroke = options.paintStroke !== false;
       const path = document.createElementNS(svgNS, 'path');
       path.setAttribute('d', pathData);
+      // Which rows drew this path, for callers that need to work backwards from
+      // the drawn outline to the cells behind it. The fill and stroke passes
+      // differ only in whether an internal MoveTo is drawn as a LineTo, so one
+      // set of spans describes both.
+      if (pageContext?.pathSpans && options.spans) pageContext.pathSpans.set(path, options.spans);
 
       // Fill
       const fillColor = getFillPaint(shape, svgNS, defs, themeColors, layerInfo, strokeScale);
@@ -1138,12 +1155,12 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
         noFill: false,
         noLine: compoundRun.noLine,
         noShow: compoundRun.noShow
-      });
+      }, { spans: compoundRun.spans });
       compoundRun = null;
     };
     const flushStrokeQueue = () => {
       for (const item of strokeQueue) {
-        appendPath(item.pathData, item.geo, { paintFill: false });
+        appendPath(item.pathData, item.geo, { paintFill: false, spans: item.spans });
       }
       strokeQueue.length = 0;
     };
@@ -1154,9 +1171,14 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
       : shape.geometry;
 
     for (const geo of geometryToRender) {
+      const spans = pageContext?.pathSpans ? [] : null;
       const strokePathData = geometryToPath(geo.rows, shape.width, shape.height, {
-        connectInternalMoves: false
+        connectInternalMoves: false,
+        spans
       });
+      // The section a span came from is not recoverable from the row alone once
+      // several sections are joined into one path.
+      if (spans) for (const span of spans) span.section = geo;
 
       const noEffectiveLine = geo.noLine || shape.linePattern === 0;
       const hasPaintedFill = !geo.noFill && shape.fillPattern !== 0 && getFillPaint(shape, svgNS, defs, themeColors, layerInfo, strokeScale);
@@ -1176,18 +1198,19 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
       if (canCompound) {
         if (!compoundRun || compoundRun.noLine !== geo.noLine || compoundRun.noShow !== geo.noShow) {
           flushCompoundRun();
-          compoundRun = { noLine: geo.noLine, noShow: geo.noShow, paths: [] };
+          compoundRun = { noLine: geo.noLine, noShow: geo.noShow, paths: [], spans: spans ? [] : null };
         }
         compoundRun.paths.push(strokePathData);
+        if (compoundRun.spans) compoundRun.spans.push(...spans);
       } else {
         flushCompoundRun();
         if (hasPaintedFill && !noEffectiveLine && !shape.beginArrow && !shape.endArrow) {
-          appendPath(fillPathData, geo, { paintStroke: false });
-          if (strokePathData) strokeQueue.push({ pathData: strokePathData, geo });
+          appendPath(fillPathData, geo, { paintStroke: false, spans });
+          if (strokePathData) strokeQueue.push({ pathData: strokePathData, geo, spans });
         } else if (!noEffectiveLine) {
-          if (strokePathData) strokeQueue.push({ pathData: strokePathData, geo });
+          if (strokePathData) strokeQueue.push({ pathData: strokePathData, geo, spans });
         } else {
-          appendPath(hasPaintedFill ? fillPathData : strokePathData, geo);
+          appendPath(hasPaintedFill ? fillPathData : strokePathData, geo, { spans });
         }
       }
     }
@@ -1293,7 +1316,10 @@ export function renderPage(page, container, options = {}) {
   const requestedMin = Number.isFinite(options.minStrokeWidth) ? options.minStrokeWidth : 0;
   const pageContext = {
     layersByIndex: new Map((page.layers || []).map((layer) => [String(layer.index), layer])),
-    minStroke: Math.max(hairlineStroke(strokeScale), requestedMin)
+    minStroke: Math.max(hairlineStroke(strokeScale), requestedMin),
+    // A caller that passes a Map here gets, for every <path> drawn, the
+    // geometry rows that drew it — see geometryToPath's `spans`.
+    pathSpans: options.pathSpans instanceof Map ? options.pathSpans : null
   };
 
   for (const shape of page.shapes) {

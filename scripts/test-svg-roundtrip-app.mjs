@@ -170,6 +170,30 @@ console.log('\n3. Deletions and additions come back');
     `${after.join(',')} vs ${original.join(',')}`);
 }
 
+console.log('\n3b. So do changes to a shape that is still there');
+{
+  await openFixture();
+  // Push one shape an inch across, the way dragging it in another editor does.
+  const doc = new window.DOMParser().parseFromString(exported, 'image/svg+xml');
+  const group = doc.querySelector(`[data-shape-id="${doomed}"]`);
+  group.setAttribute('transform', `translate(96,0) ${group.getAttribute('transform') || ''}`);
+  const edited = new window.XMLSerializer().serializeToString(doc);
+
+  const before = currentSvg().querySelector(`[data-shape-id="${doomed}"]`).getAttribute('transform');
+  confirms.length = 0;
+  confirmAnswer = true;
+  await dropFile(new window.File([edited], 'moved.svg'));
+  check('the app noticed the shape had been moved', /1 shape changed/.test(confirms[0] || ''),
+    confirms[0] || '(asked nothing)');
+
+  const after = currentSvg().querySelector(`[data-shape-id="${doomed}"]`)?.getAttribute('transform');
+  const dx = (t) => Number(/translate\(\s*(-?[\d.]+)/.exec(t || '')?.[1] ?? NaN);
+  check('…and the drawing now draws it an inch further across',
+    Math.abs(dx(after) - dx(before) - 96) < 0.01, `${before} → ${after}`);
+  check('every shape is still on the page',
+    shapeIds().length === original.length, `${shapeIds().length} vs ${original.length}`);
+}
+
 console.log('\n4. Saying no leaves the drawing alone');
 {
   await openFixture();

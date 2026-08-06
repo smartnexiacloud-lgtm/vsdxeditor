@@ -1463,6 +1463,16 @@
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    .shape-tree-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 2px;
+    }
+    .shape-tree-actions button {
+      font-size: 11px;
+      padding: 3px 7px;
+    }
     .shape-tree-hint {
       font-size: 11px;
       color: #6f7aa3;
@@ -1771,7 +1781,11 @@
                          aria-label="Layer name delimiter" title="Delimiter that separates the levels in a layer name">
                   <span class="layers-tree-label">splits <code>Electrical/HV</code></span>
                 </div>
-                <button id="layer-tree-toggle-all" type="button" title="Collapse or expand every group">Collapse all</button>
+                <div class="layers-tree-row">
+                  <button id="layer-tree-toggle-all" type="button" title="Collapse or expand every group">Collapse all</button>
+                  <button id="layer-tree-collapse-others" type="button"
+                          title="Fold every group except the ones holding the layer in focus">Collapse unselected</button>
+                </div>
               </div>
             </div>
           </div>
@@ -1829,6 +1843,14 @@
           <div class="shape-tree-title">Shape Tree</div>
           <div id="shape-tree-subtitle" class="shape-tree-subtitle">Select a shape to inspect its parent group.</div>
           <div class="shape-tree-hint">↑↓ move · ←→ fold · Enter selects</div>
+          <div class="shape-tree-actions">
+            <button id="shape-tree-collapse-all" type="button"
+                    title="Fold every group shut">Collapse all</button>
+            <button id="shape-tree-expand-all" type="button"
+                    title="Open every group">Expand all</button>
+            <button id="shape-tree-collapse-others" type="button"
+                    title="Fold every group except the ones the selected shape is inside">Collapse unselected</button>
+          </div>
         </div>
         <div id="shape-tree-body" class="shape-tree-body" tabindex="-1" role="tree" aria-label="Shapes on this page">
           <div class="shape-tree-empty">Select a shape to inspect its parent group.</div>
