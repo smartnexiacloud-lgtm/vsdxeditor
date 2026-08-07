@@ -955,13 +955,18 @@ function appendImageNode(target, shape, svgNS) {
   target.appendChild(image);
 }
 
-function appendShapeMetadata(target, shape, svgNS) {
-  const titleText = shape.title || shape.name || shape.nameU;
-  if (titleText) {
-    const title = document.createElementNS(svgNS, 'title');
-    title.textContent = xmlSafe(titleText);
-    target.appendChild(title);
-  }
+// A shape's Shape Data and user cells, in the shape Visio's own SVG export
+// uses. They are pure metadata: nothing paints them and nothing in this app
+// reads them back out of the DOM — they exist so the exported file carries
+// what the .vsdx carried.
+//
+// That is why they are optional. On a real drawing they are the *majority* of
+// the SVG: 66,734 of the 99,519 elements in a 8,470-shape file we test with,
+// and every one of them is a node the browser has to build, keep, style and
+// walk on every hit test. The screen render leaves them out and
+// attachVisioMetadata puts them back on the way to a file.
+function visioPropertyBlocks(shape) {
+  const blocks = [];
 
   if (shape.customProps && shape.customProps.length > 0) {
     const custProps = createVisioElement('custProps');
@@ -977,7 +982,7 @@ function appendShapeMetadata(target, shape, svgNS) {
       setVisioAttr(cp, 'val', prop.value);
       custProps.appendChild(cp);
     }
-    target.appendChild(custProps);
+    blocks.push(custProps);
   }
 
   if (shape.userDefs && shape.userDefs.length > 0) {
@@ -989,8 +994,56 @@ function appendShapeMetadata(target, shape, svgNS) {
       setVisioAttr(ud, 'val', def.value);
       userDefs.appendChild(ud);
     }
-    target.appendChild(userDefs);
+    blocks.push(userDefs);
   }
+
+  return blocks;
+}
+
+function appendShapeMetadata(target, shape, svgNS, withProperties = true) {
+  // The title is not in the same class: it is what the browser shows as the
+  // shape's tooltip, so it stays on screen.
+  const titleText = shape.title || shape.name || shape.nameU;
+  if (titleText) {
+    const title = document.createElementNS(svgNS, 'title');
+    title.textContent = xmlSafe(titleText);
+    target.appendChild(title);
+  }
+  if (!withProperties) return;
+  for (const block of visioPropertyBlocks(shape)) target.appendChild(block);
+}
+
+/**
+ * Put the Visio property blocks back onto an SVG rendered without them, so a
+ * drawing exported from the screen carries the same Shape Data as one rendered
+ * straight from the model. Matching is by `data-shape-id`, which the renderer
+ * writes for every shape that has an id. Returns the SVG.
+ */
+export function attachVisioMetadata(svg, page) {
+  if (!svg || !page) return svg;
+
+  const byId = new Map();
+  const walk = (shapes) => {
+    for (const shape of shapes || []) {
+      if (shape.id !== undefined && shape.id !== null) byId.set(String(shape.id), shape);
+      walk(shape.subShapes);
+    }
+  };
+  walk(page.shapes);
+
+  svg.setAttributeNS(XMLNS_NS, 'xmlns:v', VISIO_NS);
+  for (const group of svg.querySelectorAll('g[data-shape-id]')) {
+    const shape = byId.get(group.getAttribute('data-shape-id'));
+    if (!shape) continue;
+    const blocks = visioPropertyBlocks(shape);
+    if (!blocks.length) continue;
+    // Where renderShape would have put them: after the <title>, before the
+    // geometry, which is the order Visio's own export uses.
+    const first = group.firstElementChild;
+    const anchor = first && first.localName === 'title' ? first.nextSibling : group.firstChild;
+    for (const block of blocks) group.insertBefore(block, anchor);
+  }
+  return svg;
 }
 
 function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, fontScale, themeColors = {}, pageContext = null) {
@@ -1016,7 +1069,9 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
   }
   const layerInfo = getShapeLayerInfo(shape, pageContext);
   if (layerInfo.hidden) g.setAttribute('display', 'none');
-  appendShapeMetadata(g, shape, svgNS);
+  // A shape with no id gets no data-shape-id, and attachVisioMetadata matches on
+  // that — so leaving its properties out would lose them for good. It keeps them.
+  appendShapeMetadata(g, shape, svgNS, pageContext?.shapeProperties !== false || !shape.id);
 
   // Dedicated 1D connector rendering uses page-coordinate geometry instead of
   // shape-local transforms. This avoids collapsing routed connectors and keeps
@@ -1045,12 +1100,12 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
       }
       path.setAttribute('stroke-linejoin', 'round');
       if (shape.beginArrow && shape.beginArrow > 0) {
-        const markerId = `arrow-begin-${arrowCounter.value++}`;
+        const markerId = `${pageContext?.idPrefix || ''}arrow-begin-${arrowCounter.value++}`;
         defs.appendChild(createArrowMarker(svgNS, markerId, strokeColor, true));
         path.setAttribute('marker-start', `url(#${markerId})`);
       }
       if (shape.endArrow && shape.endArrow > 0) {
-        const markerId = `arrow-end-${arrowCounter.value++}`;
+        const markerId = `${pageContext?.idPrefix || ''}arrow-end-${arrowCounter.value++}`;
         defs.appendChild(createArrowMarker(svgNS, markerId, strokeColor, false));
         path.setAttribute('marker-end', `url(#${markerId})`);
       }
@@ -1132,13 +1187,13 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
       // gets none, which is what its own SVG export does too.
       const openPath = isOpenSubpath(pathData);
       if (paintStroke && openPath && shape.beginArrow && shape.beginArrow > 0) {
-        const markerId = `arrow-begin-${arrowCounter.value++}`;
+        const markerId = `${pageContext?.idPrefix || ''}arrow-begin-${arrowCounter.value++}`;
         const marker = createArrowMarker(svgNS, markerId, getShapeStrokeColor(shape, themeColors, pageContext), true);
         defs.appendChild(marker);
         path.setAttribute('marker-start', `url(#${markerId})`);
       }
       if (paintStroke && openPath && shape.endArrow && shape.endArrow > 0) {
-        const markerId = `arrow-end-${arrowCounter.value++}`;
+        const markerId = `${pageContext?.idPrefix || ''}arrow-end-${arrowCounter.value++}`;
         const marker = createArrowMarker(svgNS, markerId, getShapeStrokeColor(shape, themeColors, pageContext), false);
         defs.appendChild(marker);
         path.setAttribute('marker-end', `url(#${markerId})`);
@@ -1275,6 +1330,84 @@ function createArrowMarker(svgNS, id, color, isStart) {
   return marker;
 }
 
+// Everything a shape needs to know about the page it is being drawn on. Pulled
+// out of renderPage so that drawing one shape again on its own (redrawShape)
+// draws it exactly as the page render would have.
+function pageRenderContext(page, options = {}) {
+  // Convert stroke weights (always stored in inches) into the drawing's
+  // coordinate space. When drawingUnitInInches < 1 (e.g. MM), inches need to
+  // scale up; default is 1 for inch-native files so existing tests are
+  // unaffected.
+  const strokeScale = page.drawingScale || (page.drawingUnitInInches ? (1 / page.drawingUnitInInches) : 1);
+  const requestedMin = Number.isFinite(options.minStrokeWidth) ? options.minStrokeWidth : 0;
+  return {
+    strokeScale,
+    fontScale: strokeScale,
+    themeColors: page.themeColors || {},
+    pageContext: {
+      layersByIndex: new Map((page.layers || []).map((layer) => [String(layer.index), layer])),
+      minStroke: Math.max(hairlineStroke(strokeScale), requestedMin),
+      // A caller that passes a Map here gets, for every <path> drawn, the
+      // geometry rows that drew it — see geometryToPath's `spans`.
+      pathSpans: options.pathSpans instanceof Map ? options.pathSpans : null,
+      // Pass `metadata: false` for a render nobody is going to export: it leaves
+      // out the v:custProps/v:userDefs blocks, which are most of the document on
+      // a real drawing. attachVisioMetadata puts them back.
+      shapeProperties: options.metadata !== false,
+      // Arrow markers are numbered from zero, and a redraw adds more of them to
+      // an SVG that already has some. A prefix keeps the two sets apart.
+      idPrefix: options.idPrefix || ''
+    }
+  };
+}
+
+// How many shapes have been redrawn since the page was loaded. Only used to
+// keep one redraw's marker ids clear of the next one's.
+let redrawSerial = 0;
+
+/**
+ * Draw one shape of an already-rendered page again, in place of the group that
+ * is on the canvas for it — the same `<g>` renderPage would have built, put
+ * where renderPage put it. Returns the new group, or null if there was nothing
+ * on the canvas to replace.
+ *
+ * Moving a shape used to mean rewriting the package, parsing it again and
+ * drawing every shape on the page from the result. On a 20 MB drawing that is
+ * the better part of a minute to change six numbers on one shape, and nothing
+ * else on the page changed at all.
+ *
+ * `options.parentHeight` is the height, in inches, of the group the shape hangs
+ * off — the page's own height for a top-level shape. It is what a child's
+ * flipped Y is measured against, and it is the one thing a shape cannot work
+ * out for itself. The rest of the options are renderPage's.
+ */
+export function redrawShape(svg, page, shape, options = {}) {
+  if (!svg || !page || !shape || shape.id === undefined || shape.id === null) return null;
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const existing = svg.querySelector(`g[data-shape-id="${String(shape.id).replace(/["\\]/g, '\\$&')}"]`);
+  const defs = svg.querySelector('defs');
+  if (!existing || !defs) return null;
+
+  // renderShape mints a fresh <marker> for every arrowhead it draws, so the
+  // ones the outgoing group was pointing at belong to it alone and go with it.
+  // Gradients and hatches are keyed by what they look like and shared, so they
+  // stay — the redraw asks for the same ones back.
+  for (const el of existing.querySelectorAll('[marker-start], [marker-end]')) {
+    for (const attr of ['marker-start', 'marker-end']) {
+      const id = /^url\(#([^)]+)\)$/.exec(el.getAttribute(attr) || '')?.[1];
+      if (id) defs.querySelector(`marker[id="${id.replace(/["\\]/g, '\\$&')}"]`)?.remove();
+    }
+  }
+
+  const { strokeScale, fontScale, themeColors, pageContext } =
+    pageRenderContext(page, { ...options, idPrefix: `redraw${++redrawSerial}-` });
+  const parentHeight = Number.isFinite(options.parentHeight) ? options.parentHeight : page.height;
+  const group = renderShape(shape, svgNS, parentHeight, defs, { value: 0 },
+    strokeScale, fontScale, themeColors, pageContext);
+  existing.replaceWith(group);
+  return group;
+}
+
 // options.minStrokeWidth raises the thinnest line the render may draw, in the
 // page's own coordinate units. Left out, lines keep their true Visio weights
 // (LineWeight 0 becoming Visio's 0.25pt hairline), which is what an export or a
@@ -1306,21 +1439,7 @@ export function renderPage(page, container, options = {}) {
 
   const arrowCounter = { value: 0 };
 
-  // Convert stroke weights (always stored in inches) into the drawing's
-  // coordinate space. When drawingUnitInInches < 1 (e.g. MM), inches need to
-  // scale up; default is 1 for inch-native files so existing tests are
-  // unaffected.
-  const strokeScale = page.drawingScale || (page.drawingUnitInInches ? (1 / page.drawingUnitInInches) : 1);
-  const fontScale = strokeScale;
-  const themeColors = page.themeColors || {};
-  const requestedMin = Number.isFinite(options.minStrokeWidth) ? options.minStrokeWidth : 0;
-  const pageContext = {
-    layersByIndex: new Map((page.layers || []).map((layer) => [String(layer.index), layer])),
-    minStroke: Math.max(hairlineStroke(strokeScale), requestedMin),
-    // A caller that passes a Map here gets, for every <path> drawn, the
-    // geometry rows that drew it — see geometryToPath's `spans`.
-    pathSpans: options.pathSpans instanceof Map ? options.pathSpans : null
-  };
+  const { strokeScale, fontScale, themeColors, pageContext } = pageRenderContext(page, options);
 
   for (const shape of page.shapes) {
     svg.appendChild(renderShape(shape, svgNS, page.height, defs, arrowCounter, strokeScale, fontScale, themeColors, pageContext));

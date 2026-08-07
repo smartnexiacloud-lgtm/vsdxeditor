@@ -27,9 +27,9 @@ portable offline builds.
   screen. Get around by wheel, Shift+wheel, drag, scrollbars or the arrow keys;
   Ctrl+wheel and a trackpad pinch zoom about the pointer, and the drawing
   cannot be dragged out of the window. There is a **Hairlines** control that
-  either keeps Visio's hairlines at least a pixel wide at the current zoom or
-  draws every line at its true Visio weight (**⟳ Update** re-renders for the
-  zoom you are at).
+  draws every line at its true Visio weight (the default) or keeps Visio's
+  hairlines at least a pixel wide at the current zoom, for a plan shrunk to fit
+  the window (**⟳ Update** re-renders for the zoom you are at).
 - **Layers** — toggle layer visibility from a sidebar, add a layer or delete
   one, or open the full **Layer Visibility Matrix** to bulk-edit which layers
   each page shows, filter by page, search/filter layers, and rename layers with
@@ -86,6 +86,9 @@ portable offline builds.
   shape's own box, so a turned shape resizes along its own axes. An outline
   follows the pointer rather than the drawing itself — the edit lands once, when
   you let go, so a drag is one durable change that survives *Save Visio*.
+  Letting go redraws the shapes that moved and nothing else, leaving your
+  selection, the folded rows of the Shape Tree and where you had scrolled to
+  alone; the `.vsdx` is rewritten the next time anything needs the bytes.
   Dragging a group takes its contents with it and resizing one scales them, and
   it all works on a shape nested several groups deep.
 - **Pen tool** — draw new paths onto the drawing: click for a corner, drag to

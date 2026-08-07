@@ -277,16 +277,63 @@ function byTag(el, tag) {
   return el.getElementsByTagNameNS('*', tag);
 }
 
+// Reading a shape means asking for dozens of its cells by name, and a shape in
+// a real drawing carries dozens of them — so a scan per name is a scan of the
+// whole shape per cell read, and it was the single most expensive thing in
+// parsing a large file. The names are asked for over and over; the children are
+// not going anywhere. So the first ask builds the shape's name → cell table and
+// every ask after it is a lookup.
+//
+// A cache is only worth having if it cannot be wrong, and this one is written to
+// by code all over this file. So it does not rely on writers remembering to say
+// so. Two things make it self-checking, and between them they cover every way a
+// Cell can come or go:
+//
+//   · the table records how many children the element had when it was built, so
+//     an added or removed Cell throws it away;
+//   · and a remembered cell that is no longer a child of the element is not
+//     that element's cell, which catches a removal that something else replaced
+//     — where the count alone would come out even.
+//
+// The writers here (getOrCreateCell, removeCell, setShapeCell, setRowCell,
+// remapShapeLayerMembers) invalidate explicitly as well. That is belt to the
+// braces: each of them reads through getCell before it writes, so the count is
+// always fresh by the time they change anything. It is there so a writer that
+// batches changes without reading — which none of them does today — cannot
+// quietly break this.
+//
+// Changing a cell's *value* needs no invalidation at all: the table holds the
+// elements, not what they say.
+const cellIndexes = new WeakMap();
+
+function invalidateCellIndex(el) {
+  if (el) cellIndexes.delete(el);
+}
+
 function getCell(el, name) {
   if (!el) return null;
-  // Only search direct Cell children to avoid picking up cells from nested shapes
-  for (let i = 0; i < el.childNodes.length; i++) {
-    const child = el.childNodes[i];
-    if (child.nodeType === 1 && child.localName === 'Cell' && child.getAttribute('N') === name) {
-      return child;
-    }
+  let index = cellIndexes.get(el);
+  // A cell that has been taken off the element is not that element's cell any
+  // more, however the table remembers it — which catches a removal that put
+  // something else in its place, where the child count alone would not.
+  const held = index?.get(name);
+  if (index && (index.childCount !== el.childNodes.length || (held && held.parentNode !== el))) {
+    index = null;
   }
-  return null;
+  if (!index) {
+    index = new Map();
+    // Only direct Cell children, so a nested shape's cells are never picked up.
+    for (let i = 0; i < el.childNodes.length; i++) {
+      const child = el.childNodes[i];
+      if (child.nodeType !== 1 || child.localName !== 'Cell') continue;
+      const n = child.getAttribute('N');
+      // First wins, which is what the scan this replaces did.
+      if (!index.has(n)) index.set(n, child);
+    }
+    index.childCount = el.childNodes.length;
+    cellIndexes.set(el, index);
+  }
+  return index.get(name) || null;
 }
 
 function getCellValue(el, name) {
@@ -1912,6 +1959,7 @@ function getOrCreateCell(doc, row, name) {
   cell = doc.createElementNS(row.namespaceURI || VISIO_MAIN_NS, 'Cell');
   cell.setAttribute('N', name);
   row.appendChild(cell);
+  invalidateCellIndex(row);
   return cell;
 }
 
@@ -1923,7 +1971,10 @@ function setCellValue(doc, row, name, value) {
 
 function removeCell(row, name) {
   const cell = getCell(row, name);
-  if (cell) row.removeChild(cell);
+  if (cell) {
+    row.removeChild(cell);
+    invalidateCellIndex(row);
+  }
 }
 
 function boolToCellValue(value, defaultValue) {
@@ -2105,6 +2156,7 @@ function setShapeCell(doc, shapeEl, name, value) {
     cell.setAttribute('N', name);
     const firstNonCell = [...shapeEl.childNodes].find(node => node.nodeType === 1 && node.localName !== 'Cell');
     shapeEl.insertBefore(cell, firstNonCell || null);
+    invalidateCellIndex(shapeEl);
   }
   cell.setAttribute('V', value);
   cell.removeAttribute('F');
@@ -2116,6 +2168,14 @@ function formatShapeNumber(value) {
   if (!Number.isFinite(value)) return '0';
   const rounded = Number(value.toFixed(9));
   return String(Object.is(rounded, -0) ? 0 : rounded);
+}
+
+// The same number as it would read back out of the file it was just written
+// into. An app that applies a placement to its own model instead of reloading
+// the package (src/main.js) has to round exactly the way the writer does, or
+// what is on screen drifts a hair from what the .vsdx says.
+export function shapeCellNumber(value) {
+  return Number(formatShapeNumber(value));
 }
 
 function applyShapePlacementCells(doc, shapeEl, cells) {
@@ -2395,6 +2455,7 @@ function setRowCell(doc, rowEl, name, value, formula) {
     cell = doc.createElementNS(rowEl.namespaceURI || VISIO_MAIN_NS, 'Cell');
     cell.setAttribute('N', name);
     rowEl.appendChild(cell);
+    invalidateCellIndex(rowEl);
   }
   cell.setAttribute('V', value);
   // A formula the caller supplies replaces the old one; with none, whatever
@@ -2780,7 +2841,10 @@ function remapShapeLayerMembers(parentEl, layerIndexMap) {
     if (layerMember) {
       const mappedValue = remapLayerMemberValue(layerMember.getAttribute('V'), layerIndexMap);
       if (mappedValue) layerMember.setAttribute('V', mappedValue);
-      else shapeEl.removeChild(layerMember);
+      else {
+        shapeEl.removeChild(layerMember);
+        invalidateCellIndex(shapeEl);
+      }
     }
 
     for (const shapesEl of getDirectChildren(shapeEl, 'Shapes')) {

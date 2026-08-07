@@ -51,7 +51,7 @@ import { pathToSubpaths } from './svg-path.js';
 import { buildPenShapeXml } from './pen-geometry.js';
 import { addVsdxShapeToPage, deleteVsdxShapes, transformVsdxShapes, setVsdxGeometryCells } from './vsdx-parser.js';
 import { renderPage } from './svg-renderer.js';
-import { planPlaceShapeLocally } from './shape-arrange.js';
+import { planPlaceShapeLocally, buildShapeIndex } from './shape-arrange.js';
 import { mapPathSpans, cellValueFor, formulaFor, whyNotWritable, pathNumbers, pathCommands } from './svg-geometry-map.js';
 
 const DPI = 96;
@@ -503,9 +503,12 @@ export function readShapeModifications(root, page, byId) {
   if (!container) return { modified, skipped };
 
   const pathSpans = new Map();
+  let shapeIndex = null;
   let reference;
   try {
-    reference = renderPage(page, container, { pathSpans });
+    // Only the geometry and the transforms are compared, so the Visio property
+    // blocks would be three quarters of a document nobody looks at.
+    reference = renderPage(page, container, { pathSpans, metadata: false });
   } catch (e) {
     skipped.push({ tag: 'page', label: 'the page', reason: `it could not be re-rendered to compare against (${e.message})` });
     return { modified, skipped };
@@ -655,7 +658,10 @@ export function readShapeModifications(root, page, byId) {
 
     if (kinds.includes('moved')) {
       try {
-        transformCells = planPlaceShapeLocally(page, id, placement).cells;
+        // One index for the whole import: the page does not change while it is
+        // being read, and rebuilding it per shape made a big drawing crawl.
+        shapeIndex = shapeIndex || buildShapeIndex(page);
+        transformCells = planPlaceShapeLocally(page, id, placement, { index: shapeIndex }).cells;
       } catch (e) {
         reasons.push(e.message);
         transformCells = null;

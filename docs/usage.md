@@ -70,15 +70,16 @@ what happens to those lines:
 
 | Setting | What you get |
 | --- | --- |
-| **Fit zoom** (default) | No line is drawn thinner than one screen pixel at the zoom the page was rendered for, so hairline detail (raised-floor grids, hatching, construction lines) stays visible |
-| **True size** | Every line keeps its real Visio weight, with hairlines drawn at Visio's own 0.25 pt |
+| **True size** (default) | Every line keeps its real Visio weight, with hairlines drawn at Visio's own 0.25 pt — what Visio, an export and a print all show |
+| **Fit zoom** | No line is drawn thinner than one screen pixel at the zoom the page was rendered for, so hairline detail (raised-floor grids, hatching, construction lines) stays visible on a plan shrunk to fit the window |
 
 The minimum is baked into the SVG when the page is drawn, so changing the zoom
 does not change it — following the zoom live would mean re-rendering the whole
 drawing on every wheel tick. Instead, **⟳ Update** re-renders the page for the
 current zoom, and lights up once you have zoomed away from the zoom the drawing
 on screen was rendered for. **Export…** exports what is on screen, so switch
-to **True size** first if you want an export with untouched line weights.
+back to **True size** first if you have been using **Fit zoom** and want an
+export with untouched line weights.
 
 ## Layers
 
@@ -411,6 +412,15 @@ edited once, when you let go — so a drag is one durable change to the file
 rather than a hundred, and it survives **Save Visio** like every other edit.
 Pressing anywhere that is not a selected shape still pans the canvas.
 
+Letting go redraws the shapes that moved and nothing else. Only what you moved
+changes, so the rest of the page is left alone — as are your selection, the
+folded rows of the Shape Tree and where you had scrolled to. The .vsdx itself is
+rewritten the next time anything needs it, which on a large drawing is the slow
+part and is not something to make you wait for at the moment you let go of the
+mouse: **Save Visio**, **Export…**, **Compare…**, the shape XML editor and any
+edit that does change the structure of the document (group, ungroup, z-order,
+delete) all fold your moves in first. Nothing leaves the app without them.
+
 Dragging a group takes everything inside it, and resizing one scales its
 contents with it, the way Visio does. All of it works on a shape nested several
 groups deep: the cells are worked out through the same matrix chain the renderer
@@ -581,7 +591,11 @@ included, which stay closed.
   as the full drawing, losslessly. Untick **Embed the source Visio document**
   for a plain, much smaller SVG that will not re-open here. Shapes come out
   grouped into real SVG layers — see
-  [Layers in the exported SVG](#layers-in-the-exported-svg).
+  [Layers in the exported SVG](#layers-in-the-exported-svg). Each shape also
+  carries its Shape Data and user cells as the `v:custProps` / `v:userDefs`
+  elements Visio's own SVG export writes; those are added on the way out rather
+  than drawn on the canvas, because on a large drawing they are three quarters
+  of the document and nothing paints them.
 - **PDF** — see [PDF export](#pdf-export) below.
 - **Save Visio** (on the toolbar, not in this dialog) — download an XML drawing
   or template with all your edits (layer changes, shape XML edits, pruning)

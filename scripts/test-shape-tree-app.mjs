@@ -123,11 +123,24 @@ check('every row has a tooltip at all', rows().every(row => !!row.title));
 // --- 3. Clicking a row selects that shape -----------------------------------
 check('the shape clicked on the canvas is the selected one', selected().join(',') === roots[0],
   selected().join(','));
+
+// A selection is drawn over the drawing and marked on the rows; it changes
+// neither. Rebuilding either for a click is what made selecting a shape on a
+// large drawing take a second and a half — 32,785 SVG elements and a row for
+// every shape thrown away and built again to move one mark. Node identity is
+// the check: same SVG, same rows, different marks.
+const svgBefore = currentSvg();
+const rowsBefore = rows();
 rowFor(otherId).querySelector('.shape-tree-label').click();
 await sleep(120);
 check('clicking a different row moves the selection to it', selected().join(',') === otherId,
   selected().join(','));
 check('and the row itself is marked', rowFor(otherId)?.classList.contains('selected'));
+check('without re-rendering the drawing to do it', currentSvg() === svgBefore);
+check('and without rebuilding the tree either',
+  rows().length === rowsBefore.length && rows().every((row, i) => row === rowsBefore[i]));
+check('the row that was marked is not any more',
+  !rowFor(roots[0])?.classList.contains('selected'));
 check('the selection is drawn as an overlay on top of the drawing, not an outline '
   + 'the shape in front can cover', !!q('#shape-selection'));
 

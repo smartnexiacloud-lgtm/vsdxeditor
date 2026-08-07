@@ -346,7 +346,65 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `replaceVsdxShapeXmlSnippet`, which deliberately refuses any ID that does not
   already exist.
 
+### Changed
+- **Hairlines are drawn at their true size by default.** The viewer used to open
+  with a floor under every line — nothing thinner than one screen pixel at the
+  zoom the page was drawn for. That keeps fine detail readable on a plan shrunk
+  to fit a window, but it is not what the drawing says: on anything viewed at or
+  near full size it made every hairline heavier than Visio, an export or a print
+  would draw it. **Hairlines: fit zoom** is still in the toolbar, one click away.
+
 ### Fixed
+- **Letting go of a dragged shape cost what the file costs rather than what the
+  shape costs.** Moving, resizing or turning a shape was committed by rewriting
+  the whole `.vsdx`, parsing it back and drawing every shape on the page from
+  the result — on a 20 MB drawing of 8,470 shapes, 172 s of frozen tab in our
+  headless harness to change six numbers on one shape. It threw away the
+  selection, the folded rows of the Shape Tree and the scroll position on the
+  way past, too.
+
+  Group, ungroup, z-order and delete change the *shape* of the document — which
+  element lives inside which, and in what order — so they still go that way. A
+  placement does not. It changes at most six cells on a handful of shapes, and
+  every one of them is already in memory and already on the canvas. So the model
+  is given the numbers, the shapes that moved are drawn again and nothing else
+  is, and the package is rewritten later — whenever something next wants the
+  bytes (Save, Export, Compare, the shape XML editor, or an edit that does go
+  through the package). Letting go of that shape went from 172 s to 0.09 s. The
+  numbers the drawing is given are rounded exactly the way the writer rounds
+  them, so what is on screen is what the file gives back: the tests drag a
+  shape, a group, a shape nested inside a group and two shapes at once, then
+  save, re-open and compare the transforms character for character.
+- **Large drawings were slow to open, slow to click and stuttered when
+  dragging.** Four things, measured on a 20 MB drawing of 8,470 shapes:
+  - **Three quarters of the canvas was invisible.** Every shape was rendered
+    with its Shape Data and user cells as `v:custProps` / `v:userDefs`
+    elements — 66,734 of the page's 99,519 SVG elements — and not one of them is
+    ever painted, or read back off the canvas. They are there for fidelity with
+    Visio's own SVG export, so they now go on at export time instead: the canvas
+    is 32,785 elements, a third of what it was, and renders 40% faster. Exported
+    files are unchanged, character for character.
+  - **Dragging a shape re-derived the whole page, twice, per mouse event.**
+    Working out where a dragged shape would land needs the page flattened to
+    boxes, and that was rebuilt from scratch on every event: 39 ms of arithmetic
+    per mouse move, on a mouse that reports far faster than the screen redraws.
+    It is built once when the drag starts — nothing in the drawing moves until
+    the drag is let go — and the planning happens once per frame with wherever
+    the pointer got to. That is 39 ms an event down to 0.03 ms a frame.
+  - **Clicking a shape re-drew the whole drawing.** A selection is painted
+    *over* the page — the shapes are identical whether or not one of them is
+    selected — but selecting one rebuilt all 32,785 SVG elements, re-walked
+    every group to reapply layer and shape visibility, and rebuilt the Shape
+    Tree's 67,760 rows, to move one mark. It now moves the mark: the overlay is
+    redrawn, and only the rows and groups that were marked or should be are
+    touched. Selecting a shape went from 2.0 s to 0.2 s of work in our headless
+    harness. The page underneath is left exactly as it was, so a selection no
+    longer quietly re-renders at whatever zoom you had reached.
+  - **Opening a file spent most of its time looking for cells.** Reading a shape
+    asks for dozens of its cells by name, and each ask scanned all of that
+    shape's children — so reading one shape scanned it dozens of times over.
+    Each shape is indexed by cell name the first time it is asked. Opening the
+    20 MB drawing went from 34.5 s to 17.9 s.
 - **There was no way to scroll the canvas, and no scrollbars.** The drawing is
   *placed* by a CSS transform rather than by scrolling — that is what keeps the
   vectors crisp at any zoom — and the cost of it was that the viewport was not a

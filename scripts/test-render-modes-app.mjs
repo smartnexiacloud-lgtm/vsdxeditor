@@ -77,22 +77,27 @@ const thinnestStroke = () => {
 const strokeMode = $('stroke-mode');
 const rerender = $('btn-rerender');
 check('toolbar offers the hairline mode control', !!strokeMode && !!rerender);
-check('fit-zoom is the default', strokeMode.value === 'screen', strokeMode.value);
+// True size is the default: it is what the drawing says, and what Visio, an
+// export and a print all show. A floor is a reading aid, and one applied
+// without being asked for makes a scaled plan's hairlines look heavier than
+// they are.
+check('true size is the default', strokeMode.value === 'true', strokeMode.value);
 
-const atFit = thinnestStroke();
-check('something thin is on screen to test with', Number.isFinite(atFit) && atFit > 0, String(atFit));
-
-// True size: lines drop to their real Visio weights, so the thinnest line can
-// only get thinner (or stay put, when nothing was being floored).
-const beforeTrueSize = currentSvg();
-strokeMode.value = 'true';
-strokeMode.dispatchEvent(new window.Event('change'));
-await waitForRerender(beforeTrueSize);
 const trueSize = thinnestStroke();
-check('true-size mode re-renders', !!currentSvg() && currentSvg() !== beforeTrueSize);
-check('true size never draws thicker than fit-zoom', trueSize <= atFit + 1e-9,
-  `${trueSize} vs ${atFit}`);
-check('true size still draws hairlines, not zero-width lines', trueSize > 0, String(trueSize));
+check('something thin is on screen to test with', Number.isFinite(trueSize) && trueSize > 0,
+  String(trueSize));
+check('true size draws hairlines, not zero-width lines', trueSize > 0, String(trueSize));
+
+// Fit zoom: no line thinner than a screen pixel, so the thinnest line can only
+// get thicker (or stay put, when nothing needed flooring).
+const beforeFit = currentSvg();
+strokeMode.value = 'screen';
+strokeMode.dispatchEvent(new window.Event('change'));
+await waitForRerender(beforeFit);
+const atFit = thinnestStroke();
+check('fit-zoom mode re-renders', !!currentSvg() && currentSvg() !== beforeFit);
+check('fit-zoom never draws thinner than true size', atFit >= trueSize - 1e-9,
+  `${atFit} vs ${trueSize}`);
 
 // Zooming does not change the SVG - that is what the Update button is for.
 const beforeZoom = thinnestStroke();
@@ -101,15 +106,14 @@ await sleep(50);
 check('zooming alone leaves the rendered strokes untouched', thinnestStroke() === beforeZoom,
   `${thinnestStroke()} vs ${beforeZoom}`);
 
-// Back to fit-zoom at a much smaller zoom: the minimum has to grow to keep
-// hairlines on screen, and only re-rendering applies it.
-const beforeScreen = currentSvg();
-strokeMode.value = 'screen';
-strokeMode.dispatchEvent(new window.Event('change'));
-await waitForRerender(beforeScreen);
+// Re-rendered for a much smaller zoom, the minimum has to grow to keep
+// hairlines on screen.
+const beforeZoomedOut = currentSvg();
+rerender.click();
+await waitForRerender(beforeZoomedOut);
 const zoomedOut = thinnestStroke();
-check('fit-zoom compensates for a zoomed-out view', zoomedOut > trueSize,
-  `${zoomedOut} vs ${trueSize}`);
+check('fit-zoom compensates for a zoomed-out view', zoomedOut > atFit,
+  `${zoomedOut} vs ${atFit}`);
 
 // The Update button goes stale once the view is zoomed away from the render,
 // and clears when clicked.

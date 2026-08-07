@@ -157,6 +157,19 @@ check('…so the file no longer claims to be 100% of nothing',
 check('the source Visio document is still embedded', text.includes('vsdxeditor-source'));
 check('the dialog closes after a successful export', !$('export-modal').classList.contains('visible'));
 
+// The canvas is rendered without Visio's property blocks — on a real drawing
+// they are three quarters of the elements and not one of them is ever painted —
+// so the thing that has to be true is that the *file* still has them. A drawing
+// that lost its Shape Data on the way out would be a far worse bug than the
+// slowness this bought.
+const countOf = (s, tag) => (s.match(new RegExp(`<v:${tag}\\b`, 'g')) || []).length;
+const canvas = new window.XMLSerializer().serializeToString(currentSvg());
+check('the canvas carries no Visio property blocks',
+  countOf(canvas, 'userDefs') === 0 && countOf(canvas, 'custProps') === 0,
+  `${countOf(canvas, 'userDefs')} userDefs, ${countOf(canvas, 'custProps')} custProps on screen`);
+check('but it still carries the titles the browser shows as tooltips',
+  /<title>/.test(canvas));
+
 // ---------------------------------------------------------------------------
 console.log('\n3. Rescaling is metadata only');
 
@@ -377,6 +390,37 @@ check('…at exactly 14400 × 3757pt', (() => {
 // The retry above rejects asynchronously too, so console.error stays captured
 // until here rather than spilling an IntegrityError stack into a green suite.
 console.error = realErr;
+
+// ---------------------------------------------------------------------------
+console.log('\n8. Shape Data survives the trip out');
+
+// The canvas is drawn without Visio's v:custProps/v:userDefs blocks, because on
+// a real drawing they are three quarters of the elements and none of them is
+// ever painted. A file is a different matter: an export that quietly dropped a
+// drawing's Shape Data would be a far worse bug than the slowness that bought.
+// This fixture is the one that carries some on its only page.
+await dropFile(new window.File([new Uint8Array(readFileSync('test-files/test3_house.vsdx'))], 'props.vsdx'));
+const propsCanvas = new window.XMLSerializer().serializeToString(currentSvg());
+check('the canvas is still drawn without them',
+  countOf(propsCanvas, 'ud') === 0 && countOf(propsCanvas, 'cp') === 0,
+  `${countOf(propsCanvas, 'ud')} v:ud, ${countOf(propsCanvas, 'cp')} v:cp on screen`);
+
+$('btn-export').click();
+$('export-format').value = 'svg';
+fire($('export-format'), 'change');
+$('export-size').value = 'original';
+fire($('export-size'), 'change');
+const propsText = await svgTextOf(await exportNow());
+check('the exported file has the user cells back',
+  countOf(propsText, 'ud') === 10, `${countOf(propsText, 'ud')} v:ud`);
+check('…and the Shape Data', countOf(propsText, 'cp') === 5, `${countOf(propsText, 'cp')} v:cp`);
+check('…inside the shape groups, not loose in the document',
+  !/<svg[^>]*>\s*<v:(userDefs|custProps)/.test(propsText)
+  && countOf(propsText, 'userDefs') > 0 && countOf(propsText, 'custProps') > 0,
+  `${countOf(propsText, 'userDefs')} userDefs, ${countOf(propsText, 'custProps')} custProps`);
+check('…right after the title, where the renderer puts them',
+  /<title>[^<]*<\/title><v:(userDefs|custProps)/.test(propsText),
+  propsText.slice(propsText.indexOf('<title>'), propsText.indexOf('<title>') + 160));
 
 console.log(`\nexport-app: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

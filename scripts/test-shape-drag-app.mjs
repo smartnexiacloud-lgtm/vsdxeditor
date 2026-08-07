@@ -110,9 +110,16 @@ const mouse = (type, x, y, target, init = {}) =>
   }));
 
 // A drag: press on `target`, travel past the slop, let go. The app commits on
-// mouse-up and reloads the package, so wait for the SVG to be replaced.
-const drag = async (target, from, to, init = {}) => {
-  const before = currentSvg();
+// mouse-up.
+//
+// It used to commit by rewriting the .vsdx, parsing it back and drawing the
+// whole page from the result, so a release was something to wait for by
+// watching for a fresh <svg>. A move, a resize and a turn change six numbers on
+// one shape and nothing else, so they are now made on the drawing that is
+// already on screen: the shape that moved is drawn again and nothing else is.
+// What a release waits for is therefore the shape's own group being replaced.
+const drag = async (shapeId, target, from, to, init = {}) => {
+  const before = { group: groupEl(shapeId), svg: currentSvg() };
   mouse('mousedown', from.x, from.y, target, init);
   await sleep(20);
   mouse('mousemove', (from.x + to.x) / 2, (from.y + to.y) / 2, window.document, init);
@@ -121,10 +128,17 @@ const drag = async (target, from, to, init = {}) => {
   await sleep(20);
   return { before };
 };
-const release = async (to, before, init = {}) => {
+const release = async (shapeId, to, before, init = {}) => {
   mouse('mouseup', to.x, to.y, window.document, init);
-  return waitFor(() => currentSvg() && currentSvg() !== before
-    && currentSvg().querySelector('g[data-shape-id]'));
+  const committed = await waitFor(() => groupEl(shapeId) && groupEl(shapeId) !== before.group);
+  // A browser fires a click after the mouse comes up, and the app has to
+  // swallow that one — otherwise a drag of several shapes would end with the
+  // selection collapsed onto whichever one the pointer happened to be over. So
+  // the test fires it too, or the suppression is left armed for the next click
+  // the test makes on purpose.
+  mouse('click', to.x, to.y, groupEl(shapeId));
+  await sleep(20);
+  return committed;
 };
 
 const fixture = process.argv[2] || 'test-files/test9_rect_and_line.vsdx';
@@ -160,13 +174,14 @@ check('…and reports no error', !errorText(), errorText());
 
 // --- 3. Dragging the shape moves it -----------------------------------------
 const MOVE_X = 60, MOVE_Y = -40;
-let { before } = await drag(groupEl(target.id), { x: origin.x + 5, y: origin.y + 5 },
+const treeRowsBefore = [...window.document.querySelectorAll('#shape-tree-body .shape-tree-node')];
+let { before } = await drag(target.id, groupEl(target.id), { x: origin.x + 5, y: origin.y + 5 },
   { x: origin.x + 5 + MOVE_X, y: origin.y + 5 + MOVE_Y });
 check('an outline is drawn where the shape is about to be', !!q('#shape-drag-preview'),
   currentSvg()?.innerHTML.slice(0, 0) || '');
 check('and the drawing itself has not been touched yet',
   originOf(target.id)?.x === origin.x, JSON.stringify(originOf(target.id)));
-check('the moved shape is committed', await release({ x: origin.x + 5 + MOVE_X, y: origin.y + 5 + MOVE_Y }, before),
+check('the moved shape is committed', await release(target.id, { x: origin.x + 5 + MOVE_X, y: origin.y + 5 + MOVE_Y }, before),
   errorText());
 const afterMove = originOf(target.id);
 check('the shape moved by the distance dragged',
@@ -177,6 +192,28 @@ check('the shape it moved is still the selected one',
   [...window.document.querySelectorAll('#svg-container svg g[data-shape-id]')]
     .filter(g => g.dataset.selected).map(g => g.getAttribute('data-shape-id')).join(',') === target.id);
 check('so its handles came back', handles().length > 0);
+// And they are on the shape, not where it used to be. The handles, the
+// selection outline and what a click picks are all read from the same
+// flattened boxes, so a placement that forgot to throw those away would leave
+// every one of them a drag behind. The "nw" handle sits on the shape's own
+// local (0,0), which for a plain-translate shape is its origin exactly.
+const nwHandle = handleFor('nw');
+check('and they are drawn on the shape where it is now, not where it was',
+  nwHandle && Math.abs(centreOf(nwHandle).x - afterMove.x) < 0.01
+  && Math.abs(centreOf(nwHandle).y - afterMove.y) < 0.01,
+  `${JSON.stringify(nwHandle && centreOf(nwHandle))} vs ${JSON.stringify(afterMove)}`);
+
+// Nothing but the shape changed, so nothing but the shape is built again. This
+// is the whole point: reloading the package to move one group cost 18 seconds
+// of parse on a 20 MB drawing before a pixel of it moved.
+check('the rest of the drawing was not drawn again', currentSvg() === before.svg);
+check('and the Shape Tree was not rebuilt to move one shape',
+  [...window.document.querySelectorAll('#shape-tree-body .shape-tree-node')]
+    .every((row, i) => row === treeRowsBefore[i]));
+check('every other shape is the element it already was',
+  [...window.document.querySelectorAll('#svg-container svg > g[data-shape-id]')]
+    .filter(g => g.getAttribute('data-shape-id') !== target.id)
+    .every(g => g === before.svg.querySelector(`g[data-shape-id="${g.getAttribute('data-shape-id')}"]`)));
 
 // --- 4. Dragging a corner handle resizes it ---------------------------------
 const sizeOf = (id) => {
@@ -189,9 +226,9 @@ const se = handleFor('se');
 check('the shape has a bottom-right handle to pull', !!se,
   handles().map(h => h.getAttribute('data-handle')).join(','));
 const sePoint = centreOf(se);
-({ before } = await drag(se, sePoint, { x: sePoint.x + 40, y: sePoint.y + 30 }));
+({ before } = await drag(target.id, se, sePoint, { x: sePoint.x + 40, y: sePoint.y + 30 }));
 check('resizing draws an outline too', !!q('#shape-drag-preview'));
-check('the resize is committed', await release({ x: sePoint.x + 40, y: sePoint.y + 30 }, before), errorText());
+check('the resize is committed', await release(target.id, { x: sePoint.x + 40, y: sePoint.y + 30 }, before), errorText());
 check('the shape is drawn differently afterwards, so its size really changed',
   sizeOf(target.id) !== beforeGeometry, `${sizeOf(target.id)} vs ${beforeGeometry}`);
 check('and its top-left corner did not move — that is the corner not being dragged',
@@ -203,14 +240,20 @@ check('and its top-left corner did not move — that is the corner not being dra
 const rotate = handleFor('rotate');
 check('there is a rotation grip', !!rotate);
 const grip = centreOf(rotate);
-({ before } = await drag(rotate, grip, { x: grip.x + 120, y: grip.y + 120 }));
+({ before } = await drag(target.id, rotate, grip, { x: grip.x + 120, y: grip.y + 120 }));
 check('turning draws an outline too', !!q('#shape-drag-preview'));
-check('the rotation is committed', await release({ x: grip.x + 120, y: grip.y + 120 }, before), errorText());
+check('the rotation is committed', await release(target.id, { x: grip.x + 120, y: grip.y + 120 }, before), errorText());
 const turned = groupEl(target.id)?.getAttribute('transform') || '';
 check('the shape is no longer a plain translate, so it has been turned',
   !/^translate\([^)]*\)$/.test(turned), turned);
 
 // --- 6. All of it is in the file, not just on screen ------------------------
+// Now that a placement is made on the model rather than by reloading the
+// package, this is what says the package hears about it at all: three drags are
+// still only in memory when Save is clicked, and Save has to fold every one of
+// them into the bytes. It is also the check that the numbers the model was
+// given are the numbers the file gives back — the reopened transform is
+// compared against the on-screen one character for character.
 const beforeSave = captured.length;
 $('btn-save-vsdx').click();
 await waitFor(() => captured.length > beforeSave);
@@ -242,6 +285,234 @@ check('the pen tool takes the handles away while it is drawing', handles().lengt
   String(handles().length));
 $('btn-pen').click();
 await sleep(60);
+
+// --- 9. A drag is planned once a frame, not once an event -------------------
+// A pointer reports far faster than the screen redraws — a 1000 Hz mouse is 16
+// events a frame — and planning for a position that is already stale is work
+// thrown away. On a drawing of 8,470 shapes that was 39 ms of arithmetic per
+// event, so the events piled up behind it and the drag visibly stuttered.
+//
+// So a move only records where the pointer is; the planning happens on the
+// frame. Which means the outline is not there the instant the mouse moves — and
+// that a drag let go before its frame has come must not lose the last move.
+// Back to the fixture as it shipped: everything above has been moved, resized
+// and turned, and this section needs a shape still placed by a plain translate
+// so client pixels and drawing units line up.
+await dropFile(new window.File([readFileSync(fixture)], 'drag-again.vsdx'));
+const fresh = translated()[0];
+check('there is an untouched shape to drag', !!fresh, topLevel().join(','));
+groupEl(fresh.id).dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+await sleep(80);
+
+const burstFrom = originOf(fresh.id);
+mouse('mousedown', burstFrom.x + 5, burstFrom.y + 5, groupEl(fresh.id));
+for (let i = 1; i <= 8; i++) mouse('mousemove', burstFrom.x + 5 + i * 4, burstFrom.y + 5, window.document);
+check('eight moves in one frame have not drawn anything yet', !q('#shape-drag-preview'));
+await sleep(60);
+check('…and when the frame comes, there is one outline', !!q('#shape-drag-preview'));
+check('…and the drawing still has not been touched',
+  originOf(fresh.id)?.x === burstFrom.x, JSON.stringify(originOf(fresh.id)));
+
+// Let go in the same breath as the last move: the position the hand released at
+// is the one that has to be committed, not the one the last frame happened to
+// see. It has to end somewhere the previous burst did not, or a drag that threw
+// the last move away would land in the right place by luck.
+const BURST = 72;   // the burst above stopped at +32
+const burstBefore = groupEl(fresh.id);
+for (let i = 1; i <= 6; i++) {
+  mouse('mousemove', burstFrom.x + 5 + (i * BURST) / 6, burstFrom.y + 5, window.document);
+}
+mouse('mouseup', burstFrom.x + 5 + BURST, burstFrom.y + 5, window.document);
+check('the drag committed', await waitFor(() => groupEl(fresh.id) && groupEl(fresh.id) !== burstBefore),
+  errorText());
+const landed = originOf(fresh.id);
+check('and it landed where the mouse was let go, not where the last frame saw it',
+  landed && Math.abs(landed.x - (burstFrom.x + BURST)) < 0.01,
+  `${JSON.stringify(landed)} vs x=${burstFrom.x + BURST}`);
+
+// --- 10. Groups, and more than one shape at a time --------------------------
+// A group is the case the placement path has to get right and cannot fake: the
+// shapes inside it are placed in *its* coordinates, so moving it must not touch
+// a single one of their cells — they come along because the group they hang off
+// moved. Redrawing the group redraws them with it, and that is the check.
+await dropFile(new window.File([readFileSync('test-files/test3_house.vsdx')], 'group-drag.vsdx'));
+const groupRoot = translated().find(entry => entry.g.querySelector('g[data-shape-id]'));
+check('the house has a group placed by a plain translate', !!groupRoot, topLevel().join(','));
+
+const childId = groupRoot.g.querySelector('g[data-shape-id]').getAttribute('data-shape-id');
+const childTransform = groupEl(childId).getAttribute('transform');
+const groupOrigin = originOf(groupRoot.id);
+groupEl(groupRoot.id).dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+await sleep(80);
+const GROUP_DX = 24, GROUP_DY = 18;
+({ before } = await drag(groupRoot.id, groupEl(groupRoot.id),
+  { x: groupOrigin.x + 3, y: groupOrigin.y + 3 },
+  { x: groupOrigin.x + 3 + GROUP_DX, y: groupOrigin.y + 3 + GROUP_DY }));
+check('dragging a group commits', await release(groupRoot.id,
+  { x: groupOrigin.x + 3 + GROUP_DX, y: groupOrigin.y + 3 + GROUP_DY }, before), errorText());
+const groupLanded = originOf(groupRoot.id);
+check('the group moved by the distance dragged',
+  Math.abs(groupLanded.x - (groupOrigin.x + GROUP_DX)) < 0.01
+  && Math.abs(groupLanded.y - (groupOrigin.y + GROUP_DY)) < 0.01,
+  `${JSON.stringify(groupLanded)} vs ${JSON.stringify({ x: groupOrigin.x + GROUP_DX, y: groupOrigin.y + GROUP_DY })}`);
+check('and what is inside it came along without being moved itself',
+  groupEl(childId)?.getAttribute('transform') === childTransform,
+  `${groupEl(childId)?.getAttribute('transform')} vs ${childTransform}`);
+check('the child is drawn inside the group it belongs to',
+  groupEl(groupRoot.id)?.contains(groupEl(childId)));
+
+// Two shapes at once: Ctrl-click adds to the selection, and both move.
+const second = translated().find(entry => entry.id !== groupRoot.id);
+check('there is a second shape to add to the selection', !!second, topLevel().join(','));
+groupEl(second.id).dispatchEvent(new window.MouseEvent('click', {
+  bubbles: true, cancelable: true, ctrlKey: true }));
+await sleep(80);
+const pairBefore = { group: originOf(groupRoot.id), second: originOf(second.id) };
+const pairFrom = { x: pairBefore.second.x + 3, y: pairBefore.second.y + 3 };
+const PAIR_DX = -15, PAIR_DY = 11;
+({ before } = await drag(second.id, groupEl(second.id), pairFrom,
+  { x: pairFrom.x + PAIR_DX, y: pairFrom.y + PAIR_DY }));
+check('dragging a selection of two commits',
+  await release(second.id, { x: pairFrom.x + PAIR_DX, y: pairFrom.y + PAIR_DY }, before), errorText());
+const pairAfter = { group: originOf(groupRoot.id), second: originOf(second.id) };
+check('both shapes moved, by the same distance',
+  Math.abs(pairAfter.second.x - (pairBefore.second.x + PAIR_DX)) < 0.01
+  && Math.abs(pairAfter.group.x - (pairBefore.group.x + PAIR_DX)) < 0.01
+  && Math.abs(pairAfter.group.y - (pairBefore.group.y + PAIR_DY)) < 0.01,
+  `${JSON.stringify(pairAfter)} vs ${JSON.stringify(pairBefore)}`);
+
+// --- 11. A placement waiting behind a structural edit -----------------------
+// Three drags are sitting in memory, unwritten. Bringing a shape to the front
+// *is* structural — it moves an element in the page part — so it goes through
+// the package and comes back as a fresh model. It has to write the drags into
+// the bytes on the way, or reloading throws every one of them away. This is the
+// whole risk of not writing an edit the moment it is made, so it is checked
+// where it bites rather than only at Save.
+const beforeReorder = currentSvg();
+groupEl(groupRoot.id).dispatchEvent(new window.MouseEvent('contextmenu', {
+  bubbles: true, cancelable: true, clientX: 30, clientY: 30 }));
+await sleep(80);
+check('the shape menu offers Bring to front', !$('shape-arrange-front').disabled);
+$('shape-arrange-front').click();
+check('bringing it to the front reloads the drawing',
+  await waitFor(() => currentSvg() && currentSvg() !== beforeReorder
+    && currentSvg().querySelector('g[data-shape-id]')), errorText());
+check('and the drags made before it survived the reload',
+  Math.abs(originOf(groupRoot.id).x - pairAfter.group.x) < 0.01
+  && Math.abs(originOf(groupRoot.id).y - pairAfter.group.y) < 0.01
+  && Math.abs(originOf(second.id).x - pairAfter.second.x) < 0.01,
+  `${JSON.stringify(originOf(groupRoot.id))} vs ${JSON.stringify(pairAfter.group)}`);
+check('the shape really did come to the front', topLevel().at(-1) === groupRoot.id,
+  topLevel().join(','));
+
+// And all of it is in a file that can be opened again.
+const beforeGroupSave = captured.length;
+$('btn-save-vsdx').click();
+await waitFor(() => captured.length > beforeGroupSave);
+const groupBytes = Buffer.from(await captured.at(-1).arrayBuffer());
+const onScreen = { group: groupEl(groupRoot.id).getAttribute('transform'),
+  second: groupEl(second.id).getAttribute('transform') };
+window.document.querySelector('#svg-container').innerHTML = '';
+await dropFile(new window.File([groupBytes], 'group-drag-reopened.vsdx'));
+check('the saved file opens with both shapes where they were left',
+  groupEl(groupRoot.id)?.getAttribute('transform') === onScreen.group
+  && groupEl(second.id)?.getAttribute('transform') === onScreen.second,
+  `${groupEl(groupRoot.id)?.getAttribute('transform')} vs ${onScreen.group}`);
+check('and the child inside the group still placed where it always was',
+  groupEl(childId)?.getAttribute('transform') === childTransform,
+  `${groupEl(childId)?.getAttribute('transform')} vs ${childTransform}`);
+
+// --- 12. Dragging a shape that lives inside a group -------------------------
+// A child's cells are in its group's coordinates and its flipped Y is measured
+// against the group's height, not the page's. Drawing it again therefore needs
+// to be told which box it hangs off — get that wrong and it lands somewhere
+// else entirely, in a way nothing on screen can catch by itself because the
+// drawing and the wrong answer agree with each other.
+//
+// What catches it is the file. Drag the child, save, open the file again, and
+// compare the transform the app drew against the one a fresh parse produces,
+// character for character.
+const nested = [...groupEl(groupRoot.id).querySelectorAll('g[data-shape-id]')]
+  .find(g => g.getAttribute('transform'));
+check('the group holds a child with a placement of its own', !!nested,
+  groupEl(groupRoot.id)?.innerHTML.slice(0, 0) || '');
+const nestedId = nested.getAttribute('data-shape-id');
+const nestedBefore = nested.getAttribute('transform');
+
+({ before } = await drag(nestedId, groupEl(nestedId), { x: 200, y: 200 }, { x: 233, y: 179 }));
+check('dragging a nested shape commits',
+  await release(nestedId, { x: 233, y: 179 }, before), errorText());
+const nestedAfter = groupEl(nestedId)?.getAttribute('transform');
+check('the nested shape was placed somewhere new', nestedAfter !== nestedBefore,
+  `${nestedAfter} vs ${nestedBefore}`);
+check('and it is still drawn inside its group',
+  groupEl(groupRoot.id)?.contains(groupEl(nestedId)));
+
+const beforeNestedSave = captured.length;
+$('btn-save-vsdx').click();
+await waitFor(() => captured.length > beforeNestedSave);
+const nestedBytes = Buffer.from(await captured.at(-1).arrayBuffer());
+window.document.querySelector('#svg-container').innerHTML = '';
+await dropFile(new window.File([nestedBytes], 'nested-drag-reopened.vsdx'));
+check('and the file puts it exactly where the app drew it',
+  groupEl(nestedId)?.getAttribute('transform') === nestedAfter,
+  `${groupEl(nestedId)?.getAttribute('transform')} vs ${nestedAfter}`);
+
+// --- 13. What was hidden stays hidden ---------------------------------------
+// Whether a shape is on screen is not in the file — it is the layers the viewer
+// has turned off and the rows unticked in the Shape Tree, held apart from the
+// drawing. A shape drawn again from the model knows nothing about any of that,
+// so a redraw has to be told, or dragging a group would bring back everything
+// inside it that was deliberately put away.
+groupEl(groupRoot.id).dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+await sleep(80);
+const nestedRow = window.document.querySelector(
+  `#shape-tree-body .shape-tree-node[data-shape-id="${nestedId}"] .shape-tree-checkbox`);
+check('the Shape Tree offers to hide the shape inside the group', !!nestedRow);
+nestedRow.checked = false;
+nestedRow.dispatchEvent(new window.Event('change', { bubbles: true }));
+await sleep(80);
+check('unticking it takes the shape off the drawing',
+  groupEl(nestedId)?.style.display === 'none', groupEl(nestedId)?.style.display);
+
+const hiddenOrigin = originOf(groupRoot.id);
+({ before } = await drag(groupRoot.id, groupEl(groupRoot.id),
+  { x: hiddenOrigin.x + 3, y: hiddenOrigin.y + 3 },
+  { x: hiddenOrigin.x + 33, y: hiddenOrigin.y + 17 }));
+check('the group still drags with something inside it hidden',
+  await release(groupRoot.id, { x: hiddenOrigin.x + 33, y: hiddenOrigin.y + 17 }, before), errorText());
+check('and the hidden shape did not come back with the redraw',
+  groupEl(nestedId)?.style.display === 'none', groupEl(nestedId)?.style.display);
+check('while the group itself moved', Math.abs(originOf(groupRoot.id).x - (hiddenOrigin.x + 30)) < 0.01,
+  `${JSON.stringify(originOf(groupRoot.id))} vs x=${hiddenOrigin.x + 30}`);
+
+// The same again for a shape that is hidden and is itself one of the shapes
+// being moved, rather than a passenger inside one. You cannot press a shape
+// that is not on screen, but you can put it in the selection first and then
+// hide it, and dragging the rest of the selection still takes it along.
+groupEl(second.id).dispatchEvent(new window.MouseEvent('click', {
+  bubbles: true, cancelable: true, ctrlKey: true }));
+await sleep(80);
+const secondBox = window.document.querySelector(
+  `#shape-tree-body .shape-tree-node[data-shape-id="${second.id}"] .shape-tree-checkbox`);
+secondBox.checked = false;
+secondBox.dispatchEvent(new window.Event('change', { bubbles: true }));
+await sleep(80);
+check('a selected shape can be hidden and stay selected',
+  groupEl(second.id)?.style.display === 'none'
+  && !!groupEl(second.id)?.dataset.selected, groupEl(second.id)?.style.display);
+
+const bothFrom = originOf(groupRoot.id);
+const secondFrom = originOf(second.id);
+({ before } = await drag(groupRoot.id, groupEl(groupRoot.id),
+  { x: bothFrom.x + 3, y: bothFrom.y + 3 }, { x: bothFrom.x + 23, y: bothFrom.y - 9 }));
+check('dragging the pair commits',
+  await release(groupRoot.id, { x: bothFrom.x + 23, y: bothFrom.y - 9 }, before), errorText());
+check('the hidden shape moved with the rest',
+  Math.abs(originOf(second.id).x - (secondFrom.x + 20)) < 0.01,
+  `${JSON.stringify(originOf(second.id))} vs x=${secondFrom.x + 20}`);
+check('and it is still hidden, though it was drawn again in its own right',
+  groupEl(second.id)?.style.display === 'none', groupEl(second.id)?.style.display);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -88,10 +88,28 @@ export function cellsForNewParent(worldMatrix, shape, parentMatrix, parentHeight
   };
 }
 
-function indexEntries(page) {
+/**
+ * The page flattened to id → entry. Every planner below needs one before it can
+ * work out where anything is, and building it walks the whole page — 20 ms on a
+ * drawing of a few thousand shapes.
+ *
+ * A caller planning repeatedly against a page that is not changing underneath
+ * it should therefore build one and pass it back in as `options.index`. A drag
+ * is exactly that: it re-plans on every mouse move while the model sits still,
+ * and without this it was walking the page twice per move.
+ *
+ * A caller that already has the page's boxes — the app caches them between
+ * renders — can hand them in as `entries` rather than have them collected
+ * again.
+ */
+export function buildShapeIndex(page, entries) {
   const byId = new Map();
-  for (const entry of collectShapeBoxes(page)) byId.set(entry.id, entry);
+  for (const entry of entries || collectShapeBoxes(page)) byId.set(entry.id, entry);
   return byId;
+}
+
+function indexEntries(page, index) {
+  return index instanceof Map ? index : buildShapeIndex(page);
 }
 
 // A shape's own local→page matrix. `entry.matrix` is not always it: a flat
@@ -266,8 +284,8 @@ function boxCorners(matrix, shape) {
   return [apply(matrix, 0, 0), apply(matrix, w, 0), apply(matrix, w, h), apply(matrix, 0, h)];
 }
 
-function contextOf(page, id) {
-  const byId = indexEntries(page);
+function contextOf(page, id, index) {
+  const byId = indexEntries(page, index);
   const entry = byId.get(String(id));
   if (!entry) throw new Error('That shape is no longer on the page');
   const parentId = entry.ancestors[entry.ancestors.length - 1];
@@ -297,13 +315,13 @@ function rejectFlatConnector(shape, verb) {
 /**
  * Move shapes by (dx, dy) page inches, Y up. Returns [{id, cells}].
  */
-export function planMoveShapes(page, shapeIds, dx, dy) {
+export function planMoveShapes(page, shapeIds, dx, dy, options = {}) {
   const wanted = [...new Set((shapeIds || []).map(String))];
   if (!wanted.length) throw new Error('Nothing to move');
   // Dragging a group drags what is inside it, and its children's cells are in
   // *its* coordinates — they have not moved at all. Dropping them keeps a
   // selection of "the group and something in it" from moving that child twice.
-  const byId = indexEntries(page);
+  const byId = indexEntries(page, options.index);
   const carried = new Set();
   for (const id of wanted) {
     const entry = byId.get(id);
@@ -311,7 +329,7 @@ export function planMoveShapes(page, shapeIds, dx, dy) {
   }
 
   return wanted.filter(id => !carried.has(id)).map(id => {
-    const { entry, parentMatrix, parentHeight, world } = contextOf(page, id);
+    const { entry, parentMatrix, parentHeight, world } = contextOf(page, id, byId);
     rejectFlatConnector(entry.shape, 'move');
     // Page inches are Y-up; the matrices are in renderer px, Y-down.
     const moved = [world[0], world[1], world[2], world[3], world[4] + dx * DPI, world[5] - dy * DPI];
@@ -333,8 +351,8 @@ export function planMoveShapes(page, shapeIds, dx, dy) {
  * changed transform on one group is a changed placement of one shape, whatever
  * its ancestors did.
  */
-export function planPlaceShapeLocally(page, shapeId, localMatrix) {
-  const { entry, parentMatrix, parentHeight } = contextOf(page, shapeId);
+export function planPlaceShapeLocally(page, shapeId, localMatrix, options = {}) {
+  const { entry, parentMatrix, parentHeight } = contextOf(page, shapeId, options.index);
   rejectFlatConnector(entry.shape, 'move');
   return {
     id: String(shapeId),
@@ -346,13 +364,14 @@ export function planPlaceShapeLocally(page, shapeId, localMatrix) {
  * Turn shapes by `deltaRad` (Visio's sense: counter-clockwise), each about its
  * own pin. Returns [{id, cells}].
  */
-export function planRotateShapes(page, shapeIds, deltaRad) {
+export function planRotateShapes(page, shapeIds, deltaRad, options = {}) {
   const wanted = [...new Set((shapeIds || []).map(String))];
   if (!wanted.length) throw new Error('Nothing to rotate');
   if (!Number.isFinite(deltaRad)) throw new Error('That is not an angle');
+  const byId = indexEntries(page, options.index);
 
   return wanted.map(id => {
-    const { entry, parentMatrix, parentHeight, world } = contextOf(page, id);
+    const { entry, parentMatrix, parentHeight, world } = contextOf(page, id, byId);
     rejectFlatConnector(entry.shape, 'rotate');
     // The pin in world px: it is the shape's own LocPin, which is where every
     // rotation in the file is measured from.
@@ -390,7 +409,7 @@ const MIN_SIZE_IN = 1 / DPI;   // one renderer pixel: smaller is not a shape
 export function planResizeShape(page, shapeId, handle, x, y, options = {}) {
   const spec = RESIZE_HANDLES[handle];
   if (!spec) throw new Error(`Unknown resize handle "${handle}"`);
-  const { entry, parentMatrix, parentHeight, world } = contextOf(page, shapeId);
+  const { entry, parentMatrix, parentHeight, world } = contextOf(page, shapeId, options.index);
   const shape = entry.shape;
   rejectFlatConnector(shape, 'resize');
 

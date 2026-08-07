@@ -1,7 +1,7 @@
-import { parseVsdx, saveVsdxLayerPermissions, saveVsdxWithoutHiddenLayers, saveVsdxWithoutNonSelectedLayers, saveVsdxWithoutNonVisibleData, getVsdxShapeXmlSnippet, replaceVsdxShapeXmlSnippet, addVsdxShapeToPage, groupVsdxShapes, ungroupVsdxShapes, reorderVsdxShapes, deleteVsdxShapes, transformVsdxShapes, normalizeLayerTags, normalizeTagColor, sanitizeLayerTreeSettings, DEFAULT_LAYER_DELIMITER } from './vsdx-parser.js';
+import { parseVsdx, saveVsdxLayerPermissions, saveVsdxWithoutHiddenLayers, saveVsdxWithoutNonSelectedLayers, saveVsdxWithoutNonVisibleData, getVsdxShapeXmlSnippet, replaceVsdxShapeXmlSnippet, addVsdxShapeToPage, groupVsdxShapes, ungroupVsdxShapes, reorderVsdxShapes, deleteVsdxShapes, transformVsdxShapes, shapeCellNumber, normalizeLayerTags, normalizeTagColor, sanitizeLayerTreeSettings, DEFAULT_LAYER_DELIMITER } from './vsdx-parser.js';
 import { embedVsdxInSvg, extractVsdxFromSvg } from './svg-vsdx-embed.js';
 import { parseVsd } from './vsd-parser.js';
-import { renderPage, pageCoordinateWidth } from './svg-renderer.js';
+import { renderPage, redrawShape, pageCoordinateWidth, attachVisioMetadata } from './svg-renderer.js';
 import { buildPenShapeXml, penPathToSvgD } from './pen-geometry.js';
 import {
   shapesAtPoint, shapesOnLayer, shapesOnLayers, searchShapes,
@@ -9,7 +9,7 @@ import {
 } from './shape-picker.js';
 import {
   planGroupShapes, planUngroupShape, isGroupShape, inheritsFromMaster,
-  planMoveShapes, planRotateShapes, planResizeShape
+  planMoveShapes, planRotateShapes, planResizeShape, buildShapeIndex
 } from './shape-arrange.js';
 import { openDiffView } from './diff-view.js';
 import { splitLayerPath, buildLayerTree, layersUnder, flattenLayerTree, groupKeys } from './layer-tree.js';
@@ -143,7 +143,12 @@ let zoom = 1;
 // page was rendered for; 'true' draws every line at its real Visio weight.
 // Either way the minimum is baked into the SVG, so changing zoom does not
 // change it until the page is re-rendered - hence the Update button.
-let strokeMode = 'screen';
+//
+// True size is the default: it is what the drawing says, and what Visio, an
+// export and a print all show. Floors are a reading aid for a drawing that has
+// been shrunk to fit a window, and one applied without being asked for makes a
+// 1:100 plan's hairlines look heavier than they are.
+let strokeMode = 'true';
 let renderedZoom = 1;
 // How much of `zoom` is baked into the SVG's own layout size rather than into
 // the container's transform. See commitLayoutZoom.
@@ -224,11 +229,34 @@ function getVisioFormat(name) {
 // the re-parse reverts it — which is why a hand-edit of one shape's XML used to
 // reset the layers. The prune paths already fold this in themselves
 // (patchVsdxLayerPermissions); this is the same step for the edit paths.
+// Placements made on the drawing that the package bytes have not been told
+// about yet — see commitPlacementLocally. Rewriting a 20 MB .vsdx to nudge one
+// shape is work nobody asked for at the moment they let go of the mouse, so it
+// waits until something actually wants the bytes.
+//
+// Every read of currentFileBuffer therefore goes through here first.
+let pendingShapeEdits = [];
+
+async function packageBuffer() {
+  if (!currentFileBuffer || !pendingShapeEdits.length) return currentFileBuffer;
+  // Taken off the queue before the first await: a second caller arriving while
+  // the zip is being rebuilt must not write the same edits in twice.
+  const edits = pendingShapeEdits;
+  pendingShapeEdits = [];
+  let buffer = currentFileBuffer;
+  for (const edit of edits) {
+    ({ buffer } = await transformVsdxShapes(buffer, edit.pageId, edit.updates));
+  }
+  currentFileBuffer = buffer;
+  return buffer;
+}
+
 async function getPackageBufferWithPendingEdits() {
-  if (!currentFileBuffer) return null;
-  if (!currentPackageEditable) return currentFileBuffer;
+  const buffer = await packageBuffer();
+  if (!buffer) return null;
+  if (!currentPackageEditable) return buffer;
   commitCurrentPageVisibility();
-  return saveVsdxLayerPermissions(currentFileBuffer, currentPages, viewTemplates, layerTagColors, currentLayerTreeSettings());
+  return saveVsdxLayerPermissions(buffer, currentPages, viewTemplates, layerTagColors, currentLayerTreeSettings());
 }
 
 async function applyUpdatedVsdxBuffer(buffer, pageId = null) {
@@ -237,6 +265,10 @@ async function applyUpdatedVsdxBuffer(buffer, pageId = null) {
   const unlayeredHidden = hiddenLayers.has(UNLAYERED_LAYER_INDEX);
   const result = await parseVsdx(buffer);
   currentFileBuffer = buffer;
+  // Whatever the model was carrying, this is the model now. A queued placement
+  // that did not make it into these bytes describes a page that no longer
+  // exists in memory, so it is dropped rather than replayed onto a stranger.
+  pendingShapeEdits = [];
   currentPages = result.pages;
   layerTagColors = { ...(result.layerTagColors || {}) };
   hiddenShapeIdsByPage.clear();
@@ -434,17 +466,63 @@ function backgroundPageFor(page) {
   return currentPages.find(p => String(p.id) === String(page.backPage)) || null;
 }
 
+// Flattening a page into shape boxes walks every shape in it, matrices and all,
+// which is 20 ms on a drawing of a few thousand shapes. Clicking one asked for
+// that twice — once to see what was under the pointer, once to draw the
+// selection — so a click cost more than a frame before anything appeared.
+//
+// Nothing about a page's geometry changes without the drawing being rendered
+// again: every edit goes through the package and comes back as a fresh model.
+// So both the composition and the boxes are remembered until the next render,
+// which throws the lot away.
+let composedPages = new WeakMap();
+let shapeBoxesByPage = new WeakMap();
+
+function invalidatePageGeometryCaches() {
+  composedPages = new WeakMap();
+  shapeBoxesByPage = new WeakMap();
+}
+
 function composedPage(page) {
+  if (!page) return page;
+  const cached = composedPages.get(page);
+  if (cached) return cached;
   const bgPage = backgroundPageFor(page);
-  return bgPage ? { ...page, shapes: [...bgPage.shapes, ...page.shapes] } : page;
+  const composed = bgPage ? { ...page, shapes: [...bgPage.shapes, ...page.shapes] } : page;
+  composedPages.set(page, composed);
+  return composed;
+}
+
+// The rendered group for a shape id, or null if it is not on the canvas.
+function shapeGroupElement(shapeId) {
+  const key = window.CSS?.escape ? CSS.escape(String(shapeId)) : String(shapeId);
+  return svgContainer.querySelector(`g[data-shape-id="${key}"]`);
+}
+
+// collectShapeBoxes, but only once per page per render.
+function pageShapeBoxes(page) {
+  if (!page) return [];
+  let entries = shapeBoxesByPage.get(page);
+  if (!entries) {
+    entries = collectShapeBoxes(page);
+    shapeBoxesByPage.set(page, entries);
+  }
+  return entries;
 }
 
 function renderCurrentPage() {
   if (!currentPages.length) return;
+  invalidatePageGeometryCaches();
   const page = currentPages[currentPageIndex];
   const renderedPage = composedPage(page);
 
-  renderPage(renderedPage, svgContainer, { minStrokeWidth: currentMinStrokeWidth(renderedPage) });
+  // Without the Shape Data blocks: they are three quarters of the elements on a
+  // real drawing and not one of them is ever painted or read back off the
+  // canvas. buildExportSvg puts them back into the file that leaves the app.
+  renderPage(renderedPage, svgContainer, {
+    minStrokeWidth: currentMinStrokeWidth(renderedPage),
+    metadata: false
+  });
   // A brand new SVG is at its natural size whatever the old one had been sized
   // to, so the zoom baked into layout is back to none until it is put there
   // again — which is done now rather than on a timer, since there is no gesture
@@ -2234,23 +2312,25 @@ function syncSelectedShapeHighlight() {
 
   const entries = new Map();
   if (svg && page) {
-    for (const entry of collectShapeBoxes(getComposedPage())) entries.set(String(entry.id), entry);
+    for (const entry of pageShapeBoxes(getComposedPage())) entries.set(String(entry.id), entry);
   }
 
+  // Only the groups that were marked and the ones that should be: walking every
+  // shape in the drawing to write two style properties on each cost more than
+  // the selection itself on a large file, and there are rarely more than a
+  // handful of either.
   const selected = [];
-  for (const group of svgContainer.querySelectorAll('g[data-shape-id]')) {
-    const id = group.getAttribute('data-shape-id');
-    group.style.outline = '';
-    group.style.outlineOffset = '';
-    if (!isShapeSelected(id)) {
-      delete group.dataset.selected;
-      continue;
-    }
+  for (const group of svgContainer.querySelectorAll('g[data-selected]')) {
+    if (!isShapeSelected(group.getAttribute('data-shape-id'))) delete group.dataset.selected;
+  }
+  for (const id of selectedShapeIds) {
+    const group = shapeGroupElement(id);
+    if (!group) continue;
     // The primary is solid, the rest dashed — with several shapes selected it
     // still has to be clear which one the Shape Tree and the layer list mean.
-    const isPrimary = selectedShapeId !== null && id === String(selectedShapeId);
+    const isPrimary = selectedShapeId !== null && String(id) === String(selectedShapeId);
     group.dataset.selected = isPrimary ? 'primary' : 'secondary';
-    if (entries.has(id)) selected.push({ entry: entries.get(id), isPrimary });
+    if (entries.has(String(id))) selected.push({ entry: entries.get(String(id)), isPrimary });
   }
   if (!svg || !page || !selected.length) return;
 
@@ -2342,11 +2422,11 @@ function appendShapeHandles(overlay, entry, unit) {
   overlay.appendChild(knob);
 }
 
-function applyShapeVisibility() {
-  const svg = svgContainer.querySelector('svg');
+function applyShapeVisibility(root = null) {
+  const svg = root || svgContainer.querySelector('svg');
   if (!svg) return;
   const hiddenShapeIds = getHiddenShapeIds();
-  const groups = svg.querySelectorAll('g[data-shape-id]');
+  const groups = scopedGroups(svg, 'g[data-shape-id]');
   for (const group of groups) {
     if (hiddenShapeIds.has(group.getAttribute('data-shape-id'))) {
       group.style.display = 'none';
@@ -2396,14 +2476,27 @@ function selectShapes(shapeIds, primaryId = null) {
   selectedShapeIds = next;
   selectedShapeId = nextPrimary;
   editingShapeId = null;
-  renderCurrentPage();
+  refreshSelectionUI();
+}
+
+// A selection is drawn *over* the page, never into it — the shapes themselves
+// are identical whether or not one of them is selected — so a click has no
+// business re-rendering the drawing. It used to: clicking a shape rebuilt all
+// 32,785 elements of a large page and then walked every group again to reapply
+// layer and shape visibility, which is a second and a half of work before the
+// selection box appears. What actually depends on the selection is the overlay
+// and the two panels that list it.
+function refreshSelectionUI() {
+  syncSelectedShapeHighlight();
+  refreshShapeTreeSelection();
+  renderLayerObjects();
 }
 
 function setSelectedShape(shapeId) {
   if (shapeId === null || shapeId === undefined) {
     clearShapeSelection();
     editingShapeId = null;
-    renderCurrentPage();
+    refreshSelectionUI();
     return;
   }
   selectShapes([shapeId], shapeId);
@@ -2693,6 +2786,52 @@ function expandToSelectedShape() {
   for (const ancestor of path.slice(0, -1)) collapsed.delete(String(ancestor.id));
 }
 
+function updateShapeTreeSubtitle(page, roots) {
+  const selected = findShapeById(roots, selectedShapeId);
+  const total = pageShapeBoxes(page).length;
+  shapeTreeSubtitle.textContent = selected
+    ? `${page.name || 'Page'} · ${total} shape${total === 1 ? '' : 's'} · selected ${getShapeLabel(selected)}`
+    : `${page.name || 'Page'} · ${total} shape${total === 1 ? '' : 's'}`;
+}
+
+// Moving the selection changes two attributes on two rows. Rebuilding the tree
+// to do it builds a row for every shape on the page — 67,760 elements on a
+// drawing of 8,470 — which is most of what a click on a big drawing used to
+// cost. So the rows are only rebuilt when which rows there *are* has changed:
+// no tree yet, no selection to show, a row being renamed (it holds a live
+// input), or a selection inside a folded branch, which opens it.
+function refreshShapeTreeSelection() {
+  const page = getCurrentPage();
+  const roots = shapeTreeRoots();
+  if (!page || !roots.length || selectedShapeId === null || editingShapeId !== null
+    || !shapeTreeBody.querySelector('.shape-tree-node')) {
+    renderShapeTree();
+    return;
+  }
+  const folded = getCollapsedShapeIds().size;
+  expandToSelectedShape();
+  if (getCollapsedShapeIds().size !== folded) {
+    renderShapeTree();
+    return;
+  }
+  // Only the rows that were marked and the ones that should be — the same
+  // argument as on the canvas, and for the same reason: there are 8,470 rows
+  // and at most a handful of either.
+  for (const row of shapeTreeBody.querySelectorAll('.shape-tree-node.selected')) {
+    if (isShapeSelected(row.dataset.shapeId)) continue;
+    row.classList.remove('selected');
+    row.setAttribute('aria-selected', 'false');
+  }
+  for (const id of selectedShapeIds) {
+    const row = shapeTreeRow(id);
+    if (!row) continue;
+    row.classList.add('selected');
+    row.setAttribute('aria-selected', 'true');
+  }
+  updateShapeTreeSubtitle(page, roots);
+  syncShapeTreeCursor(false);
+}
+
 function renderShapeTree() {
   const page = getCurrentPage();
   const roots = shapeTreeRoots();
@@ -2719,11 +2858,7 @@ function renderShapeTree() {
 
   shapeTreeSidebar.classList.add('visible');
   expandToSelectedShape();
-  const selected = findShapeById(roots, selectedShapeId);
-  const total = collectShapeBoxes(page).length;
-  shapeTreeSubtitle.textContent = selected
-    ? `${page.name || 'Page'} · ${total} shape${total === 1 ? '' : 's'} · selected ${getShapeLabel(selected)}`
-    : `${page.name || 'Page'} · ${total} shape${total === 1 ? '' : 's'}`;
+  updateShapeTreeSubtitle(page, roots);
   for (const root of roots) shapeTreeBody.appendChild(createShapeTreeNode(root, 0, null));
   // A row being renamed puts an input on screen that focuses itself; taking the
   // keyboard back for the tree would close it the moment it opened.
@@ -2748,29 +2883,41 @@ function shapeTreeRows() {
   return [...shapeTreeBody.querySelectorAll('.shape-tree-node')];
 }
 
+// One row by shape id, without walking all of them.
+function shapeTreeRow(shapeId) {
+  if (shapeId === null || shapeId === undefined) return null;
+  const key = window.CSS?.escape ? CSS.escape(String(shapeId)) : String(shapeId);
+  return shapeTreeBody.querySelector(`.shape-tree-node[data-shape-id="${key}"]`);
+}
+
 function shapeTreeCursorRow() {
-  return shapeTreeRows().find(row => row.dataset.shapeId === String(shapeTreeCursorId)) || null;
+  return shapeTreeRow(shapeTreeCursorId);
 }
 
 // The cursor belongs to a row, not to a shape: fold a group away and the shape
 // it was on has no row left, so it falls back to the selected row and then to
 // the first one rather than leaving the tree with nowhere to put the keyboard.
 function syncShapeTreeCursor(refocus = false) {
-  const rows = shapeTreeRows();
-  if (!rows.length) {
+  const first = shapeTreeBody.querySelector('.shape-tree-node');
+  if (!first) {
     shapeTreeCursorId = null;
     return;
   }
-  if (!rows.some(row => row.dataset.shapeId === String(shapeTreeCursorId))) {
-    const fallback = rows.find(row => row.classList.contains('selected')) || rows[0];
-    shapeTreeCursorId = fallback.dataset.shapeId;
+  let row = shapeTreeRow(shapeTreeCursorId);
+  if (!row) {
+    row = shapeTreeBody.querySelector('.shape-tree-node.selected') || first;
+    shapeTreeCursorId = row.dataset.shapeId;
   }
-  for (const row of rows) {
-    const isCursor = row.dataset.shapeId === String(shapeTreeCursorId);
-    row.classList.toggle('cursor', isCursor);
-    row.tabIndex = isCursor ? 0 : -1;
+  // Rows are built with tabIndex -1, so only the row that *was* the cursor has
+  // anything to put back — no reason to touch the other 8,469.
+  for (const previous of shapeTreeBody.querySelectorAll('.shape-tree-node.cursor')) {
+    if (previous === row) continue;
+    previous.classList.remove('cursor');
+    previous.tabIndex = -1;
   }
-  if (refocus) shapeTreeCursorRow()?.focus?.({ preventScroll: true });
+  row.classList.add('cursor');
+  row.tabIndex = 0;
+  if (refocus) row.focus?.({ preventScroll: true });
 }
 
 function moveShapeTreeCursor(shapeId) {
@@ -2876,7 +3023,7 @@ async function openShapeXmlEditor(shapeId) {
 
   try {
     editingShapeXmlId = String(shapeId);
-    shapeXmlTextarea.value = await getVsdxShapeXmlSnippet(currentFileBuffer, page.id, shapeId);
+    shapeXmlTextarea.value = await getVsdxShapeXmlSnippet(await packageBuffer(), page.id, shapeId);
     shapeXmlModal.classList.add('visible');
     closeShapeContextMenu();
     shapeXmlTextarea.focus();
@@ -3057,6 +3204,106 @@ async function runArrange(label, work) {
   }
 }
 
+// --- Committing a placement without reloading the file ----------------------
+// Group, ungroup, z-order and delete all change the *shape* of the document —
+// which element lives inside which, and in what order — so they go through the
+// package and come back as a fresh model. A move, a resize or a turn does not.
+// It changes at most six numbers on a handful of shapes, and every one of them
+// is already in memory and already on the canvas.
+//
+// So it is made where it can be seen. The model gets the numbers, the shapes
+// that moved are drawn again and nothing else is, and the package is left to
+// catch up whenever something next wants the bytes (packageBuffer).
+//
+// The long way round meant rewriting the .vsdx, parsing it again and drawing
+// every shape on the page from the result — 18 seconds of parse on a 20 MB
+// drawing to nudge one group, plus the selection, the folded rows of the Shape
+// Tree and the scroll position all thrown away on the way past.
+
+// The cells a placement can write, under the names the model gives them.
+const PLACEMENT_CELLS = ['pinX', 'pinY', 'width', 'height', 'locPinX', 'locPinY'];
+
+// True when applying this plan to the model would say something the file will
+// not. transformVsdxShapes leaves Angle, FlipX and FlipY alone when the plan
+// asks for the default *and* the shape has no cell of its own to overwrite, so
+// a shape inheriting a turn from its master and turned back to exactly square
+// would come back turned. Nothing in the model says whether the cell is the
+// shape's own, so that case goes the long way round instead of guessing.
+function planKeepsInheritedPlacement(shape, cells) {
+  if ('angle' in cells && Math.abs(cells.angle || 0) < 1e-9 && Math.abs(shape.angle || 0) >= 1e-9) return true;
+  if ('flipX' in cells && !cells.flipX && shape.flipX) return true;
+  if ('flipY' in cells && !cells.flipY && shape.flipY) return true;
+  return false;
+}
+
+/**
+ * Apply a move/resize/rotate plan to the drawing on screen. Returns false —
+ * having changed nothing — if any part of it cannot be mirrored, in which case
+ * the caller should fall back to the package round-trip.
+ */
+function commitPlacementLocally(updates) {
+  const svg = svgContainer.querySelector('svg');
+  const page = getCurrentPage();
+  if (!svg || !page || !currentPackageEditable || !currentFileBuffer || !updates?.length) return false;
+
+  const composed = composedPage(page);
+  const byId = buildShapeIndex(composed, pageShapeBoxes(composed));
+  const wanted = new Set(updates.map(update => String(update.id)));
+
+  // Everything is checked before anything is changed. A plan applied to half
+  // the model with the package still holding the old numbers is a worse
+  // outcome than a slow drag.
+  const roots = [];
+  for (const update of updates) {
+    const shape = findShapeById(page.shapes || [], update.id);
+    const entry = byId.get(String(update.id));
+    if (!shape || !entry || entry.shape !== shape) return false;
+    if (planKeepsInheritedPlacement(shape, update.cells || {})) return false;
+    if (!shapeGroupElement(update.id)) return false;
+    // A shape inside another shape in the same plan is drawn again as part of
+    // its parent, so it is not a root of the redraw.
+    if (!entry.ancestors.some(id => wanted.has(String(id)))) roots.push(entry);
+  }
+
+  for (const update of updates) {
+    const shape = byId.get(String(update.id)).shape;
+    const cells = update.cells || {};
+    // Rounded the way the writer rounds it, so what is on screen is what the
+    // file would come back as rather than a hair away from it.
+    for (const name of PLACEMENT_CELLS) {
+      if (Number.isFinite(cells[name])) shape[name] = shapeCellNumber(cells[name]);
+    }
+    if ('angle' in cells) shape.angle = shapeCellNumber(cells.angle || 0);
+    if ('flipX' in cells) shape.flipX = Boolean(cells.flipX);
+    if ('flipY' in cells) shape.flipY = Boolean(cells.flipY);
+  }
+
+  // The shapes are somewhere else now, so everything derived from where they
+  // were — the flattened boxes the picker and the selection overlay read — is
+  // no longer true.
+  invalidatePageGeometryCaches();
+  for (const entry of roots) {
+    const parentId = entry.ancestors[entry.ancestors.length - 1];
+    const parent = parentId ? byId.get(String(parentId)) : null;
+    const drawn = redrawShape(svg, composed, entry.shape, {
+      minStrokeWidth: currentMinStrokeWidth(composed),
+      metadata: false,
+      parentHeight: parent ? (parent.shape.height || 0) : composed.height
+    });
+    if (!drawn) continue;
+    applyLayerVisibility(drawn);
+    applyShapeVisibility(drawn);
+  }
+
+  pendingShapeEdits.push({ pageId: page.id, updates });
+  // The Shape Tree lists what is on the page, not where any of it is, so a
+  // placement leaves it alone. The selection markers are drawn from the boxes
+  // that just changed.
+  syncSelectedShapeHighlight();
+  renderLayerObjects();
+  return true;
+}
+
 function groupSelection() {
   const ids = [...selectedShapeIds];
   return runArrange('Group', async (page, base) => {
@@ -3158,8 +3405,7 @@ function clearShapeHighlight() {
 // back to the geometric box where there is no layout to ask (headless DOMs, a
 // group that is display:none).
 function renderedShapeBox(shapeId) {
-  const svg = svgContainer.querySelector('svg');
-  const group = svg?.querySelector(`g[data-shape-id="${window.CSS?.escape ? CSS.escape(String(shapeId)) : shapeId}"]`);
+  const group = shapeGroupElement(shapeId);
   const rect = group?.getBoundingClientRect?.();
   if (!rect || !(rect.width > 0 || rect.height > 0)) return null;
   const topLeft = clientToUserUnits(rect.left, rect.top);
@@ -3229,7 +3475,7 @@ function appendShapeBoxDecoration(group, { x, y, w, h }, unit, { solid }) {
 // The same square, for callers that have an id rather than a collected entry —
 // the Shape Tree walks the page model, not the box list.
 function highlightShapeById(shapeId) {
-  const entry = collectShapeBoxes(getComposedPage())
+  const entry = pageShapeBoxes(getComposedPage())
     .find(candidate => String(candidate.id) === String(shapeId));
   if (entry) highlightShapeBox(entry);
   else clearShapeHighlight();
@@ -3482,7 +3728,7 @@ function domShapeEntriesAt(clientX, clientY, byId) {
 function shapesUnderCursor(clientX, clientY) {
   const page = getComposedPage();
   if (!page) return [];
-  const entries = collectShapeBoxes(page);
+  const entries = pageShapeBoxes(page);
   const byId = new Map(entries.map(entry => [String(entry.id), entry]));
 
   const point = clientToPageUnits(clientX, clientY);
@@ -3852,10 +4098,19 @@ function hideLayerMatrix() {
   layerMatrixModal.classList.remove('visible');
 }
 
-function applyLayerVisibility() {
-  const svg = svgContainer.querySelector('svg');
+// Every group in `root` matching `selector`, `root` itself included. A redraw
+// hands in the single group it just built, and that group is one of the ones
+// the rule below has to be applied to.
+function scopedGroups(root, selector) {
+  const groups = [...root.querySelectorAll(selector)];
+  if (root.matches?.(selector)) groups.unshift(root);
+  return groups;
+}
+
+function applyLayerVisibility(root = null) {
+  const svg = root || svgContainer.querySelector('svg');
   if (!svg) return;
-  const groups = svg.querySelectorAll('g[data-layers]');
+  const groups = scopedGroups(svg, 'g[data-layers]');
   for (const g of groups) {
     const shapeLayers = g.getAttribute('data-layers').split(',');
     // Hide if ALL of the shape's layers are hidden
@@ -3871,7 +4126,7 @@ function applyLayerVisibility() {
     }
   }
   const unlayeredHidden = hiddenLayers.has(UNLAYERED_LAYER_INDEX);
-  for (const g of svg.querySelectorAll('g[data-shape-id]:not([data-layers])')) {
+  for (const g of scopedGroups(svg, 'g[data-shape-id]:not([data-layers])')) {
     if (unlayeredHidden) {
       g.style.display = 'none';
     } else {
@@ -4021,6 +4276,7 @@ async function loadFile(file) {
     fileName.textContent = file.name;
     const buffer = await file.arrayBuffer();
     currentFileBuffer = buffer;
+    pendingShapeEdits = [];
     currentFileType = format.family === 'xml' ? 'vsdx' : 'vsd';
     currentFileExtension = format.extension;
     const result = currentFileType === 'vsd' ? await parseVsd(buffer) : await parseVsdx(buffer);
@@ -4334,7 +4590,7 @@ viewportEl.addEventListener('mousedown', (e) => {
 window.addEventListener('mousemove', (e) => {
   if (penActive) penMouseMove(e);
   if (shapeDrag) {
-    updateShapeDrag(e);
+    queueShapeDrag(e);
     return;
   }
   if (!isPanning) return;
@@ -4502,7 +4758,7 @@ function beginShapeDrag(e) {
     if (!findShapeById(page.shapes || [], id)) return false;
     shapeDrag = {
       kind: handle === 'rotate' ? 'rotate' : 'resize',
-      handle, ids: [String(id)], start,
+      handle, ids: [String(id)], start, index: buildShapeIndex(page, pageShapeBoxes(page)),
       clientX: e.clientX, clientY: e.clientY, moved: false, plan: null
     };
     return true;
@@ -4521,10 +4777,39 @@ function beginShapeDrag(e) {
   if (!isShapeSelected(id)) setSelectedShape(id);
 
   shapeDrag = {
-    kind: 'move', handle: null, ids: movableSelectionIds(), start,
+    // The page is flattened once here rather than on every mouse move. Nothing
+    // in the model changes until the drag is let go, so the index that says
+    // where everything is stays true for the whole gesture — and rebuilding it
+    // per move was 39 ms of arithmetic per event on a drawing of 8,470 shapes,
+    // which is what made dragging drop frames.
+    kind: 'move', handle: null, ids: movableSelectionIds(), start, index: buildShapeIndex(page, pageShapeBoxes(page)),
     clientX: e.clientX, clientY: e.clientY, moved: false, plan: null
   };
   return true;
+}
+
+// Pointers report far faster than the screen redraws — a 1000 Hz mouse is 16
+// moves per frame — and planning for a position that is already stale is work
+// thrown away. So a move only records where the pointer is, and the planning
+// happens once, on the frame, with wherever it ended up.
+let shapeDragFrame = null;
+let shapeDragPending = null;
+
+function queueShapeDrag(e) {
+  shapeDragPending = { clientX: e.clientX, clientY: e.clientY, shiftKey: e.shiftKey };
+  if (shapeDragFrame !== null) return;
+  const schedule = typeof requestAnimationFrame === 'function'
+    ? requestAnimationFrame : (fn) => setTimeout(fn, 16);
+  shapeDragFrame = schedule(() => {
+    shapeDragFrame = null;
+    flushShapeDrag();
+  });
+}
+
+function flushShapeDrag() {
+  const at = shapeDragPending;
+  shapeDragPending = null;
+  if (at && shapeDrag) updateShapeDrag(at);
 }
 
 function updateShapeDrag(e) {
@@ -4538,16 +4823,18 @@ function updateShapeDrag(e) {
   if (!at) return;
 
   try {
+    const index = shapeDrag.index;
     if (shapeDrag.kind === 'move') {
-      shapeDrag.plan = planMoveShapes(page, shapeDrag.ids, at.x - shapeDrag.start.x, at.y - shapeDrag.start.y);
+      shapeDrag.plan = planMoveShapes(page, shapeDrag.ids, at.x - shapeDrag.start.x, at.y - shapeDrag.start.y, { index });
       drawDragPreview(shapeDrag.plan.map(item => item.preview));
     } else if (shapeDrag.kind === 'resize') {
       const plan = planResizeShape(page, shapeDrag.ids[0], shapeDrag.handle, at.x, at.y,
-        { keepAspect: e.shiftKey });
+        { keepAspect: e.shiftKey, index });
       shapeDrag.plan = [{ id: plan.id, cells: plan.cells }, ...plan.children];
       drawDragPreview([plan.preview]);
     } else {
-      shapeDrag.plan = planRotateShapes(page, shapeDrag.ids, rotationFromPointer(page, shapeDrag, at, e.shiftKey));
+      shapeDrag.plan = planRotateShapes(page, shapeDrag.ids,
+        rotationFromPointer(page, shapeDrag, at, e.shiftKey), { index });
       drawDragPreview(shapeDrag.plan.map(item => item.preview));
     }
     shapeDrag.error = null;
@@ -4563,7 +4850,8 @@ function updateShapeDrag(e) {
 // How far round the shape's pin the pointer has travelled since the press.
 // Shift snaps to 15°, which is what everyone reaches for when they want 90.
 function rotationFromPointer(page, drag, at, snap) {
-  const entry = collectShapeBoxes(page).find(candidate => candidate.id === drag.ids[0]);
+  const entry = drag.index?.get(String(drag.ids[0]))
+    || pageShapeBoxes(page).find(candidate => candidate.id === drag.ids[0]);
   if (!entry) return 0;
   const shape = entry.shape;
   const pin = applyMatrix(entry.matrix, (shape.locPinX || 0) * 96,
@@ -4581,6 +4869,9 @@ function rotationFromPointer(page, drag, at, snap) {
 }
 
 function endShapeDrag() {
+  // The last move may still be waiting for its frame, and it is the one that
+  // says where the shape was let go — so it is planned now rather than dropped.
+  flushShapeDrag();
   const drag = shapeDrag;
   shapeDrag = null;
   if (!drag) return;
@@ -4596,6 +4887,9 @@ function endShapeDrag() {
 
   const label = drag.kind === 'move' ? 'Move' : drag.kind === 'resize' ? 'Resize' : 'Rotate';
   const updates = drag.plan;
+  // Letting go of a shape should cost what the shape cost, not what the file
+  // costs. The package is rewritten later, if at all.
+  if (commitPlacementLocally(updates)) return;
   runArrange(label, async (page, base) => {
     const { buffer } = await transformVsdxShapes(base, page.id, updates);
     return { buffer, select: drag.ids };
@@ -4965,7 +5259,7 @@ compareInput.addEventListener('change', async (e) => {
   try {
     const headBuffer = await file.arrayBuffer();
     await openDiffView({
-      baseBuffer: currentFileBuffer,
+      baseBuffer: await packageBuffer(),
       headBuffer,
       baseName: fileName.textContent || 'base',
       headName: file.name,
@@ -5144,7 +5438,7 @@ saveVsdxButton.addEventListener('click', async () => {
   }
 
   try {
-    const output = await saveVsdxLayerPermissions(currentFileBuffer, currentPages, viewTemplates, layerTagColors, currentLayerTreeSettings());
+    const output = await saveVsdxLayerPermissions(await packageBuffer(), currentPages, viewTemplates, layerTagColors, currentLayerTreeSettings());
     const blob = new Blob([output], { type: 'application/octet-stream' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -5441,6 +5735,12 @@ function buildExportSvg(size) {
   exported.querySelector('#pen-preview')?.remove();
   exported.querySelector('#shape-highlight')?.remove();
   exported.querySelector('#shape-selection')?.remove();
+  exported.querySelector('#shape-drag-preview')?.remove();
+  // The canvas is rendered without the Visio property blocks, for speed. A file
+  // is not, so they go back on here — from the model the canvas was drawn from,
+  // matched to the shapes by id.
+  const page = getComposedPage();
+  if (page) attachVisioMetadata(exported, page);
   groupExportedSvgByLayer(exported);
   return applyExportSize(exported, size);
 }
@@ -5454,7 +5754,7 @@ function groupExportedSvgByLayer(exported) {
   const page = currentPages[currentPageIndex];
   if (!page) return null;
   const bounds = new Map();
-  for (const entry of collectShapeBoxes(page)) {
+  for (const entry of pageShapeBoxes(page)) {
     if (entry.depth === 0) bounds.set(String(entry.id), entry.bounds);
   }
   try {
@@ -5498,9 +5798,10 @@ async function exportSvgFile(size) {
       if (currentFileBuffer) {
         // Embed what "Save Visio" would produce, so layer edits and named views
         // round-trip too.
+        const base = await packageBuffer();
         const source = currentPackageEditable
-          ? await saveVsdxLayerPermissions(currentFileBuffer, currentPages, viewTemplates, layerTagColors, currentLayerTreeSettings())
-          : currentFileBuffer;
+          ? await saveVsdxLayerPermissions(base, currentPages, viewTemplates, layerTagColors, currentLayerTreeSettings())
+          : base;
         svgStr = embedVsdxInSvg(svgStr, source, fileName.textContent || 'diagram.vsdx', {
           pageId: currentPages[currentPageIndex]?.id
         });
