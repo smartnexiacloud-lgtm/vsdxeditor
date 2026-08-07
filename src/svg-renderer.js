@@ -1046,6 +1046,42 @@ export function attachVisioMetadata(svg, page) {
   return svg;
 }
 
+/**
+ * Where a shape sits in its parent, as the `transform` its group carries.
+ *
+ * Everything else renderShape puts inside that group — the paths, the text, the
+ * children of a group — is in the shape's own coordinates and knows nothing
+ * about where the shape is. So this string is the *whole* difference between a
+ * shape drawn here and the same shape drawn somewhere else, and an app that has
+ * just moved, turned or flipped one can write it and be done rather than build
+ * the group again (see commitPlacementLocally in src/main.js).
+ *
+ * `pageHeight` is the height of whatever the shape's pin is measured in: the
+ * page for a top-level shape, the parent group's height for a child.
+ *
+ * The one thing that is *not* only this string is a change of Width or Height:
+ * those scale the geometry, re-wrap the text and rescale a group's contents.
+ */
+export function shapeTransform(shape, pageHeight) {
+  // Visio: shape positioned by PinX,PinY (in page coords), LocPinX,LocPinY is the pin within the shape
+  const px = inToPx(shape.pinX);
+  const py = inToPx(pageHeight - shape.pinY); // flip Y for page
+  const lpx = inToPx(shape.locPinX);
+  const lpy = inToPx(shape.height - shape.locPinY); // flip Y for shape-local
+  const angleDeg = -shape.angle * (180 / Math.PI); // Visio radians, CCW → SVG CW
+
+  let transform = `translate(${px - lpx}, ${py - lpy})`;
+  if (Math.abs(angleDeg) > 0.01) {
+    transform += ` rotate(${angleDeg}, ${lpx}, ${lpy})`;
+  }
+  if (shape.flipX || shape.flipY) {
+    const sx = shape.flipX ? -1 : 1;
+    const sy = shape.flipY ? -1 : 1;
+    transform += ` translate(${shape.flipX ? inToPx(shape.width) : 0}, ${shape.flipY ? inToPx(shape.height) : 0}) scale(${sx}, ${sy})`;
+  }
+  return transform;
+}
+
 function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, fontScale, themeColors = {}, pageContext = null) {
   if (fontScale === undefined) fontScale = strokeScale;
   // Thinnest line this render may draw, in the emitted coordinate space. The
@@ -1115,24 +1151,7 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
     return g;
   }
 
-  // Calculate transform
-  // Visio: shape positioned by PinX,PinY (in page coords), LocPinX,LocPinY is the pin within the shape
-  const px = inToPx(shape.pinX);
-  const py = inToPx(pageHeight - shape.pinY); // flip Y for page
-  const lpx = inToPx(shape.locPinX);
-  const lpy = inToPx(shape.height - shape.locPinY); // flip Y for shape-local
-  const angleDeg = -shape.angle * (180 / Math.PI); // Visio radians, CCW → SVG CW
-
-  let transform = `translate(${px - lpx}, ${py - lpy})`;
-  if (Math.abs(angleDeg) > 0.01) {
-    transform += ` rotate(${angleDeg}, ${lpx}, ${lpy})`;
-  }
-  if (shape.flipX || shape.flipY) {
-    const sx = shape.flipX ? -1 : 1;
-    const sy = shape.flipY ? -1 : 1;
-    transform += ` translate(${shape.flipX ? inToPx(shape.width) : 0}, ${shape.flipY ? inToPx(shape.height) : 0}) scale(${sx}, ${sy})`;
-  }
-  g.setAttribute('transform', transform);
+  g.setAttribute('transform', shapeTransform(shape, pageHeight));
 
   // Render geometry
   if (shape.geometry.length > 0) {

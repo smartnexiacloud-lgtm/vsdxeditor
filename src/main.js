@@ -1,7 +1,7 @@
 import { parseVsdx, saveVsdxLayerPermissions, saveVsdxWithoutHiddenLayers, saveVsdxWithoutNonSelectedLayers, saveVsdxWithoutNonVisibleData, getVsdxShapeXmlSnippet, replaceVsdxShapeXmlSnippet, addVsdxShapeToPage, groupVsdxShapes, ungroupVsdxShapes, reorderVsdxShapes, deleteVsdxShapes, transformVsdxShapes, shapeCellNumber, normalizeLayerTags, normalizeTagColor, sanitizeLayerTreeSettings, DEFAULT_LAYER_DELIMITER } from './vsdx-parser.js';
 import { embedVsdxInSvg, extractVsdxFromSvg } from './svg-vsdx-embed.js';
 import { parseVsd } from './vsd-parser.js';
-import { renderPage, redrawShape, pageCoordinateWidth, attachVisioMetadata } from './svg-renderer.js';
+import { renderPage, redrawShape, shapeTransform, pageCoordinateWidth, attachVisioMetadata } from './svg-renderer.js';
 import { buildPenShapeXml, penPathToSvgD } from './pen-geometry.js';
 import {
   shapesAtPoint, shapesOnLayer, shapesOnLayers, searchShapes,
@@ -114,6 +114,7 @@ const exportPdfConsent = document.getElementById('export-pdf-consent');
 const exportStatus = document.getElementById('export-status');
 const penButton = document.getElementById('btn-pen');
 const selectButton = document.getElementById('btn-select');
+const panButton = document.getElementById('btn-pan');
 const penBar = document.getElementById('pen-bar');
 const penStrokeOn = document.getElementById('pen-stroke-on');
 const penStrokeColor = document.getElementById('pen-stroke-color');
@@ -185,6 +186,11 @@ let shapeTreeCursorId = null;
 // the space the parser and pen-geometry both speak, so nothing is converted
 // twice. penDrag tracks the handle being pulled out of the node just placed.
 let penActive = false;
+// The hand. The canvas has always panned from a press on empty space, which is
+// no use on a drawing whose shapes cover it — and on a big one that is most of
+// it. With the hand out every press pans, shapes included, and nothing on the
+// page is picked or moved.
+let panToolActive = false;
 let penNodes = [];
 let penDrag = null;
 let penCursor = null;
@@ -2346,7 +2352,7 @@ function syncSelectedShapeHighlight() {
   // about one point is another, so the drag tools ask about the shape the rest
   // of the app already calls the selected one.
   const primary = selected.find(item => item.isPrimary);
-  if (primary && selected.length === 1 && currentPackageEditable && !penActive
+  if (primary && selected.length === 1 && currentPackageEditable && !penActive && !panToolActive
       && findShapeById(page.shapes || [], primary.entry.id)) {
     appendShapeHandles(overlay, primary.entry, unit);
   }
@@ -3237,6 +3243,38 @@ function planKeepsInheritedPlacement(shape, cells) {
 }
 
 /**
+ * Put a shape that has already been moved in the model where it now belongs, by
+ * writing the one attribute that says so. Returns false if this shape needs
+ * drawing again instead.
+ *
+ * A shape's paths, its text and — for a group — everything inside it are in the
+ * shape's own coordinates: they say what the shape looks like, never where it
+ * is. Where it is, is the `transform` on its group and nothing else. So moving,
+ * turning or flipping a shape is one attribute, however much is inside it, and
+ * building the group again to change that one string is work that scales with
+ * the *shape* when it should not scale with anything at all. A group of a
+ * thousand children is a thousand elements built to move it an inch.
+ *
+ * Two things are checked first, and both have to hold:
+ *
+ *   · Width and Height must not have changed. They scale the geometry, re-wrap
+ *     the text and rescale a group's contents, so a resize really does mean
+ *     drawing the shape again.
+ *   · The transform on the canvas must be the one this shape's *old* placement
+ *     would have produced. If it is not — a flat connector is drawn straight
+ *     into its parent's coordinates and carries no transform at all — then this
+ *     shape's position is not held in that attribute, and writing it would move
+ *     nothing or move it wrongly.
+ */
+function moveInPlace(root) {
+  const shape = root.entry.shape;
+  if (shape.width !== root.wasSized.width || shape.height !== root.wasSized.height) return false;
+  if (root.element.getAttribute('transform') !== root.wasPlaced) return false;
+  root.element.setAttribute('transform', shapeTransform(shape, root.parentHeight));
+  return true;
+}
+
+/**
  * Apply a move/resize/rotate plan to the drawing on screen. Returns false —
  * having changed nothing — if any part of it cannot be mirrored, in which case
  * the caller should fall back to the package round-trip.
@@ -3259,10 +3297,23 @@ function commitPlacementLocally(updates) {
     const entry = byId.get(String(update.id));
     if (!shape || !entry || entry.shape !== shape) return false;
     if (planKeepsInheritedPlacement(shape, update.cells || {})) return false;
-    if (!shapeGroupElement(update.id)) return false;
+    const element = shapeGroupElement(update.id);
+    if (!element) return false;
     // A shape inside another shape in the same plan is drawn again as part of
     // its parent, so it is not a root of the redraw.
-    if (!entry.ancestors.some(id => wanted.has(String(id)))) roots.push(entry);
+    if (entry.ancestors.some(id => wanted.has(String(id)))) continue;
+    const parentId = entry.ancestors[entry.ancestors.length - 1];
+    const parent = parentId ? byId.get(String(parentId)) : null;
+    const parentHeight = parent ? (parent.shape.height || 0) : composed.height;
+    roots.push({
+      entry,
+      element,
+      parentHeight,
+      // What the drawing says about this shape right now, taken before anything
+      // is changed — see moveInPlace for what the two of them are for.
+      wasSized: { width: shape.width, height: shape.height },
+      wasPlaced: shapeTransform(shape, parentHeight)
+    });
   }
 
   for (const update of updates) {
@@ -3282,13 +3333,12 @@ function commitPlacementLocally(updates) {
   // were — the flattened boxes the picker and the selection overlay read — is
   // no longer true.
   invalidatePageGeometryCaches();
-  for (const entry of roots) {
-    const parentId = entry.ancestors[entry.ancestors.length - 1];
-    const parent = parentId ? byId.get(String(parentId)) : null;
-    const drawn = redrawShape(svg, composed, entry.shape, {
+  for (const root of roots) {
+    if (moveInPlace(root)) continue;
+    const drawn = redrawShape(svg, composed, root.entry.shape, {
       minStrokeWidth: currentMinStrokeWidth(composed),
       metadata: false,
-      parentHeight: parent ? (parent.shape.height || 0) : composed.height
+      parentHeight: root.parentHeight
     });
     if (!drawn) continue;
     applyLayerVisibility(drawn);
@@ -3744,8 +3794,9 @@ function attachSvgLayerFocusHandlers() {
   const svg = svgContainer.querySelector('svg');
   if (!svg) return;
   svg.addEventListener('click', (e) => {
-    // While drawing, a click is a path point - not a selection.
-    if (penActive) return;
+    // While drawing, a click is a path point - not a selection; and a click
+    // that was the end of a pan is not one either.
+    if (penActive || panToolActive) return;
     // Letting go after a drag is not a click. Without this, dragging several
     // shapes at once would end with the selection collapsed onto whichever one
     // the pointer happened to be over.
@@ -4299,6 +4350,8 @@ async function loadFile(file) {
     // Drawing writes back into the package, so it needs an editable one.
     if (penButton) penButton.disabled = !currentPackageEditable;
     if (selectButton) selectButton.disabled = !currentPackageEditable;
+    // Looking at a drawing is not editing it, so the hand needs only a drawing.
+    if (panButton) panButton.disabled = currentPages.length === 0;
     // So does adding a layer — a read-only stencil has nowhere to put one.
     if (layersManage) layersManage.style.display = currentPackageEditable ? '' : 'none';
     if (shapeContextNewLayer) shapeContextNewLayer.style.display = currentPackageEditable ? '' : 'none';
@@ -4306,6 +4359,7 @@ async function loadFile(file) {
     // nowhere to put one.
     if (shapeContextRename) shapeContextRename.style.display = currentPackageEditable ? '' : 'none';
     setPenActive(false);
+    setPanToolActive(false);
     closeLayerObjects();
     // Default to first foreground page
     const firstFg = currentPages.findIndex(p => !p.isBackground);
@@ -4570,8 +4624,9 @@ viewportEl.addEventListener('mousedown', (e) => {
     return;
   }
   // A press on a selected shape, or on one of its handles, drags the shape.
-  // Anywhere else is the canvas, and the canvas pans.
-  if (beginShapeDrag(e)) {
+  // Anywhere else is the canvas, and the canvas pans. With the hand out,
+  // everywhere is the canvas.
+  if (!panToolActive && beginShapeDrag(e)) {
     e.preventDefault();
     return;
   }
@@ -4923,14 +4978,31 @@ function updatePenBarState() {
   }
 }
 
+// One tool at a time, and the toolbar says which. Select is not a mode with any
+// state of its own — it is what the canvas does when neither of the others is
+// holding it — but calling it nothing at all left people looking for it.
+function syncToolButtons() {
+  penButton?.classList.toggle('active', penActive);
+  panButton?.classList.toggle('active', panToolActive);
+  selectButton?.classList.toggle('active', !penActive && !panToolActive);
+}
+
+function setPanToolActive(active) {
+  // Panning is a way of looking at a drawing rather than a way of changing one,
+  // so the hand works on a read-only file as well as an editable one.
+  const next = Boolean(active) && currentPages.length > 0;
+  if (next && penActive) setPenActive(false);
+  panToolActive = next;
+  syncToolButtons();
+  // The handles are for dragging a shape about, and the hand drags the drawing.
+  syncSelectedShapeHighlight();
+}
+
 function setPenActive(active) {
   const next = Boolean(active) && currentPackageEditable && currentPages.length > 0;
   penActive = next;
-  penButton?.classList.toggle('active', next);
-  // Two tools, one at a time, and the toolbar says which. Select is not a mode
-  // with any state of its own — it is what the canvas does when the pen is not
-  // holding it — but calling it nothing at all left people looking for it.
-  selectButton?.classList.toggle('active', !next);
+  if (next) panToolActive = false;
+  syncToolButtons();
   if (penBar) penBar.hidden = !next;
   viewportEl.classList.toggle('pen-active', next);
   if (!next) {
@@ -5178,7 +5250,8 @@ shapeSearchInput?.addEventListener('keydown', (e) => {
   }
 });
 
-selectButton?.addEventListener('click', () => setPenActive(false));
+selectButton?.addEventListener('click', () => { setPenActive(false); setPanToolActive(false); });
+panButton?.addEventListener('click', () => setPanToolActive(!panToolActive));
 penButton?.addEventListener('click', () => setPenActive(!penActive));
 penFinishButton?.addEventListener('click', () => commitPenPath());
 penUndoButton?.addEventListener('click', () => removeLastPenNode());

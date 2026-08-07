@@ -86,11 +86,18 @@ portable offline builds.
   shape's own box, so a turned shape resizes along its own axes. An outline
   follows the pointer rather than the drawing itself — the edit lands once, when
   you let go, so a drag is one durable change that survives *Save Visio*.
-  Letting go redraws the shapes that moved and nothing else, leaving your
-  selection, the folded rows of the Shape Tree and where you had scrolled to
-  alone; the `.vsdx` is rewritten the next time anything needs the bytes.
+  Letting go moves the shapes that moved and nothing else: a move, a turn or a
+  flip only says where a shape is, so the shape is placed somewhere else rather
+  than drawn again, and a group of a thousand children costs what one rectangle
+  costs. Your selection, the folded rows of the Shape Tree and where you had
+  scrolled to are all left alone, and the `.vsdx` is rewritten the next time
+  anything needs the bytes.
   Dragging a group takes its contents with it and resizing one scales them, and
   it all works on a shape nested several groups deep.
+- **Pan tool** — a hand for getting about a crowded drawing: with it out, a drag
+  anywhere moves the page, shapes included, and nothing is picked or moved by
+  mistake. It works on read-only files too. Empty canvas still pans under the
+  Select tool, as always.
 - **Pen tool** — draw new paths onto the drawing: click for a corner, drag to
   pull a bezier handle, with fill and stroke (colour, weight, line pattern,
   opacity) set from a bar above the canvas and previewed as you draw. Curves are

@@ -33,6 +33,7 @@ switch pages.
 | **+** / **−** | Zoom in / out about the middle of the window |
 | **Fit** | Scale the page to fit the window — including *up*, for a drawing smaller than the window |
 | Drag on empty canvas | Pan (dragging a *selected* shape moves it instead — see [Select](#moving-resizing-and-turning-shapes-select)) |
+| **✋ Pan** in the toolbar, then drag anywhere | Pan, shapes included — nothing on the page is picked or moved while it is out. Click **Select** to go back to editing. |
 | Scrollbars | Drag a thumb, or click its track to jump |
 | **←** **↑** **→** **↓** | Pan a step; hold **Shift** for a bigger one |
 | **Page Up** / **Page Down** | Pan a screenful |
@@ -391,9 +392,9 @@ re-saved in the real Microsoft Visio desktop app — see
 
 ### Moving, resizing and turning shapes (Select)
 
-**Select** is the toolbar's other tool, next to **Pen**, and it is what the
-canvas does whenever the pen is not out. Click a shape to pick it, and it grows
-eight square handles and a round grip above it:
+**Select** is what the canvas does whenever neither of the other two tools —
+**Pen** and **Pan** — is out. Click a shape to pick it, and it grows eight
+square handles and a round grip above it:
 
 | Drag | What happens |
 | --- | --- |
@@ -410,10 +411,17 @@ stays exactly where it was.
 What follows the pointer is a dashed **outline**, not the drawing. The shape is
 edited once, when you let go — so a drag is one durable change to the file
 rather than a hundred, and it survives **Save Visio** like every other edit.
-Pressing anywhere that is not a selected shape still pans the canvas.
+Pressing anywhere that is not a selected shape still pans the canvas — and on a
+drawing whose shapes leave no empty canvas to press, **Pan** in the toolbar
+makes every press a pan until you click **Select** again.
 
-Letting go redraws the shapes that moved and nothing else. Only what you moved
-changes, so the rest of the page is left alone — as are your selection, the
+Letting go moves the shapes that moved and nothing else. A move, a turn or a
+flip does not change what a shape looks like — only where it is — so it is
+written as exactly that: the shape stays on the canvas and is placed somewhere
+else, however much is inside it, and a group of a thousand children costs the
+same as a single rectangle. Only a resize draws a shape again, because that
+scales its geometry, re-wraps its text and rescales a group's contents. Either
+way the rest of the page is left alone — as are your selection, the
 folded rows of the Shape Tree and where you had scrolled to. The .vsdx itself is
 rewritten the next time anything needs it, which on a large drawing is the slow
 part and is not something to make you wait for at the moment you let go of the

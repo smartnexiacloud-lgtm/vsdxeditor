@@ -308,6 +308,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   every shape. Clearing a shape's membership writes Visio's explicit empty
   `LayerMember` rather than dropping the cell, because dropping it lets the
   shape inherit its master's layers and land straight back where it was.
+- **A Pan tool — a hand for getting about a crowded drawing.** The canvas has
+  always panned from a press on empty space, which is no use on a drawing whose
+  shapes cover it — and on a big one they cover nearly all of it. With **✋ Pan**
+  out, a drag anywhere moves the page, shapes included, and nothing on it is
+  picked or moved by mistake; the handles step aside while it is out. It is a
+  way of looking at a drawing rather than of changing one, so it works on a
+  read-only file too. **Select** takes the canvas back.
 - **Pen tool — draw new paths onto a drawing.** Click to place a corner, drag to
   pull a bezier handle out of the point you just placed (mirrored on both sides,
   like Illustrator's smooth point). `Enter` or a double-click finishes the path,
@@ -370,7 +377,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is given the numbers, the shapes that moved are drawn again and nothing else
   is, and the package is rewritten later — whenever something next wants the
   bytes (Save, Export, Compare, the shape XML editor, or an edit that does go
-  through the package). Letting go of that shape went from 172 s to 0.09 s. The
+  through the package). Letting go of that shape went from 172 s to 0.09 s.
+
+  Nor is the shape that moved drawn again. A shape's paths, its text and — for a
+  group — everything inside it are in the shape's own coordinates: they say what
+  the shape looks like, never where it is. Where it is, is one attribute on its
+  group. So a move, a turn or a flip writes that attribute and stops, however
+  much is inside the shape, and dragging a group of a thousand children costs
+  what dragging one rectangle costs. Only a resize draws a shape again, because
+  Width and Height scale its geometry, re-wrap its text and rescale a group's
+  contents. The
   numbers the drawing is given are rounded exactly the way the writer rounds
   them, so what is on screen is what the file gives back: the tests drag a
   shape, a group, a shape nested inside a group and two shapes at once, then

@@ -116,10 +116,15 @@ const mouse = (type, x, y, target, init = {}) =>
 // whole page from the result, so a release was something to wait for by
 // watching for a fresh <svg>. A move, a resize and a turn change six numbers on
 // one shape and nothing else, so they are now made on the drawing that is
-// already on screen: the shape that moved is drawn again and nothing else is.
-// What a release waits for is therefore the shape's own group being replaced.
+// already on screen. A resize draws that one shape again; a move, a turn or a
+// flip only writes where its group sits. So what a release waits for is the
+// shape's group being *placed* somewhere else — by either route.
+const placementOf = (shapeId) => {
+  const group = groupEl(shapeId);
+  return group ? `${group.getAttribute('transform')}` : null;
+};
 const drag = async (shapeId, target, from, to, init = {}) => {
-  const before = { group: groupEl(shapeId), svg: currentSvg() };
+  const before = { group: groupEl(shapeId), svg: currentSvg(), placement: placementOf(shapeId) };
   mouse('mousedown', from.x, from.y, target, init);
   await sleep(20);
   mouse('mousemove', (from.x + to.x) / 2, (from.y + to.y) / 2, window.document, init);
@@ -130,7 +135,8 @@ const drag = async (shapeId, target, from, to, init = {}) => {
 };
 const release = async (shapeId, to, before, init = {}) => {
   mouse('mouseup', to.x, to.y, window.document, init);
-  const committed = await waitFor(() => groupEl(shapeId) && groupEl(shapeId) !== before.group);
+  const committed = await waitFor(() => groupEl(shapeId)
+    && (groupEl(shapeId) !== before.group || placementOf(shapeId) !== before.placement));
   // A browser fires a click after the mouse comes up, and the app has to
   // swallow that one — otherwise a drag of several shapes would end with the
   // selection collapsed onto whichever one the pointer happened to be over. So
@@ -175,6 +181,7 @@ check('…and reports no error', !errorText(), errorText());
 // --- 3. Dragging the shape moves it -----------------------------------------
 const MOVE_X = 60, MOVE_Y = -40;
 const treeRowsBefore = [...window.document.querySelectorAll('#shape-tree-body .shape-tree-node')];
+const childrenBefore = [...groupEl(target.id).children];
 let { before } = await drag(target.id, groupEl(target.id), { x: origin.x + 5, y: origin.y + 5 },
   { x: origin.x + 5 + MOVE_X, y: origin.y + 5 + MOVE_Y });
 check('an outline is drawn where the shape is about to be', !!q('#shape-drag-preview'),
@@ -214,6 +221,15 @@ check('every other shape is the element it already was',
   [...window.document.querySelectorAll('#svg-container svg > g[data-shape-id]')]
     .filter(g => g.getAttribute('data-shape-id') !== target.id)
     .every(g => g === before.svg.querySelector(`g[data-shape-id="${g.getAttribute('data-shape-id')}"]`)));
+
+// Nor is the shape that moved. What it looks like has not changed — only where
+// it is, and that is one attribute on its group. Building the group again to
+// write it would cost what is inside the shape, which for a group of a thousand
+// children is a thousand elements to move it an inch.
+check('and the shape that moved was placed, not built again',
+  groupEl(target.id) === before.group, 'its group was replaced');
+check('what is drawn inside it is the same as before',
+  [...groupEl(target.id).children].every((child, i) => child === childrenBefore[i]));
 
 // --- 4. Dragging a corner handle resizes it ---------------------------------
 const sizeOf = (id) => {
@@ -276,6 +292,65 @@ await sleep(60);
 check('a press on empty canvas still pans rather than dragging a shape',
   containerTransform() !== wasTransform, `${containerTransform()} vs ${wasTransform}`);
 
+// --- 7b. The hand tool pans from anywhere, shapes included ------------------
+// Pressing empty canvas is no use on a drawing whose shapes cover it, and on a
+// big one they cover most of it. So there is a hand, and with it out a press on
+// a shape moves the drawing rather than the shape.
+const panOffset = () => {
+  const m = /^translate\((-?[\d.]+)px,\s*(-?[\d.]+)px\)/.exec(containerTransform());
+  return m ? { x: Number(m[1]), y: Number(m[2]) } : { x: 0, y: 0 };
+};
+$('btn-select').click();
+groupEl(target.id).dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+await sleep(80);
+check('with Select out, pressing the shape picks it', handles().length > 0, String(handles().length));
+
+// Somewhere squarely on the shape, in the coordinates a mouse arrives in. The
+// shape has been turned by now, so its transform no longer says where it is;
+// the handles do — they sit on its own corners — and the drawing has been
+// panned since, which is the difference between the two.
+const grab = (() => {
+  const nw = centreOf(handleFor('nw'));
+  const se = centreOf(handleFor('se'));
+  const pan = panOffset();
+  return { x: (nw.x + se.x) / 2 + pan.x, y: (nw.y + se.y) / 2 + pan.y };
+})();
+
+$('btn-pan').click();
+await sleep(60);
+check('the toolbar lights the tool that has the canvas',
+  $('btn-pan').classList.contains('active') && !$('btn-select').classList.contains('active'));
+check('and the handles step aside for the hand', handles().length === 0, String(handles().length));
+check('but the shape is still the selected one',
+  groupEl(target.id).getAttribute('data-selected') === 'primary');
+
+const heldPlacement = placementOf(target.id);
+const heldPan = containerTransform();
+mouse('mousedown', grab.x, grab.y, groupEl(target.id));
+mouse('mousemove', grab.x + 40, grab.y + 25, window.document);
+mouse('mouseup', grab.x + 40, grab.y + 25, window.document);
+await sleep(60);
+check('dragging a shape with the hand out pans the drawing',
+  containerTransform() !== heldPan, `${containerTransform()} vs ${heldPan}`);
+check('and leaves the shape exactly where it was',
+  placementOf(target.id) === heldPlacement, `${placementOf(target.id)} vs ${heldPlacement}`);
+
+// A click is how a shape is picked, so the hand has to swallow that too — a
+// drag that ends over a different shape must not select it.
+const otherId = topLevel().find(id => id !== target.id);
+check('there is another shape to try to click', !!otherId, topLevel().join(','));
+groupEl(otherId).dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+await sleep(60);
+check('and a click with the hand out picks nothing',
+  !groupEl(otherId).getAttribute('data-selected')
+  && groupEl(target.id).getAttribute('data-selected') === 'primary',
+  `${groupEl(otherId).getAttribute('data-selected')} / ${groupEl(target.id).getAttribute('data-selected')}`);
+
+$('btn-select').click();
+await sleep(60);
+check('Select takes the canvas back, handles and all',
+  $('btn-select').classList.contains('active') && handles().length > 0, String(handles().length));
+
 // --- 8. A read-only package has no handles ----------------------------------
 // (Nothing here loads one, so this checks the other half: the pen tool owns the
 // canvas while it is active, and handles must not fight it for the pointer.)
@@ -318,12 +393,12 @@ check('…and the drawing still has not been touched',
 // see. It has to end somewhere the previous burst did not, or a drag that threw
 // the last move away would land in the right place by luck.
 const BURST = 72;   // the burst above stopped at +32
-const burstBefore = groupEl(fresh.id);
+const burstBefore = placementOf(fresh.id);
 for (let i = 1; i <= 6; i++) {
   mouse('mousemove', burstFrom.x + 5 + (i * BURST) / 6, burstFrom.y + 5, window.document);
 }
 mouse('mouseup', burstFrom.x + 5 + BURST, burstFrom.y + 5, window.document);
-check('the drag committed', await waitFor(() => groupEl(fresh.id) && groupEl(fresh.id) !== burstBefore),
+check('the drag committed', await waitFor(() => placementOf(fresh.id) !== burstBefore),
   errorText());
 const landed = originOf(fresh.id);
 check('and it landed where the mouse was let go, not where the last frame saw it',
