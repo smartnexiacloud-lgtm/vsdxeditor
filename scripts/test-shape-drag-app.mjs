@@ -237,7 +237,40 @@ const sizeOf = (id) => {
   const path = g?.querySelector('path, rect, polygon, ellipse');
   return path?.getAttribute('d') || path?.getAttribute('width') || '';
 };
+
+// How big the shape is actually *drawn*, in its own coordinates: the extent of
+// the points its outline is made of.
+//
+// The handles moving and the path string changing are both too weak to say a
+// resize happened. A Visio outline made of plain MoveTo/LineTo rows holds
+// inches, not fractions of the box, so a shape whose Width doubles used to be
+// redrawn at exactly its old size — with a path string that *had* changed,
+// because the Y flip is measured off the new height. The picture is what the
+// user is looking at, so the picture is what is measured. (This fixture's
+// outlines are straight lines, which is why reading the coordinate pairs off
+// the path is enough.)
+const drawnExtent = (id) => {
+  const g = groupEl(id);
+  if (!g) return null;
+  const xs = [], ys = [];
+  for (const path of g.querySelectorAll('path')) {
+    for (const [, x, y] of (path.getAttribute('d') || '')
+      .matchAll(/[ML]\s*(-?[\d.]+)[\s,]+(-?[\d.]+)/g)) {
+      xs.push(Number(x));
+      ys.push(Number(y));
+    }
+  }
+  if (xs.length < 2) return null;
+  return { w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+};
+const boxOf = () => ({
+  w: centreOf(handleFor('ne')).x - centreOf(handleFor('nw')).x,
+  h: centreOf(handleFor('sw')).y - centreOf(handleFor('nw')).y
+});
+
 const beforeGeometry = sizeOf(target.id);
+const beforeDrawn = drawnExtent(target.id);
+const beforeBox = boxOf();
 const se = handleFor('se');
 check('the shape has a bottom-right handle to pull', !!se,
   handles().map(h => h.getAttribute('data-handle')).join(','));
@@ -247,6 +280,20 @@ check('resizing draws an outline too', !!q('#shape-drag-preview'));
 check('the resize is committed', await release(target.id, { x: sePoint.x + 40, y: sePoint.y + 30 }, before), errorText());
 check('the shape is drawn differently afterwards, so its size really changed',
   sizeOf(target.id) !== beforeGeometry, `${sizeOf(target.id)} vs ${beforeGeometry}`);
+
+// The one that says the drawing followed the handles rather than just sitting
+// inside a bigger box.
+const afterDrawn = drawnExtent(target.id);
+const afterBox = boxOf();
+check('the outline is drawn bigger, not just the selection box',
+  afterDrawn.w > beforeDrawn.w + 1 && afterDrawn.h > beforeDrawn.h + 1,
+  `${JSON.stringify(beforeDrawn)} → ${JSON.stringify(afterDrawn)}`);
+check('…and bigger by exactly what the box grew by',
+  Math.abs(afterDrawn.w / beforeDrawn.w - afterBox.w / beforeBox.w) < 0.005
+  && Math.abs(afterDrawn.h / beforeDrawn.h - afterBox.h / beforeBox.h) < 0.005,
+  `outline ×${(afterDrawn.w / beforeDrawn.w).toFixed(4)},${(afterDrawn.h / beforeDrawn.h).toFixed(4)}`
+  + ` vs box ×${(afterBox.w / beforeBox.w).toFixed(4)},${(afterBox.h / beforeBox.h).toFixed(4)}`);
+
 check('and its top-left corner did not move — that is the corner not being dragged',
   Math.abs(originOf(target.id).x - afterMove.x) < 0.01
   && Math.abs(originOf(target.id).y - afterMove.y) < 0.01,
@@ -281,6 +328,13 @@ check('the reopened drawing renders', !!currentSvg()?.querySelector('g[data-shap
 const reopened = groupEl(target.id)?.getAttribute('transform') || '';
 check('and the shape comes back moved, resized and turned',
   reopened === turned, `${reopened} vs ${turned}`);
+// The outline too, not only the box: the geometry rows the resize scaled have
+// to have gone into the package, or reopening puts the old picture back inside
+// the new Width — the bug, one save later.
+const reopenedDrawn = drawnExtent(target.id);
+check('and comes back drawn at the size it was resized to',
+  Math.abs(reopenedDrawn.w - afterDrawn.w) < 0.01 && Math.abs(reopenedDrawn.h - afterDrawn.h) < 0.01,
+  `${JSON.stringify(reopenedDrawn)} vs ${JSON.stringify(afterDrawn)}`);
 
 // --- 7. Pressing empty canvas still pans ------------------------------------
 const containerTransform = () => $('svg-container').style.transform || '';
@@ -437,6 +491,66 @@ const landed = originOf(fresh.id);
 check('and it landed where the mouse was let go, not where the last frame saw it',
   landed && Math.abs(landed.x - (burstFrom.x + BURST)) < 0.01,
   `${JSON.stringify(landed)} vs x=${burstFrom.x + BURST}`);
+
+// --- 9b. Resizing a shape whose outline is held in inches -------------------
+// A Visio outline is stored one of two ways, and only one of them resizes by
+// itself. `Rel…` rows hold fractions of Width and Height, so the picture
+// follows the box for nothing. Plain rows — MoveTo, LineTo, ArcTo — hold
+// inches, and inches follow nothing: a shape drawn that way used to keep its
+// old picture inside its new box, which is a resize that visibly does not
+// resize. Every fixture in test-files is the first kind, which is how that went
+// unnoticed here for as long as it did.
+//
+// The pen draws the second kind, so the shape under test is one this app has
+// just drawn: place three points, finish, then pull the corner.
+await dropFile(new window.File([readFileSync(fixture)], 'drag-inches.vsdx'));
+const penHeight = Number(currentSvg().getAttribute('viewBox').split(/\s+/)[3]) / 96;
+const penAt = (xIn, yIn) => ({ x: xIn * 96, y: (penHeight - yIn) * 96 });
+const penClick = (xIn, yIn) => {
+  const p = penAt(xIn, yIn);
+  mouse('mousedown', p.x, p.y, $('viewport'));
+  mouse('mouseup', p.x, p.y, $('viewport'));
+};
+const drawnBefore = new Set(topLevel());
+$('btn-pen').click();
+penClick(1, 1);
+penClick(3, 1);
+penClick(3, 2.5);
+$('pen-finish').click();
+check('the pen drew a shape to resize',
+  await waitFor(() => topLevel().length === drawnBefore.size + 1), errorText());
+$('btn-select').click();
+await sleep(60);
+
+const inked = topLevel().find(id => !drawnBefore.has(id));
+groupEl(inked).dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+await sleep(80);
+const inkedCorner = handleFor('se');
+check('the drawn shape has handles', inkedCorner?.getAttribute('data-handle-shape') === inked,
+  String(inkedCorner?.getAttribute('data-handle-shape')));
+const inkDrawn = drawnExtent(inked);
+const inkBox = boxOf();
+const inkAt = centreOf(inkedCorner);
+const inkTo = { x: inkAt.x + 50, y: inkAt.y + 35 };
+({ before } = await drag(inked, inkedCorner, inkAt, inkTo));
+check('the drawn shape resizes', await release(inked, inkTo, before), errorText());
+const inkGrown = drawnExtent(inked);
+const inkGrownBox = boxOf();
+check('an outline held in inches grows with its box too',
+  Math.abs(inkGrown.w / inkDrawn.w - inkGrownBox.w / inkBox.w) < 0.005
+  && Math.abs(inkGrown.h / inkDrawn.h - inkGrownBox.h / inkBox.h) < 0.005,
+  `outline ×${(inkGrown.w / inkDrawn.w).toFixed(4)},${(inkGrown.h / inkDrawn.h).toFixed(4)}`
+  + ` vs box ×${(inkGrownBox.w / inkBox.w).toFixed(4)},${(inkGrownBox.h / inkBox.h).toFixed(4)}`);
+
+const beforeInkSave = captured.length;
+$('btn-save-vsdx').click();
+await waitFor(() => captured.length > beforeInkSave);
+await dropFile(new window.File([Buffer.from(await captured.at(-1).arrayBuffer())], 'drag-inches-again.vsdx'));
+check('and the file keeps it that size, not the size it was drawn at',
+  (() => {
+    const back = drawnExtent(inked);
+    return back && Math.abs(back.w - inkGrown.w) < 0.01 && Math.abs(back.h - inkGrown.h) < 0.01;
+  })(), `${JSON.stringify(drawnExtent(inked))} vs ${JSON.stringify(inkGrown)}`);
 
 // --- 10. Groups, and more than one shape at a time --------------------------
 // A group is the case the placement path has to get right and cannot fake: the

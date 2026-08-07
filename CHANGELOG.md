@@ -367,6 +367,37 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   would draw it. **Hairlines: fit zoom** is still in the toolbar, one click away.
 
 ### Fixed
+- **Resizing a shape did not resize the shape.** The handles moved, the dashed
+  outline followed the pointer, the pin and the Width landed where they should —
+  and the drawing was redrawn at exactly the size it already was, sitting inside
+  a box that had grown around it.
+
+  A Visio outline is stored one of two ways. `RelMoveTo`/`RelLineTo` and their
+  kin hold fractions of Width and Height, so they follow the box for nothing;
+  `MoveTo`/`LineTo`/`ArcTo`/`NURBSTo` hold inches, and in a real file those
+  inches come with a formula — `Width*0.5` — that Visio re-evaluates whenever
+  Width changes. This app has no formula engine: it reads the number the formula
+  last produced. Nothing re-evaluated it, so nothing moved. Every fixture in the
+  repo happens to be drawn in fractions, which is how a resize that plainly did
+  not resize sat behind 1,551 passing checks.
+
+  A resize now scales the geometry rows themselves, by the rule a missing
+  formula engine can still follow: the outline scales with the box. For the
+  `Width*k` cell that is the answer Visio would have computed, to the last
+  decimal. The formula is written back untouched beside the new number, so Visio
+  still works the exact value out for the cells that need more than a
+  proportion, and a shape that was parametrised stays parametrised. Rows drawn
+  in fractions are left alone — they were never the problem. The arithmetic is
+  per row type, since not everything in a row is a length: an arc's bulge is
+  measured at right angles to its chord and has to be re-measured against the
+  chord an uneven scale leaves behind, an elliptical arc's axis angle and ratio
+  describe a different ellipse afterwards, and a spline's knots and a NURBS
+  weight are not distances at all and do not move.
+
+  Resizing a group also reaches all the way down now, not just to its children.
+  A grandchild is placed in *its* parent's inches and inherits no scale from
+  above, so a nested group used to keep its inner picture the size it was while
+  the outer one grew around it.
 - **Letting go of a dragged shape cost what the file costs rather than what the
   shape costs.** Moving, resizing or turning a shape was committed by rewriting
   the whole `.vsdx`, parsing it back and drawing every shape on the page from

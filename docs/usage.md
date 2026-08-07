@@ -408,6 +408,15 @@ it, so a shape turned 30° gets handles turned 30° with it and dragging one
 resizes along the shape's own axes. The corner opposite the one you are dragging
 stays exactly where it was.
 
+The drawing follows the box: a resize scales the shape's outline, everything
+inside a group, and the outlines of those too. Visio stores half of an outline
+as fractions of the shape's width and height and half of it as inches worked out
+from a formula — `Width*0.5` — that Visio re-evaluates every time the width
+changes. This app scales the second kind rather than evaluating it, which is the
+same answer for a plain proportion and a close one otherwise; the formula itself
+is left alone, so Visio still works the exact value out and a shape drawn to be
+resizable stays resizable.
+
 What follows the pointer is a dashed **outline**, not the drawing. The shape is
 edited once, when you let go — so a drag is one durable change to the file
 rather than a hundred, and it survives **Save Visio** like every other edit.
@@ -420,7 +429,9 @@ flip does not change what a shape looks like — only where it is — so it is
 written as exactly that: the shape stays on the canvas and is placed somewhere
 else, however much is inside it, and a group of a thousand children costs the
 same as a single rectangle. Only a resize draws a shape again, because that
-scales its geometry, re-wraps its text and rescales a group's contents. Either
+scales its geometry, re-wraps its text and rescales a group's contents — all the
+way down, so a group inside a group grows too rather than keeping its old
+picture inside a bigger box. Either
 way the rest of the page is left alone — as are your selection, the
 folded rows of the Shape Tree and where you had scrolled to. The .vsdx itself is
 rewritten the next time anything needs it, which on a large drawing is the slow

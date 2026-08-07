@@ -260,6 +260,7 @@ npm run test:diff-view    # side-by-side diff rendering
 | `src/shape-inheritance.js` | Shape style inheritance resolution |
 | `src/shape-picker.js` | Page-space shape boxes: hit testing, layer listing, search |
 | `src/shape-arrange.js` | Group / ungroup / move / resize / rotate geometry: what a shape's cells become |
+| `src/geometry-resize.js` | What an outline held in inches becomes when the box around it is scaled |
 | `src/svg-layers.js` | Grouping the exported SVG's shapes into real (Inkscape) layers |
 | `src/svg-path.js` | SVG path data → the pen's node model (arcs, quadratics and shorthands expanded) |
 | `src/svg-import.js` | Reading an edited SVG back: what was deleted, drawn, or changed |

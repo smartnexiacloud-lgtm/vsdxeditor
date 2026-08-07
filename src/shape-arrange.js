@@ -19,6 +19,7 @@
 
 import { collectShapeBoxes, shapeLocalMatrix } from './shape-picker.js';
 import { rendersAsFlatConnector } from './svg-renderer.js';
+import { planGeometryScale } from './geometry-resize.js';
 
 const DPI = 96;
 const IDENTITY = [1, 0, 0, 1, 0, 0];
@@ -472,28 +473,49 @@ export function planResizeShape(page, shapeId, handle, x, y, options = {}) {
     locPinY: resized.locPinY
   };
 
+  // The box is only half of a resize. A shape's outline is drawn from geometry
+  // rows, and the rows that hold inches rather than fractions of the box do not
+  // move when the box does — see src/geometry-resize.js for what that costs and
+  // what is done about it.
+  const geometry = planGeometryScale(shape, sx, sy);
+
   // A group's children are placed in inches inside the group's own box, so the
   // box growing has to take them with it or the group would resize around a
   // stationary picture. Visio does the same thing.
   //
-  // Only the immediate children: a grandchild is placed inside *its* parent,
-  // whose size is being scaled here, so it comes along with it.
-  const children = (shape.subShapes || []).map(child => ({
-    id: String(child.id),
-    cells: {
-      pinX: (child.pinX || 0) * sx,
-      pinY: (child.pinY || 0) * sy,
-      width: (child.width || 0) * sx,
-      height: (child.height || 0) * sy,
-      locPinX: (child.locPinX || 0) * sx,
-      locPinY: (child.locPinY || 0) * sy
+  // All the way down, not just the immediate children. A grandchild is placed
+  // in *its* parent's inches, and nothing about a parent's box being bigger
+  // reaches a child on its own — the renderer puts a child where its pin says
+  // and at the size its own cells say, with no scale inherited from above. So
+  // every generation has to be scaled by hand or the inner picture stays the
+  // size it was while the outer one grows around it.
+  const children = [];
+  const scaleContents = (parent) => {
+    for (const child of parent.subShapes || []) {
+      children.push({
+        id: String(child.id),
+        cells: {
+          pinX: (child.pinX || 0) * sx,
+          pinY: (child.pinY || 0) * sy,
+          width: (child.width || 0) * sx,
+          height: (child.height || 0) * sy,
+          locPinX: (child.locPinX || 0) * sx,
+          locPinY: (child.locPinY || 0) * sy
+        },
+        // A child's box grows with the group's, so the child's own outline has
+        // the same problem the group's does.
+        geometry: planGeometryScale(child, sx, sy)
+      });
+      scaleContents(child);
     }
-  }));
+  };
+  scaleContents(shape);
 
   const placed = { ...resized, pinX: cells.pinX, pinY: cells.pinY };
   return {
     id: String(entry.id),
     cells,
+    geometry,
     children,
     preview: boxCorners(multiply(parentMatrix, shapeLocalMatrix(placed, parentHeight)), placed)
   };

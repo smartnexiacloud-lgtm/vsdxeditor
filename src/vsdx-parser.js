@@ -2375,9 +2375,12 @@ export async function transformVsdxShapes(arrayBuffer, pageId, updates) {
     if (!wanted.length) throw new Error('Nothing to move');
 
     const touched = [];
-    for (const { id, cells } of wanted) {
+    for (const { id, cells, geometry } of wanted) {
       const shapeEl = findShapeElementById(root, String(id));
       if (!shapeEl) throw new Error(`Could not find shape ${id} on this page`);
+      // A change of Width or Height also moves every point of the outline held
+      // in inches rather than in fractions of the box (src/geometry-resize.js).
+      for (const update of geometry || []) writeGeometryRow(doc, shapeEl, update);
       for (const name of ['PinX', 'PinY', 'Width', 'Height', 'LocPinX', 'LocPinY']) {
         const value = cells?.[name.charAt(0).toLowerCase() + name.slice(1)];
         if (Number.isFinite(value)) setShapeCell(doc, shapeEl, name, formatShapeNumber(value));
@@ -2466,10 +2469,28 @@ function setRowCell(doc, rowEl, name, value, formula) {
 }
 
 /**
- * `updates` is a list of `{ id, sectionIx, rowIx, rowType, cells }`, where
+ * One `{ sectionIx, rowIx, rowType, cells }` written onto `shapeEl`, where
  * `cells` maps Visio cell names (X, Y, A, B, C, D…) to a number, or to
- * `{ value, formula }` when the cell should go on being computed.
+ * `{ value, formula }` when the cell should go on being computed. A value that
+ * is a string is written as it stands — that is what a cell holding
+ * `NURBS(…)` or `POLYLINE(…)` needs, since its points are the cell.
  */
+function writeGeometryRow(doc, shapeEl, { sectionIx, rowIx, rowType, cells }) {
+  if (!cells || !Object.keys(cells).length) return;
+  const section = ensureGeometrySection(doc, shapeEl, sectionIx);
+  const row = ensureGeometryRow(doc, section, rowIx, rowType);
+  for (const [name, entry] of Object.entries(cells)) {
+    const value = typeof entry === 'object' && entry !== null ? entry.value : entry;
+    const formula = typeof entry === 'object' && entry !== null ? entry.formula : null;
+    if (typeof value === 'string') {
+      if (value) setRowCell(doc, row, name, value, formula || null);
+      continue;
+    }
+    if (!Number.isFinite(value)) continue;
+    setRowCell(doc, row, name, formatShapeNumber(value), formula || null);
+  }
+}
+
 export async function setVsdxGeometryCells(arrayBuffer, pageId, updates) {
   return withPageDocument(arrayBuffer, pageId, (doc, root) => {
     const wanted = (updates || []).filter(update => update && update.id !== undefined
@@ -2477,18 +2498,11 @@ export async function setVsdxGeometryCells(arrayBuffer, pageId, updates) {
     if (!wanted.length) throw new Error('Nothing to change');
 
     const touched = new Set();
-    for (const { id, sectionIx, rowIx, rowType, cells } of wanted) {
-      const shapeEl = findShapeElementById(root, String(id));
-      if (!shapeEl) throw new Error(`Could not find shape ${id} on this page`);
-      const section = ensureGeometrySection(doc, shapeEl, sectionIx);
-      const row = ensureGeometryRow(doc, section, rowIx, rowType);
-      for (const [name, entry] of Object.entries(cells)) {
-        const value = typeof entry === 'object' && entry !== null ? entry.value : entry;
-        const formula = typeof entry === 'object' && entry !== null ? entry.formula : null;
-        if (!Number.isFinite(value)) continue;
-        setRowCell(doc, row, name, formatShapeNumber(value), formula || null);
-      }
-      touched.add(String(id));
+    for (const update of wanted) {
+      const shapeEl = findShapeElementById(root, String(update.id));
+      if (!shapeEl) throw new Error(`Could not find shape ${update.id} on this page`);
+      writeGeometryRow(doc, shapeEl, update);
+      touched.add(String(update.id));
     }
     return { shapeIds: [...touched] };
   });

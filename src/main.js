@@ -11,6 +11,7 @@ import {
   planGroupShapes, planUngroupShape, isGroupShape, inheritsFromMaster,
   planMoveShapes, planRotateShapes, planResizeShape, buildShapeIndex
 } from './shape-arrange.js';
+import { applyGeometryScale } from './geometry-resize.js';
 import { openDiffView } from './diff-view.js';
 import { splitLayerPath, buildLayerTree, layersUnder, flattenLayerTree, groupKeys } from './layer-tree.js';
 import { EXPORT_SIZE_MODES, computeExportSize, describeExportSize, applyExportSize, svgViewBoxSize, defaultSizeMode, PDF_MAX_PX } from './export-scale.js';
@@ -3327,6 +3328,10 @@ function commitPlacementLocally(updates) {
     if ('angle' in cells) shape.angle = shapeCellNumber(cells.angle || 0);
     if ('flipX' in cells) shape.flipX = Boolean(cells.flipX);
     if ('flipY' in cells) shape.flipY = Boolean(cells.flipY);
+    // A new Width is not a resize on its own: the outline is drawn from geometry
+    // rows, and the ones holding inches have to be moved to match the box the
+    // cells above just changed. The same numbers go into the package later.
+    applyGeometryScale(shape, update.geometry);
   }
 
   // The shapes are somewhere else now, so everything derived from where they
@@ -4885,7 +4890,7 @@ function updateShapeDrag(e) {
     } else if (shapeDrag.kind === 'resize') {
       const plan = planResizeShape(page, shapeDrag.ids[0], shapeDrag.handle, at.x, at.y,
         { keepAspect: e.shiftKey, index });
-      shapeDrag.plan = [{ id: plan.id, cells: plan.cells }, ...plan.children];
+      shapeDrag.plan = [{ id: plan.id, cells: plan.cells, geometry: plan.geometry }, ...plan.children];
       drawDragPreview([plan.preview]);
     } else {
       shapeDrag.plan = planRotateShapes(page, shapeDrag.ids,
