@@ -5714,7 +5714,27 @@ window.addEventListener('keydown', (e) => {
     closeShapeContextMenu();
     return;
   }
-  if (e.key === 'Escape' && layerMatrixModal.classList.contains('visible')) hideLayerMatrix();
+  if (e.key === 'Escape' && layerMatrixModal.classList.contains('visible')) {
+    hideLayerMatrix();
+    return;
+  }
+
+  // Escape lets the selection go. Everything else in the app closes on Escape,
+  // and the selection was the one thing on screen with no way out but clicking
+  // bare canvas — which on a drawing whose shapes cover the page there may not
+  // be any of, and which with the hand out does not clear it either.
+  //
+  // The pen has its own Escape, for taking back the path being drawn, and it is
+  // the nearer thing to cancel while the pen is out. Its handler is on
+  // `document` and so has already run by the time this one does — and it may
+  // have put the pen away, which is why `penActive` alone is not enough to tell
+  // that Escape has been spoken for. What it does say so with is preventDefault.
+  if (e.key === 'Escape' && !penActive && !e.defaultPrevented
+      && !isTypingTarget(e.target) && selectedShapeIds.size) {
+    e.preventDefault();
+    setSelectedShape(null);
+    return;
+  }
 
   // Delete what is selected. Backspace does it too, since that is the key half
   // of everyone reaches for — but not while the pen tool owns it for taking

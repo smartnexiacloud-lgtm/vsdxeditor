@@ -351,6 +351,39 @@ await sleep(60);
 check('Select takes the canvas back, handles and all',
   $('btn-select').classList.contains('active') && handles().length > 0, String(handles().length));
 
+// --- 7c. Escape lets the selection go ---------------------------------------
+// Clicking bare canvas was the only way to drop a selection, and on a drawing
+// whose shapes cover the page there is no bare canvas to click — nor does a
+// click clear anything with the hand out. Escape is what every other panel in
+// the app already answers to.
+const pressKey = async (key, target = window.document.body) => {
+  target.dispatchEvent(new window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+  await sleep(60);
+};
+const selectedIds = () => [...window.document.querySelectorAll('#svg-container svg g[data-shape-id]')]
+  .filter(g => g.getAttribute('data-selected')).map(g => g.getAttribute('data-shape-id'));
+
+check('there is a selection to let go of', selectedIds().join(',') === target.id, selectedIds().join(','));
+await pressKey('Escape', $('layer-filter-text'));
+check('Escape inside a text box is the text box\'s, not the selection\'s',
+  selectedIds().join(',') === target.id, selectedIds().join(','));
+
+await pressKey('Escape');
+check('Escape clears the selection', selectedIds().length === 0, selectedIds().join(','));
+check('and takes the handles with it', handles().length === 0, String(handles().length));
+
+// The pen's Escape takes back the path it is drawing, or puts the pen away. It
+// is the nearer thing to cancel, so the selection is not also thrown out from
+// under it.
+groupEl(target.id).dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+await sleep(80);
+check('the shape can be picked again', selectedIds().join(',') === target.id, selectedIds().join(','));
+$('btn-pen').click();
+await sleep(60);
+await pressKey('Escape');
+check('Escape with the pen out puts the pen away', !$('btn-pen').classList.contains('active'));
+check('and leaves the selection alone', selectedIds().join(',') === target.id, selectedIds().join(','));
+
 // --- 8. A read-only package has no handles ----------------------------------
 // (Nothing here loads one, so this checks the other half: the pen tool owns the
 // canvas while it is active, and handles must not fight it for the pointer.)

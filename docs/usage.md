@@ -463,6 +463,11 @@ a layer's object list — and picking a shape from any of them points the Layers
 sidebar at the layer that shape is on. Right-clicking a shape that is already selected keeps the
 whole selection; right-clicking anything else selects that shape instead.
 
+**Esc** lets the whole selection go, handles and all. Clicking bare canvas does
+the same, but a drawing whose shapes cover the page may not have any bare canvas
+to click, and with the ✋ hand out a click does not clear it either. Esc typed
+into a box belongs to the box, and while the ✎ pen is out it belongs to the pen.
+
 The **Arrange** section of the right-click menu then acts on everything
 selected:
 

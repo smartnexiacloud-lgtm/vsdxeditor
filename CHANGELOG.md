@@ -348,6 +348,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   guessed at twice. A test composes the transform off the rendered SVG and
   checks the picker against it, shape by shape, across four real drawings
   (487 groups, 408 of them nested).
+- **Esc lets the selection go.** Clicking bare canvas was the only way to drop a
+  selection, and a drawing whose shapes cover the page has no bare canvas to
+  click — nor does a click clear anything with the hand out. Esc typed into a box
+  still belongs to the box, and while the pen is out it still belongs to the pen,
+  which uses it to take back the path being drawn.
 - **`addVsdxShapeToPage`** in the parser: adds a top-level shape to a page,
   assigning the next free shape ID. The counterpart to
   `replaceVsdxShapeXmlSnippet`, which deliberately refuses any ID that does not

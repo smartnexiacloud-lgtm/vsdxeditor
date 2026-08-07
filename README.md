@@ -110,7 +110,9 @@ portable offline builds.
   add shapes to the selection, then right-click for **Group**, **Ungroup**,
   **Bring to front**, **Send to back** and **Delete** (or press **Delete** /
   **Backspace**; deleting a group takes what is inside it, and unglues any
-  connector left pointing at nothing). Grouping rewrites each member's
+  connector left pointing at nothing). **Esc** lets the whole selection go, which
+  clicking bare canvas cannot do on a drawing that has none. Grouping rewrites
+  each member's
   `PinX`/`PinY` into the new group's coordinate space, so nothing moves a
   thousandth of an inch; z-order is the order the shapes are written in, which
   is what Visio reads it from too.
