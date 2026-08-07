@@ -2006,7 +2006,7 @@ function applyLayerVisibilitySnapshot(hidden) {
   hiddenLayers = new Set(hidden);
   for (const layer of getCurrentLayers()) layer.visible = !hiddenLayers.has(layer.index);
   buildLayersSidebar();
-  applyLayerVisibility();
+  applyLayerVisibilityChange();
 }
 
 function stepLayerVisibilityHistory(back) {
@@ -2042,7 +2042,7 @@ function setLayerSelected(layerIndex, selected) {
 
   refreshLayerGroupRows();
   updateLayersCount(getCurrentLayers().length, getFilteredLayers().length);
-  applyLayerVisibility();
+  applyLayerVisibilityChange();
 }
 
 function toggleLayer(layerIndex) {
@@ -2058,7 +2058,7 @@ function setLayerSelection(layers, selected) {
     else hiddenLayers.add(layer.index);
   }
   buildLayersSidebar();
-  applyLayerVisibility();
+  applyLayerVisibilityChange();
 }
 
 function focusLayerRow(layerIndex, scrollIntoView = true) {
@@ -2622,10 +2622,15 @@ function deleteShapeFromTree(shapeId) {
   });
 }
 
-function createShapeTreeNode(shape, depth, rootShapeId, visible = null) {
+function createShapeTreeNode(shape, depth, rootShapeId, list = null) {
   // An empty fragment rather than nothing at all: appending one is a no-op, so
-  // a filtered-out shape costs the caller no bookkeeping.
-  if (visible && !visible.has(String(shape.id))) return document.createDocumentFragment();
+  // a shape that is not listed costs the caller no bookkeeping. Returning here
+  // is also what drops the shape's contents, since they are only ever built
+  // inside this fragment — which is right for a shape hidden by its layer,
+  // because what is inside it is hidden with it.
+  const key = String(shape.id);
+  if (list?.hidden?.has(key)) return document.createDocumentFragment();
+  if (list?.keep && !list.keep.has(key)) return document.createDocumentFragment();
   const hiddenShapeIds = getHiddenShapeIds();
   const collapsedShapeIds = getCollapsedShapeIds();
   const hasChildren = (shape.subShapes || []).length > 0;
@@ -2787,7 +2792,7 @@ function createShapeTreeNode(shape, depth, rootShapeId, visible = null) {
 
   if (hasChildren && !collapsedShapeIds.has(String(shape.id))) {
     for (const child of shape.subShapes) {
-      fragment.appendChild(createShapeTreeNode(child, depth + 1, rootShapeId, visible));
+      fragment.appendChild(createShapeTreeNode(child, depth + 1, rootShapeId, list));
     }
   }
 
@@ -2822,6 +2827,61 @@ let shapeTreeLayerKey = null;
 // buried under is worth doing when the marked layer changes and obnoxious on
 // every render, which is the same argument revealedShapeId makes.
 let shapeTreeRevealedLayerKey = null;
+
+/**
+ * Every shape the layer switches are hiding right now.
+ *
+ * Deliberately the same reckoning applyLayerVisibility does on the canvas,
+ * because the canvas is what the user is looking at and a list that disagrees
+ * with it is a list that lies: a shape is hidden when every layer it carries is
+ * off, a shape carrying no layer at all is hidden when *Unlayered* is off, and
+ * anything inside a hidden shape is hidden with it — hiding a group on the
+ * canvas is one `display:none` on the group, and what is inside goes with it
+ * whatever its own layers say.
+ *
+ * This page's shapes only. A backdrop shape's layer numbers index the backdrop
+ * page's own table, so these switches say nothing about it.
+ */
+function hiddenByLayerShapeIds() {
+  const ids = new Set();
+  if (!hiddenLayers.size) return ids;
+  const walk = (shapes, parentHidden) => {
+    for (const shape of shapes || []) {
+      const own = (shape.layerMembers || []).map(String);
+      const hidden = parentHidden || (own.length
+        ? own.every(member => hiddenLayers.has(member))
+        : hiddenLayers.has(UNLAYERED_LAYER_INDEX));
+      if (hidden) ids.add(String(shape.id));
+      walk(shape.subShapes, hidden);
+    }
+  };
+  walk(getCurrentPage()?.shapes, false);
+  return ids;
+}
+
+// Turning a layer off does three things, not one: it changes what is drawn,
+// what the lists offer, and what is selected. Only the first belongs to
+// applyLayerVisibility, which also runs after every render — and re-listing the
+// tree there would rebuild a row for every shape on the page for nothing.
+function applyLayerVisibilityChange() {
+  applyLayerVisibility();
+  dropHiddenSelection();
+  renderShapeTree();
+  renderLayerObjects();
+}
+
+// Turning a layer off takes its shapes off the canvas, and a selection you
+// cannot see is a selection you cannot mean: the handles would sit on nothing
+// and the next drag would move a shape nobody can see. So the selection gives
+// up whatever went with the layer, and keeps the rest of itself.
+function dropHiddenSelection() {
+  if (!selectedShapeIds.size) return;
+  const hidden = hiddenByLayerShapeIds();
+  if (!hidden.size) return;
+  const next = new Set([...selectedShapeIds].filter(id => !hidden.has(String(id))));
+  if (next.size === selectedShapeIds.size) return;
+  selectShapes(next, next.has(String(selectedShapeId)) ? selectedShapeId : null);
+}
 
 function shapeTreeLayerIndex() {
   if (!shapeTreeFollowsLayer) return null;
@@ -2922,7 +2982,11 @@ function updateShapeTreeSubtitle(page, roots, layerIndex = null, shown = null) {
     : getCurrentLayers().find(candidate => String(candidate.index) === String(layerIndex));
   const count = layer
     ? `${shown} of ${total} shape${total === 1 ? '' : 's'} on ${getLayerDisplayName(layer)}`
-    : `${total} shape${total === 1 ? '' : 's'}`;
+    // Same argument with no layer in it: rows can also be missing because a
+    // layer is switched off, and a count of forty over a list of six is a lie.
+    : (shown !== null && shown < total
+      ? `${shown} of ${total} shape${total === 1 ? '' : 's'}`
+      : `${total} shape${total === 1 ? '' : 's'}`);
   shapeTreeSubtitle.textContent = selected
     ? `${page.name || 'Page'} · ${count} · selected ${getShapeLabel(selected)}`
     : `${page.name || 'Page'} · ${count}`;
@@ -3009,12 +3073,15 @@ function renderShapeTree() {
     // none of the shapes, which answers nothing.
     for (const id of filter.branches) getCollapsedShapeIds().delete(id);
   }
-  for (const root of roots) shapeTreeBody.appendChild(createShapeTreeNode(root, 0, null, filter?.keep));
+  const list = { keep: filter?.keep || null, hidden: hiddenByLayerShapeIds() };
+  for (const root of roots) shapeTreeBody.appendChild(createShapeTreeNode(root, 0, null, list));
   updateShapeTreeSubtitle(page, roots, shapeTreeLayerKey, shapeTreeRows().length);
-  if (filter && !shapeTreeRows().length) {
+  if (!shapeTreeRows().length) {
     const empty = document.createElement('div');
     empty.className = 'shape-tree-empty';
-    empty.textContent = 'No shapes on this layer.';
+    empty.textContent = shapeTreeLayerKey === null
+      ? 'Every shape on this page is on a hidden layer.'
+      : (hiddenLayers.has(shapeTreeLayerKey) ? 'This layer is hidden.' : 'No shapes on this layer.');
     shapeTreeBody.appendChild(empty);
   }
   // A row being renamed puts an input on screen that focuses itself; taking the
@@ -3790,7 +3857,13 @@ function renderLayerObjects() {
   let title;
   let emptyText;
   if (searching) {
-    entries = searchShapes(page, shapeSearchQuery, { limit: MAX_SHAPE_SEARCH_RESULTS });
+    // A shape whose layer is switched off is not on the page as far as anyone
+    // looking at it is concerned, so it is not among the things a search of the
+    // page finds. A layer's own object list is the exception below: it was
+    // asked about that layer by name, and hidden or not, this is what is on it.
+    const hidden = hiddenByLayerShapeIds();
+    entries = searchShapes(page, shapeSearchQuery, { limit: MAX_SHAPE_SEARCH_RESULTS })
+      .filter(entry => !hidden.has(String(entry.id)));
     const capped = entries.length >= MAX_SHAPE_SEARCH_RESULTS;
     title = `“${shapeSearchQuery.trim()}” — ${capped ? 'first ' : ''}${entries.length} match${entries.length === 1 ? '' : 'es'}`;
     emptyText = 'No shape on this page matches.';
@@ -3942,7 +4015,13 @@ function shapesUnderCursor(clientX, clientY) {
     ? shapesAtPoint(page, point.x, point.y, { slop: pageInchesPerDevicePixel(page) * 3, entries })
     : [];
 
-  return topmostFirst(dedupeById([...geometric, ...domShapeEntriesAt(clientX, clientY, byId)]));
+  // Hit-testing is geometry, and geometry does not know about layer switches:
+  // a shape you turned off still has a box where it used to be. Offering it
+  // would let a right-click select something nobody can see — and then move it.
+  const hidden = hiddenByLayerShapeIds();
+  const found = [...geometric, ...domShapeEntriesAt(clientX, clientY, byId)]
+    .filter(entry => !hidden.has(String(entry.id)));
+  return topmostFirst(dedupeById(found));
 }
 
 function attachSvgLayerFocusHandlers() {
@@ -4266,7 +4345,7 @@ function buildLayerMatrix() {
           if (selected) hiddenLayers.delete(layer.index);
           else hiddenLayers.add(layer.index);
           buildLayersSidebar();
-          applyLayerVisibility();
+          applyLayerVisibilityChange();
         }
         buildLayerMatrix();
       }));
@@ -5580,7 +5659,7 @@ function applyView(view) {
   }
   hiddenLayers = getInitialHiddenLayers();
   buildLayersSidebar();
-  applyLayerVisibility();
+  applyLayerVisibilityChange();
   if (layerMatrixModal.classList.contains('visible')) buildLayerMatrix();
 }
 

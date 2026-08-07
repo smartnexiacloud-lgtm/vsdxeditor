@@ -80,7 +80,21 @@ check('app booted and rendered', !!currentSvg(), 'error: ' + $('error-box')?.tex
 const layers = realLayerItems();
 check('fixture has layers to work with', layers.length >= 1, `${layers.length} layers`);
 
-// 1. Hide a layer and tag it — both are in-memory-only edits.
+// 1. Open one shape's XML for editing. This comes first because the drawing is
+// about to have every one of its layers switched off, and a shape on a layer
+// nobody can see is not offered by the Shape Tree the Edit XML button lives on
+// — which is the point of switching a layer off.
+const shapeGroup = window.document.querySelector('#svg-container svg > g[data-shape-id]');
+shapeGroup?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await sleep(50);
+const xmlButton = window.document.querySelector('#shape-tree-body .shape-tree-xml');
+check('a shape offers Edit XML', !!xmlButton);
+xmlButton.click();
+await waitFor(() => $('shape-xml-textarea')?.value?.includes('<Shape'));
+const snippet = $('shape-xml-textarea').value;
+check('the XML editor loaded the shape', snippet.includes('<Shape'), snippet.slice(0, 80));
+
+// 2. Hide a layer and tag it — both are in-memory-only edits.
 const targetName = layers[0].querySelector('.layer-name').textContent;
 const checkbox = layers[0].querySelector('input[type=checkbox]');
 checkbox.checked = false;
@@ -104,24 +118,13 @@ if (unlayered) {
 }
 const unlayeredName = unlayered?.querySelector('.layer-name')?.textContent || null;
 
-// 2. Hand-edit one shape's XML and apply it unchanged. The Shape Tree (where
-// the Edit XML button lives) only populates once a shape is selected.
-const shapeGroup = window.document.querySelector('#svg-container svg > g[data-shape-id]');
-shapeGroup?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-await sleep(50);
-const xmlButton = window.document.querySelector('#shape-tree-body .shape-tree-xml');
-check('a shape offers Edit XML', !!xmlButton);
-xmlButton.click();
-await waitFor(() => $('shape-xml-textarea')?.value?.includes('<Shape'));
-const snippet = $('shape-xml-textarea').value;
-check('the XML editor loaded the shape', snippet.includes('<Shape'), snippet.slice(0, 80));
-
+// 3. Apply the edit unchanged, with everything the user set still set.
 const svgBefore = currentSvg();
 $('shape-xml-save').click();
 const applied = await waitFor(() => currentSvg() && currentSvg() !== svgBefore);
 check('the edit was applied', applied, 'error: ' + $('error-box')?.textContent);
 
-// 3. Everything the user had set must still be set.
+// And everything the user had set must still be set.
 check('the hidden layer is still hidden', isHidden(targetName),
   `checkbox=${layerItem(targetName)?.querySelector('input[type=checkbox]')?.checked}`);
 check('the layer tag survived the edit', chipsOf(targetName).includes('electrical'),

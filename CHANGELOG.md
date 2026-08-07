@@ -7,6 +7,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Switching a layer off now takes its shapes out of the lists too, and out of
+  the selection.** Hiding a layer took its shapes off the canvas and left them
+  everywhere else: listed in the Shape Tree, found by the shape search, offered
+  by *Select component* under a cursor that was over a box nothing was drawn in
+  any more — and still selected, with handles sitting on nothing, one drag away
+  from moving a shape nobody can see. A hidden shape is now hidden in all of
+  them, on the same reckoning the canvas draws by (every layer it carries off,
+  or *Unlayered* off for a shape carrying none), and anything inside a hidden
+  shape goes with it. The selection gives up whatever went with the layer and
+  keeps the rest of itself. A layer's own **List shapes** is the exception: that
+  question named the layer, so hidden or not, its answer is what is on it.
 - **The Shape Tree and the Layers sidebar now describe the drawing the same
   way.** They used to disagree: walking down the layer rows said nothing to the
   tree, which went on listing the whole page whatever was marked, and picking a

@@ -233,7 +233,100 @@ check('following the layer unfolds the groups its shapes are buried under',
   JSON.stringify(treeIds()) === JSON.stringify(insideGroup),
   `${treeIds().join(',')} vs ${insideGroup.join(',')}`);
 
-// --- 9. Shutting the pane gives the whole page back -----------------------
+// --- 9. A layer switched off takes its shapes out of the lists ------------
+// Not a filter this time: the shapes are not on the canvas, so they are not
+// offered anywhere you would pick a shape from the drawing, whatever is marked.
+$('shape-tree-follow-layer').checked = false;
+$('shape-tree-follow-layer').dispatchEvent(new window.Event('change', { bubbles: true }));
+await sleep(60);
+$('shape-tree-expand-all').click();
+await sleep(60);
+// Selected off the layer under test, so the tree still has a reason to be open
+// once that layer goes — it closes with nothing selected, as it always has.
+elsewhere.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+await sleep(80);
+check('the whole page is listed to start from',
+  JSON.stringify(treeIds()) === JSON.stringify(drawnIds()),
+  `${treeIds().join(',')} vs ${drawnIds().join(',')}`);
+
+const search = async (query) => {
+  $('shape-search').value = query;
+  $('shape-search').dispatchEvent(new window.Event('input', { bubbles: true }));
+  await sleep(260);
+  return [...window.document.querySelectorAll("#layer-objects-list .layer-object-row")]
+    .map(row => row.dataset.shapeId);
+};
+check('the search box finds the group while its layer is on',
+  (await search(`#${nested.id}`)).includes(nested.id));
+
+const wallsBox = () => layerItem('Walls').querySelector('input[type=checkbox]');
+const switchWalls = async (on) => {
+  wallsBox().checked = on;
+  wallsBox().dispatchEvent(new window.Event('change', { bubbles: true }));
+  await sleep(80);
+};
+await switchWalls(false);
+check('the tree drops the shapes on the layer that was switched off',
+  JSON.stringify(treeIds()) === JSON.stringify(unlayeredIds),
+  `${treeIds().join(',')} vs ${unlayeredIds.join(',')}`);
+check('and counts what it is showing, not what the page holds',
+  new RegExp(`\\b${unlayeredIds.length} of ${drawnIds().length} shapes\\b`).test(subtitle()), subtitle());
+check('and the search box stops finding it too',
+  !(await search(`#${nested.id}`)).includes(nested.id));
+await search('');
+
+// --- 10. And gives up a selection that went with the layer ----------------
+await switchWalls(true);
+check('turning the layer back on brings its shapes back to the tree',
+  insideGroup.every(id => !!treeRow(id)), treeIds().join(','));
+treeRow(nested.id).querySelector('.shape-tree-label')
+  .dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+await sleep(80);
+check('a shape on the layer is the selection now',
+  q('#svg-container svg g[data-shape-id][data-selected]')?.getAttribute('data-shape-id') === nested.id,
+  String(q('#svg-container svg g[data-shape-id][data-selected]')?.getAttribute('data-shape-id')));
+await switchWalls(false);
+check('switching its layer off gives up the selection with it',
+  !q('#svg-container svg g[data-shape-id][data-selected]'),
+  String(q('#svg-container svg g[data-shape-id][data-selected]')?.getAttribute('data-shape-id')));
+await switchWalls(true);
+
+// --- 10b. And stops offering it under the cursor --------------------------
+// Hit-testing is geometry, and geometry does not know about layer switches: the
+// box is still where it was. *Select component* would go on offering it.
+// What the list is *offering*: with nothing to offer the section is hidden, and
+// the rows of the last thing it offered are left in it out of sight.
+const pickIds = () => ($('shape-pick-section').hidden
+  ? []
+  : [...window.document.querySelectorAll('#shape-pick-list .shape-pick-row')]
+    .map(row => row.dataset.shapeId));
+const rightClickGroup = async () => {
+  $('shape-context-menu').classList.remove('visible');
+  const g = groupEl(nested.id);
+  const at = /^translate\(\s*(-?[\d.]+)[\s,]+(-?[\d.]+)\s*\)$/.exec(g?.getAttribute('transform') || '');
+  g?.dispatchEvent(new window.MouseEvent('contextmenu', {
+    bubbles: true, cancelable: true,
+    clientX: Number(at?.[1] || 0) + 4, clientY: Number(at?.[2] || 0) + 4,
+  }));
+  await sleep(80);
+  return pickIds();
+};
+const offered = await rightClickGroup();
+check('Select component offers the group while its layer is on',
+  offered.includes(nested.id), offered.join(','));
+await switchWalls(false);
+const offeredHidden = await rightClickGroup();
+check('and offers nothing from that layer once it is switched off',
+  insideGroup.every(id => !offeredHidden.includes(id)), offeredHidden.join(','));
+$('shape-context-menu').classList.remove('visible');
+await switchWalls(true);
+
+// Something has to be selected for the tree to be open at all, and section 10
+// deliberately took the selection away.
+elsewhere.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+await sleep(80);
+
+// --- 11. Shutting the pane gives the whole page back ----------------------
 $('btn-layers').click();
 await sleep(80);
 check('the layers pane is shut', !$('layers-sidebar').classList.contains('visible'));

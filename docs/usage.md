@@ -348,6 +348,14 @@ re-saved in the real Microsoft Visio desktop app — see
   on, the same as picking it anywhere else. Shut the Layers sidebar and there is
   no marked layer to follow, so the tree is the whole page again; **Follow
   layer** in the tree's header does the same with both panes open.
+- **A layer switched off takes its shapes out of the lists.** Not just off the
+  canvas: a shape you cannot see is not offered by the Shape Tree, by the shape
+  search, or by *Select component* under the cursor — and anything inside it
+  goes with it, the same way hiding a group on the canvas hides what is in it.
+  If it was selected, the selection gives it up, because handles sitting on
+  nothing are handles you can drag. The one list that still shows them is a
+  layer's own **List shapes**: that question named the layer, and hidden or not,
+  this is what is on it.
 - **Folding the tree.** A drawing where everything is inside a group is a tree
   nobody can read at a glance, so three buttons act on the lot: **Collapse all**,
   **Expand all**, and **Collapse unselected** — which folds everything except
