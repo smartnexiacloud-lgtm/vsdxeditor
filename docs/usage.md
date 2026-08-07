@@ -339,6 +339,15 @@ re-saved in the real Microsoft Visio desktop app — see
   renames the shape in place (double-clicking the name does the same once the
   row is the selected one; **Enter** commits, **Esc** leaves it alone, a blank
   answer clears it) and a **×** that deletes it from the drawing.
+- **The tree follows the marked layer.** The two panes describe the same
+  drawing, so they agree about it. While the Layers sidebar is open, the tree
+  lists what is on the layer marked there — the shapes that carry it, everything
+  inside them, and the groups on the way down — and walking the layer rows walks
+  the tree with you; the subtitle names the layer and counts what it is showing.
+  Picking a shape in the tree does the reverse and marks the layer that shape is
+  on, the same as picking it anywhere else. Shut the Layers sidebar and there is
+  no marked layer to follow, so the tree is the whole page again; **Follow
+  layer** in the tree's header does the same with both panes open.
 - **Folding the tree.** A drawing where everything is inside a group is a tree
   nobody can read at a glance, so three buttons act on the lot: **Collapse all**,
   **Expand all**, and **Collapse unselected** — which folds everything except

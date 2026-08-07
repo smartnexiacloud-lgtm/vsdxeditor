@@ -1528,6 +1528,17 @@
       font-size: 11px;
       padding: 3px 7px;
     }
+    .shape-tree-follow {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      color: #8f9ac3;
+      cursor: pointer;
+    }
+    .shape-tree-follow input {
+      margin: 0;
+    }
     .shape-tree-hint {
       font-size: 11px;
       color: #6f7aa3;
@@ -1917,6 +1928,11 @@
                     title="Open every group">Expand all</button>
             <button id="shape-tree-collapse-others" type="button"
                     title="Fold every group except the ones the selected shape is inside">Collapse unselected</button>
+            <label class="shape-tree-follow"
+                   title="List only the shapes on the layer marked in the Layers sidebar">
+              <input type="checkbox" id="shape-tree-follow-layer" checked>
+              Follow layer
+            </label>
           </div>
         </div>
         <div id="shape-tree-body" class="shape-tree-body" tabindex="-1" role="tree" aria-label="Shapes on this page">

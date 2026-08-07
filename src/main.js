@@ -959,6 +959,9 @@ function buildLayersSidebar() {
   updateLayerBulkButtons(visibleLayers.length);
   updateSectionBadges();
   updateSidebarChrome();
+  // The mark can move without anybody clicking: the layer it was on may not be
+  // in the list any more, and the fallback above puts it on the first row.
+  syncShapeTreeToLayer();
 }
 
 // `label` overrides the visible text without touching the titles or aria
@@ -2073,6 +2076,9 @@ function focusLayerRow(layerIndex, scrollIntoView = true) {
       if (scrollIntoView) item.scrollIntoView?.({ block: 'nearest' });
     }
   }
+  // Moving to another layer is a question asked of the drawing, and the Shape
+  // Tree is where the drawing answers it.
+  syncShapeTreeToLayer();
 }
 
 function moveLayerFocus(delta) {
@@ -2616,7 +2622,10 @@ function deleteShapeFromTree(shapeId) {
   });
 }
 
-function createShapeTreeNode(shape, depth, rootShapeId) {
+function createShapeTreeNode(shape, depth, rootShapeId, visible = null) {
+  // An empty fragment rather than nothing at all: appending one is a no-op, so
+  // a filtered-out shape costs the caller no bookkeeping.
+  if (visible && !visible.has(String(shape.id))) return document.createDocumentFragment();
   const hiddenShapeIds = getHiddenShapeIds();
   const collapsedShapeIds = getCollapsedShapeIds();
   const hasChildren = (shape.subShapes || []).length > 0;
@@ -2713,7 +2722,7 @@ function createShapeTreeNode(shape, depth, rootShapeId) {
     // with it — click a row, then arrow away from there.
     label.addEventListener('click', () => {
       shapeTreeCursorId = String(shape.id);
-      setSelectedShape(shape.id);
+      selectFromShapeTree(shape.id);
     });
     label.addEventListener('dblclick', (e) => {
       e.preventDefault();
@@ -2778,7 +2787,7 @@ function createShapeTreeNode(shape, depth, rootShapeId) {
 
   if (hasChildren && !collapsedShapeIds.has(String(shape.id))) {
     for (const child of shape.subShapes) {
-      fragment.appendChild(createShapeTreeNode(child, depth + 1, rootShapeId));
+      fragment.appendChild(createShapeTreeNode(child, depth + 1, rootShapeId, visible));
     }
   }
 
@@ -2793,6 +2802,95 @@ function createShapeTreeNode(shape, depth, rootShapeId) {
 // it", and clicking a row moves the selection somewhere.
 function shapeTreeRoots() {
   return getCurrentPage()?.shapes || [];
+}
+
+// ── The tree and the layer that is marked ──────────────────────────────────
+// Two panes describing the same drawing have to agree about it. The Layers
+// sidebar marks the layer of whatever shape you pick, wherever you picked it;
+// in return the tree lists what is on the layer you have marked, and walking
+// the layer rows walks the tree with you.
+//
+// Only while the layers pane is on screen: "the marked layer" is a thing you
+// can see there and nowhere else, so with the pane shut there is no mark to
+// follow and the tree is the whole page again. The checkbox in the tree's
+// header is for wanting both panes open and the whole page listed anyway.
+let shapeTreeFollowsLayer = true;
+// Which layer the rows currently on screen were built for, so a render is only
+// spent when the answer has actually changed — buildLayersSidebar runs often.
+let shapeTreeLayerKey = null;
+// And which one they were last *unfolded* for. Opening the groups a match is
+// buried under is worth doing when the marked layer changes and obnoxious on
+// every render, which is the same argument revealedShapeId makes.
+let shapeTreeRevealedLayerKey = null;
+
+function shapeTreeLayerIndex() {
+  if (!shapeTreeFollowsLayer) return null;
+  if (!layersSidebar.classList.contains('visible')) return null;
+  if (focusedLayerIndex === null || focusedLayerIndex === undefined) return null;
+  const known = getCurrentLayers().some(layer => String(layer.index) === String(focusedLayerIndex));
+  return known ? String(focusedLayerIndex) : null;
+}
+
+/**
+ * Which shapes the tree should draw a row for, or null for "all of them".
+ *
+ * A shape is on the layer its own membership names, and a shape with no
+ * membership of its own is on whatever it is inside — the rule the canvas
+ * already draws by, where a child goes when the group around it goes. So
+ * everything inside a shape that is on the layer is on it too.
+ *
+ * `branches` is the groups on the way down to a match. They are listed as well,
+ * or a match three deep would have no branch to hang from, and they are the
+ * ones worth unfolding.
+ */
+function shapeTreeLayerMembers(layerIndex) {
+  if (layerIndex === null) return null;
+  const wanted = String(layerIndex);
+  const unlayered = wanted === String(UNLAYERED_LAYER_INDEX);
+  const keep = new Set();
+  const branches = new Set();
+  const ancestors = [];
+
+  const walk = (shapes, inherited) => {
+    for (const shape of shapes || []) {
+      const own = (shape.layerMembers || []).map(String);
+      const members = own.length ? own : inherited;
+      if (unlayered ? members.length === 0 : members.includes(wanted)) {
+        for (const id of ancestors) {
+          keep.add(id);
+          branches.add(id);
+        }
+        keep.add(String(shape.id));
+      }
+      ancestors.push(String(shape.id));
+      walk(shape.subShapes, members);
+      ancestors.pop();
+    }
+  };
+  walk(shapeTreeRoots(), []);
+  return { keep, branches };
+}
+
+// Called wherever the marked layer can change: the row that is marked, the
+// sidebar being opened or shut, and the rebuild that picks a row when the one
+// that was marked is gone.
+function syncShapeTreeToLayer() {
+  if (String(shapeTreeLayerIndex()) === String(shapeTreeLayerKey)) return;
+  renderShapeTree();
+}
+
+// Picking a shape here is picking a shape anywhere else, and everywhere else
+// marks the layer it is on. This pane was the one exception, so the two panes
+// disagreed about the same shape depending on where you had clicked it.
+function selectFromShapeTree(shapeId) {
+  const walking = shapeTreeBody.contains(document.activeElement);
+  setSelectedShape(shapeId);
+  const shape = findShapeById(shapeTreeRoots(), shapeId);
+  if (shape) revealLayerForShape(shape);
+  // Marking a layer row focuses it, and that would take the keyboard out of the
+  // tree — mid-walk, when walking the tree is the whole reason the row got
+  // marked. The walk keeps the keyboard.
+  if (walking) syncShapeTreeCursor(true);
 }
 
 // A selected shape inside a folded group has no row to be marked on, so the
@@ -2814,12 +2912,20 @@ function expandToSelectedShape() {
   for (const ancestor of path.slice(0, -1)) collapsed.delete(String(ancestor.id));
 }
 
-function updateShapeTreeSubtitle(page, roots) {
+function updateShapeTreeSubtitle(page, roots, layerIndex = null, shown = null) {
   const selected = findShapeById(roots, selectedShapeId);
   const total = pageShapeBoxes(page).length;
+  // A list showing eight of a page's forty shapes has to say why, or it reads
+  // as a drawing that has lost thirty-two of them.
+  const layer = layerIndex === null
+    ? null
+    : getCurrentLayers().find(candidate => String(candidate.index) === String(layerIndex));
+  const count = layer
+    ? `${shown} of ${total} shape${total === 1 ? '' : 's'} on ${getLayerDisplayName(layer)}`
+    : `${total} shape${total === 1 ? '' : 's'}`;
   shapeTreeSubtitle.textContent = selected
-    ? `${page.name || 'Page'} · ${total} shape${total === 1 ? '' : 's'} · selected ${getShapeLabel(selected)}`
-    : `${page.name || 'Page'} · ${total} shape${total === 1 ? '' : 's'}`;
+    ? `${page.name || 'Page'} · ${count} · selected ${getShapeLabel(selected)}`
+    : `${page.name || 'Page'} · ${count}`;
 }
 
 // Moving the selection changes two attributes on two rows. Rebuilding the tree
@@ -2833,6 +2939,13 @@ function refreshShapeTreeSelection() {
   const roots = shapeTreeRoots();
   if (!page || !roots.length || selectedShapeId === null || editingShapeId !== null
     || !shapeTreeBody.querySelector('.shape-tree-node')) {
+    renderShapeTree();
+    return;
+  }
+  // The rows on screen are a layer's worth of rows, and which layer that is can
+  // have changed since they were built — patching classes onto the wrong set of
+  // rows would leave the tree describing a layer nobody is looking at.
+  if (String(shapeTreeLayerIndex()) !== String(shapeTreeLayerKey)) {
     renderShapeTree();
     return;
   }
@@ -2856,7 +2969,7 @@ function refreshShapeTreeSelection() {
     row.classList.add('selected');
     row.setAttribute('aria-selected', 'true');
   }
-  updateShapeTreeSubtitle(page, roots);
+  updateShapeTreeSubtitle(page, roots, shapeTreeLayerKey, shapeTreeRows().length);
   syncShapeTreeCursor(false);
 }
 
@@ -2867,6 +2980,7 @@ function renderShapeTree() {
   // had the keyboard has to be asked before, not after.
   const hadFocus = shapeTreeBody.contains(document.activeElement);
   shapeTreeBody.innerHTML = '';
+  shapeTreeLayerKey = shapeTreeLayerIndex();
 
   if (!page || !roots.length) {
     shapeTreeSidebar.classList.remove('visible');
@@ -2878,7 +2992,9 @@ function renderShapeTree() {
     shapeTreeCursorId = null;
     return;
   }
-  if (selectedShapeId === null) {
+  // A marked layer is a question about the drawing on its own — "what is on
+  // this one?" — so the tree has something to say even with nothing selected.
+  if (selectedShapeId === null && shapeTreeLayerKey === null) {
     shapeTreeSidebar.classList.remove('visible');
     shapeTreeCursorId = null;
     return;
@@ -2886,8 +3002,21 @@ function renderShapeTree() {
 
   shapeTreeSidebar.classList.add('visible');
   expandToSelectedShape();
-  updateShapeTreeSubtitle(page, roots);
-  for (const root of roots) shapeTreeBody.appendChild(createShapeTreeNode(root, 0, null));
+  const filter = shapeTreeLayerMembers(shapeTreeLayerKey);
+  if (filter && String(shapeTreeLayerKey) !== String(shapeTreeRevealedLayerKey)) {
+    shapeTreeRevealedLayerKey = shapeTreeLayerKey;
+    // A layer whose shapes are all inside folded groups would list the folds and
+    // none of the shapes, which answers nothing.
+    for (const id of filter.branches) getCollapsedShapeIds().delete(id);
+  }
+  for (const root of roots) shapeTreeBody.appendChild(createShapeTreeNode(root, 0, null, filter?.keep));
+  updateShapeTreeSubtitle(page, roots, shapeTreeLayerKey, shapeTreeRows().length);
+  if (filter && !shapeTreeRows().length) {
+    const empty = document.createElement('div');
+    empty.className = 'shape-tree-empty';
+    empty.textContent = 'No shapes on this layer.';
+    shapeTreeBody.appendChild(empty);
+  }
   // A row being renamed puts an input on screen that focuses itself; taking the
   // keyboard back for the tree would close it the moment it opened.
   syncShapeTreeCursor(hadFocus && editingShapeId === null);
@@ -3001,7 +3130,7 @@ function handleShapeTreeKeydown(e) {
       break;
     }
     case 'Enter':
-      if (cursorId !== null) setSelectedShape(cursorId);
+      if (cursorId !== null) selectFromShapeTree(cursorId);
       break;
     case ' ':
       // What the row's checkbox does, since that is the other thing a row is.
@@ -5340,6 +5469,9 @@ document.getElementById('btn-layers').addEventListener('click', () => {
   const btn = document.getElementById('btn-layers');
   layersSidebar.classList.toggle('visible');
   btn.classList.toggle('active');
+  // With the pane shut there is no marked layer to see, so the tree is the
+  // whole page again — and it comes back to the layer when the pane does.
+  syncShapeTreeToLayer();
 });
 document.getElementById('btn-layer-matrix').addEventListener('click', showLayerMatrix);
 
@@ -5797,6 +5929,13 @@ layerTreeEnable?.addEventListener('change', () => setLayerTreeEnabled(layerTreeE
 layerTreeDelimiterInput?.addEventListener('input', () => setLayerTreeDelimiter(layerTreeDelimiterInput.value));
 layerTreeToggleAll?.addEventListener('click', toggleAllLayerGroups);
 document.getElementById('layer-tree-collapse-others')?.addEventListener('click', collapseUnfocusedLayerGroups);
+document.getElementById('shape-tree-follow-layer')?.addEventListener('change', (e) => {
+  shapeTreeFollowsLayer = e.target.checked;
+  // Turning it back on has to re-reveal: the groups a match is folded under
+  // were last opened for this layer, and the tree has shown the page since.
+  shapeTreeRevealedLayerKey = null;
+  syncShapeTreeToLayer();
+});
 document.getElementById('shape-tree-collapse-all')?.addEventListener('click', () => setShapeTreeFolding('all'));
 document.getElementById('shape-tree-expand-all')?.addEventListener('click', () => setShapeTreeFolding('expand'));
 document.getElementById('shape-tree-collapse-others')?.addEventListener('click', () => setShapeTreeFolding('others'));

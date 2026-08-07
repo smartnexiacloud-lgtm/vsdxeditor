@@ -7,6 +7,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **The Shape Tree and the Layers sidebar now describe the drawing the same
+  way.** They used to disagree: walking down the layer rows said nothing to the
+  tree, which went on listing the whole page whatever was marked, and picking a
+  shape in the tree — alone among every list in the app — left the Layers
+  sidebar marking whatever it had been marking before. Now, while the Layers
+  sidebar is open, the tree lists what is on the marked layer: the shapes that
+  carry it, everything inside them (a child with no membership of its own is on
+  whatever it is inside, the rule the canvas already draws by), and the groups on
+  the way down, unfolded so a match three deep is not hidden behind a fold. Its
+  subtitle names the layer and counts what it is showing, so a shorter list does
+  not read as a drawing that lost shapes. Picking a shape in the tree marks the
+  layer that shape is on. Shutting the Layers sidebar leaves no marked layer to
+  follow and the tree is the whole page again — as does **Follow layer** in the
+  tree's own header, for wanting both panes open and the whole page listed.
 - **Edit an exported SVG somewhere else and bring the edits back.** Exported
   SVGs carry the whole drawing as embedded metadata, so re-opening one always
   round-tripped perfectly — including round-tripping away everything you had
