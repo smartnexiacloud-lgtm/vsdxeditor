@@ -159,7 +159,8 @@ delimiter** to read that convention back out and nest the rows accordingly.
 - Picking a shape — on the canvas, or from *Select component*, the shape search
   or a layer's object list — unfolds its way down to the layer that shape is on
   and marks the row. Only the groups on the way there open; the rest of the tree
-  stays as you folded it.
+  stays as you folded it. A shape that is on no layer marks the *Unlayered* row,
+  because that is the answer for it.
 
 No group is ever written to the document: the tree is derived from the layer
 names every time, and every layer keeps its own row and index. What *is* saved

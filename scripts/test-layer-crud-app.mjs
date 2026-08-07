@@ -202,6 +202,43 @@ if (doomed) {
         }), `${shapesOnDoomed.join(' | ')} ⇒ ${orphanIds.join(' | ')}`);
       $('layer-objects-close').click();
       await sleep(30);
+
+      // Clicking a shape points the sidebar at the layer it is on, and "on no
+      // layer" is one of the answers: an orphan carries no data-layers at all,
+      // and the row that says so is the Unlayered one.
+      const orphanGroup = [...currentSvg().querySelectorAll('g[data-shape-id]:not([data-layers])')]
+        .find(g => orphanIds.some(text => text.includes(`#${g.getAttribute('data-shape-id')}`)));
+      check('an orphaned shape is drawn with no layer tag of its own', !!orphanGroup,
+        orphanIds.join(' | '));
+      if (orphanGroup) {
+        const text = orphanGroup.querySelector('text, tspan');
+        orphanGroup.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+        await sleep(60);
+        check('clicking it marks the Unlayered row',
+          layerItem('Unlayered')?.classList.contains('focused'),
+          layerNames().join(','));
+
+        // Its text is a child of the same group, and a click lands on whatever
+        // is drawn topmost — so the label has to answer the same as the shape.
+        if (text) {
+          layerItem('Unlayered')?.classList.remove('focused');
+          text.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+          await sleep(60);
+          check('and clicking its text says the same thing',
+            layerItem('Unlayered')?.classList.contains('focused'),
+            layerNames().join(','));
+        }
+
+        // The page background is not a shape, so it is not on a layer either —
+        // but it is not on *no* layer, it is nothing at all, and marking a row
+        // for it would be an answer to a question nobody asked.
+        for (const row of layerItems()) row.classList.remove('focused');
+        currentSvg().dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+        await sleep(60);
+        check('clicking empty canvas marks nothing',
+          !layerItems().some(i => i.classList.contains('focused')),
+          layerNames().join(','));
+      }
     }
   }
 }

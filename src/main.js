@@ -2126,12 +2126,20 @@ function unhideLayerRow(layerIndex) {
 }
 
 function focusLayerFromSvgElement(target) {
+  // A shape on no layer carries no data-layers at all, so there is no group to
+  // find — but "no layer" is itself an answer, and the sidebar has a row for it.
+  // Falling out here is what left a click on an unlayered shape, or on its text,
+  // pointing at nothing. Empty canvas still says nothing: the click has to have
+  // landed on a shape for "which layer is it on?" to be a question.
   const group = target.closest?.('g[data-layers]');
-  if (!group) return;
+  if (!group && !target.closest?.('g[data-shape-id]')) return;
 
-  const layerIndexes = group.getAttribute('data-layers').split(',').filter(Boolean);
+  const layerIndexes = (group?.getAttribute('data-layers') || '').split(',').filter(Boolean);
   const visibleLayerIndexes = new Set(getFilteredLayers().map(layer => String(layer.index)));
-  const layerIndex = layerIndexes.find(index => visibleLayerIndexes.has(index)) || layerIndexes[0];
+  const known = new Set(getCurrentLayers().map(layer => String(layer.index)));
+  const layerIndex = layerIndexes.find(index => visibleLayerIndexes.has(index))
+    || layerIndexes[0]
+    || (known.has(UNLAYERED_LAYER_INDEX) ? UNLAYERED_LAYER_INDEX : null);
   if (!layerIndex) return;
 
   layersSidebar.classList.add('visible');

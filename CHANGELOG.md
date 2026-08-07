@@ -367,6 +367,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   would draw it. **Hairlines: fit zoom** is still in the toolbar, one click away.
 
 ### Fixed
+- **Clicking a shape that is on no layer marked no row at all.** The sidebar has
+  a row for exactly that — the editor-only *Unlayered* one — but the click looked
+  for a layer tag on the shape, and a shape on no layer carries none, so it gave
+  up before it got as far as answering. Clicking such a shape, or the text drawn
+  on it, now marks *Unlayered*, the same as picking it from the shape search or a
+  layer's object list already did. Clicking empty canvas still marks nothing.
 - **Clicking a shape pointed the Layers sidebar at a row that was folded away.**
   Picking a shape on the canvas opens the sidebar and marks the layer it is on —
   and with layer names grouped into a tree, that row may be inside a collapsed
