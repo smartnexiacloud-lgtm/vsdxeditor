@@ -367,6 +367,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   would draw it. **Hairlines: fit zoom** is still in the toolbar, one click away.
 
 ### Fixed
+- **Clicking a shape pointed the Layers sidebar at a row that was folded away.**
+  Picking a shape on the canvas opens the sidebar and marks the layer it is on —
+  and with layer names grouped into a tree, that row may be inside a collapsed
+  group, where there is no row to mark. The pane opened on a tree with every
+  group shut and nothing highlighted anywhere in it. A click now unfolds its way
+  down to the layer, every group on the path and no others, which is what the
+  shape-search and *List shapes* rows already did.
 - **Resizing a shape did not resize the shape.** The handles moved, the dashed
   outline followed the pointer, the pin and the Width landed where they should —
   and the drawing was redrawn at exactly the size it already was, sitting inside

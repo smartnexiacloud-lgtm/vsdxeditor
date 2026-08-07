@@ -2094,6 +2094,37 @@ function focusFirstOrLastLayer(first) {
   focusLayerRow(items[first ? 0 : items.length - 1].dataset.layerIndex);
 }
 
+/**
+ * Make sure the row for `layerIndex` is one that exists to be pointed at.
+ *
+ * A row can be missing from the list for two reasons, and both of them have to
+ * go before the row can be highlighted: a filter left in the box that the layer
+ * does not match, and — once names are being grouped into a tree — a folded
+ * group somewhere above it, which is the whole of what folding a group means.
+ * Pointing at a row nobody can see says nothing at all, so the answer to "which
+ * layer is this shape on?" has to unfold its way down to the answer.
+ */
+function unhideLayerRow(layerIndex) {
+  const layer = getCurrentLayers().find(candidate => String(candidate.index) === String(layerIndex));
+  if (!layer) return;
+
+  let rebuild = false;
+  if (!layerMatchesFilter(layer)) {
+    layerFilterText.value = '';
+    rebuild = true;
+  }
+  if (layerTreeActive() && collapsedLayerGroups.size) {
+    // Every group on the way down, not only the one directly above: a row three
+    // deep is hidden by the topmost fold whatever the ones below it are doing.
+    const segments = parseLayerPathSegments(getLayerDisplayName(layer));
+    for (let i = 1; i < segments.length; i++) {
+      const key = segments.slice(0, i).join(layerTreeDelimiter);
+      if (collapsedLayerGroups.delete(key)) rebuild = true;
+    }
+  }
+  if (rebuild) buildLayersSidebar();
+}
+
 function focusLayerFromSvgElement(target) {
   const group = target.closest?.('g[data-layers]');
   if (!group) return;
@@ -2106,10 +2137,7 @@ function focusLayerFromSvgElement(target) {
   layersSidebar.classList.add('visible');
   document.getElementById('btn-layers').classList.add('active');
 
-  if (!visibleLayerIndexes.has(layerIndex)) {
-    layerFilterText.value = '';
-    buildLayersSidebar();
-  }
+  unhideLayerRow(layerIndex);
   focusLayerRow(layerIndex);
 }
 
@@ -2141,22 +2169,7 @@ function revealLayerForShape(shape) {
     ?? (known.has(UNLAYERED_LAYER_INDEX) ? UNLAYERED_LAYER_INDEX : null);
   if (layerIndex === null) return null;
 
-  const layer = uiLayers.find(candidate => String(candidate.index) === String(layerIndex));
-  // A row filtered out of the list, or folded into a collapsed group, has no
-  // element to focus — so make one exist before asking for it.
-  let rebuild = false;
-  if (layer && !layerMatchesFilter(layer)) {
-    layerFilterText.value = '';
-    rebuild = true;
-  }
-  if (layer && layerTreeActive() && collapsedLayerGroups.size) {
-    const segments = parseLayerPathSegments(getLayerDisplayName(layer));
-    for (let i = 1; i < segments.length; i++) {
-      const key = segments.slice(0, i).join(layerTreeDelimiter);
-      if (collapsedLayerGroups.delete(key)) rebuild = true;
-    }
-  }
-  if (rebuild) buildLayersSidebar();
+  unhideLayerRow(layerIndex);
 
   // Pointing at a row in a pane nobody can see says nothing, so the pane opens
   // — the same thing clicking the shape on the canvas already does.

@@ -437,6 +437,38 @@ if (drawnLayer) {
   $('layer-objects-close').click();
   await sleep(30);
 
+  // --- 7b. Clicking a shape unfolds its way down to the layer it is on ------
+  // Picking a shape on the canvas points the sidebar at its layer. Once names
+  // are grouped, that layer's row may be folded away inside a group — and a row
+  // that is not drawn cannot be highlighted, so the answer to "which layer is
+  // this on?" used to be nothing at all: the pane opened on a tree with every
+  // group shut and nothing marked anywhere in it.
+  const drawnIndex = layerItem(drawnLayer).dataset.layerIndex;
+  const onLayer = [...currentSvg().querySelectorAll('g[data-layers]')]
+    .find(g => g.getAttribute('data-layers').split(',').includes(String(drawnIndex)));
+  check('the canvas has a shape drawn on the borrowed layer', !!onLayer, String(drawnIndex));
+
+  if ($('layer-tree-toggle-all').textContent === 'Expand all') $('layer-tree-toggle-all').click();
+  await sleep(40);
+  $('layer-tree-toggle-all').click();
+  await sleep(40);
+  check('with every group folded, the layer has no row to point at',
+    !layerItem(drawnLayer), rowOrder().join(' '));
+
+  onLayer.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+  await sleep(80);
+  check('clicking the shape unfolds the groups its layer is buried under',
+    !!layerItem(drawnLayer), rowOrder().join(' '));
+  check('and marks the row, which is the point of unfolding it',
+    layerItem(drawnLayer)?.classList.contains('focused'),
+    layerItems().filter(i => i.classList.contains('focused'))
+      .map(i => i.querySelector('.layer-name')?.textContent).join(','));
+  check('leaving the groups it did not have to open alone',
+    layersUnderRow('Water').length === 0, rowOrder().join(' '));
+
+  $('layer-tree-toggle-all').click();
+  await sleep(40);
+
   rightClick(layerItem(drawnLayer));
   promptReply = '';
   menuItem('move').click();
