@@ -37,7 +37,8 @@ portable offline builds.
   an editor-only **Unlayered** row. A row is its name and its checkbox;
   everything else it does — list its shapes, rename, tag, delete — is on its
   right-click menu (or its **⋯**). **Ctrl+Z** takes back the last change to what
-  is shown, so *Hide all* is one click to undo rather than one per layer. The
+  is shown, so *Hide all* is one click to undo rather than one per layer — and
+  the same key takes back a drag on the canvas. The
   pane is resizable, and its tools (filter, find, grouping, views, tags) fold
   away until you want them.
 - **Layer folders** — Visio's layers are flat, but drawings fake a hierarchy in
@@ -92,6 +93,8 @@ portable offline builds.
   costs. Your selection, the folded rows of the Shape Tree and where you had
   scrolled to are all left alone, and the `.vsdx` is rewritten the next time
   anything needs the bytes.
+  **Ctrl+Z** takes a drag back and **Ctrl+Shift+Z** does it again, the whole
+  selection at once and in the file as well as on screen.
   Dragging a group takes its contents with it and resizing one scales them, and
   it all works on a shape nested several groups deep.
 - **Pan tool** — a hand for getting about a crowded drawing: with it out, a drag

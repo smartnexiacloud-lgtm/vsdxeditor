@@ -268,3 +268,39 @@ export function applyGeometryScale(shape, plan) {
     }
   }
 }
+
+/**
+ * The plan that puts `plan` back: the same rows and the same cells, carrying
+ * what the shape holds *now*. Taken before the plan is applied, it is the undo
+ * for it — and because it is in the same form, it goes through the same two
+ * appliers as everything else, the model one and the file one.
+ *
+ * A cell the row has no value for is left out rather than guessed at. Writing a
+ * number where the shape had nothing would answer a question the undo was never
+ * asked, and the answer would outlive the undo.
+ */
+export function captureGeometryScale(shape, plan) {
+  const captured = [];
+  if (!shape || !plan?.length) return captured;
+  const byRow = new Map(plan.map(update => [`${update.sectionIx} ${update.rowIx}`, update]));
+  for (const geo of shape.geometry || []) {
+    for (const row of geo.rows || []) {
+      const update = byRow.get(`${geo.ix} ${row.ix}`);
+      if (!update) continue;
+      const cells = {};
+      for (const name of Object.keys(update.cells || {})) {
+        const field = ROW_FIELD[name];
+        const value = field ? row[field] : undefined;
+        if (value === undefined || value === null) continue;
+        cells[name] = {
+          value: typeof value === 'string' ? value : shapeCellNumber(value),
+          formula: row.formulas?.[name] || null
+        };
+      }
+      if (Object.keys(cells).length) {
+        captured.push({ sectionIx: geo.ix, rowIx: row.ix, rowType: row.type, cells });
+      }
+    }
+  }
+  return captured;
+}

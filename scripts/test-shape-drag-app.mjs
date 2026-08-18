@@ -736,5 +736,248 @@ check('the hidden shape moved with the rest',
 check('and it is still hidden, though it was drawn again in its own right',
   groupEl(second.id)?.style.display === 'none', groupEl(second.id)?.style.display);
 
+// --- 14. Ctrl+Z takes a drag back -------------------------------------------
+// A shape nudged with the mouse was the one change in the app with no way back.
+// Hiding a layer had an undo; moving a shape did not, so Ctrl+Z answered
+// "nothing to undo on this page" at exactly the moment there was.
+//
+// What is recorded is the plan the drag produced, filled with the numbers the
+// shapes held before it — the same form the drag itself commits in, so the undo
+// goes back out by the same two routes and reaches the file as well as the
+// screen.
+await dropFile(new window.File([readFileSync(fixture)], 'undo.vsdx'));
+const undoTarget = translated()[0];
+check('there is an untouched shape to move and put back', !!undoTarget, topLevel().join(','));
+groupEl(undoTarget.id).dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+await sleep(80);
+
+const pressUndo = async (redo = false) => {
+  window.document.body.dispatchEvent(new window.KeyboardEvent('keydown', {
+    key: redo ? 'Z' : 'z', ctrlKey: true, shiftKey: redo, bubbles: true, cancelable: true }));
+  await sleep(120);
+};
+const clearError = () => { if ($('error-box')) $('error-box').textContent = ''; };
+
+const undoFrom = originOf(undoTarget.id);
+const UNDO_DX = 55, UNDO_DY = -35;
+({ before } = await drag(undoTarget.id, groupEl(undoTarget.id),
+  { x: undoFrom.x + 4, y: undoFrom.y + 4 },
+  { x: undoFrom.x + 4 + UNDO_DX, y: undoFrom.y + 4 + UNDO_DY }));
+check('the shape to be undone moved', await release(undoTarget.id,
+  { x: undoFrom.x + 4 + UNDO_DX, y: undoFrom.y + 4 + UNDO_DY }, before), errorText());
+const undoMoved = originOf(undoTarget.id);
+
+// With nothing selected, the undo has to say for itself which shape it moved —
+// otherwise the only sign a big drawing gives that anything happened is a shape
+// somewhere off screen quietly going back where it was.
+await pressKey('Escape');
+check('the selection can be let go before the undo', selectedIds().length === 0, selectedIds().join(','));
+
+await pressUndo();
+check('Ctrl+Z after a drag has something to undo', !errorText(), errorText());
+const undone = originOf(undoTarget.id);
+check('and puts the shape back exactly where it started',
+  undone && Math.abs(undone.x - undoFrom.x) < 0.01 && Math.abs(undone.y - undoFrom.y) < 0.01,
+  `${JSON.stringify(undone)} vs ${JSON.stringify(undoFrom)}`);
+check('the shape it moved back is the selected one, so the undo says what it undid',
+  selectedIds().join(',') === undoTarget.id, selectedIds().join(','));
+
+await pressUndo(true);
+const redone = originOf(undoTarget.id);
+check('Ctrl+Shift+Z puts it back where the drag left it',
+  redone && Math.abs(redone.x - undoMoved.x) < 0.01 && Math.abs(redone.y - undoMoved.y) < 0.01,
+  `${JSON.stringify(redone)} vs ${JSON.stringify(undoMoved)}`);
+
+// Undo, then do something else instead: that is a new branch, and the one that
+// was undone is gone. Redo offering to walk back into it would put the shape
+// somewhere the user has since decided against.
+await pressUndo();
+const branchFrom = originOf(undoTarget.id);
+({ before } = await drag(undoTarget.id, groupEl(undoTarget.id),
+  { x: branchFrom.x + 4, y: branchFrom.y + 4 },
+  { x: branchFrom.x + 22, y: branchFrom.y + 30 }));
+check('a fresh drag after an undo commits', await release(undoTarget.id,
+  { x: branchFrom.x + 22, y: branchFrom.y + 30 }, before), errorText());
+const branched = originOf(undoTarget.id);
+clearError();
+await pressUndo(true);
+check('a change made after an undo throws away what there was to redo',
+  errorText().includes('Nothing to redo'), errorText());
+check('and leaves the shape where that change put it',
+  Math.abs(originOf(undoTarget.id).x - branched.x) < 0.01
+  && Math.abs(originOf(undoTarget.id).y - branched.y) < 0.01,
+  `${JSON.stringify(originOf(undoTarget.id))} vs ${JSON.stringify(branched)}`);
+clearError();
+
+// A resize is more than the six placement cells: it also moves every geometry
+// row held in inches (section 9b). Undo has to carry those rows back, or the
+// shape returns to its old box still wearing the outline it was stretched to —
+// which is a shape that visibly does not unresize.
+//
+// So the shape resized here is one the pen drew, because a pen outline is held
+// in inches. Every fixture in test-files holds its outline as fractions of the
+// box instead, and those follow the box home by themselves.
+const undoPenHeight = Number(currentSvg().getAttribute('viewBox').split(/\s+/)[3]) / 96;
+const undoPenClick = (xIn, yIn) => {
+  const p = { x: xIn * 96, y: (undoPenHeight - yIn) * 96 };
+  mouse('mousedown', p.x, p.y, $('viewport'));
+  mouse('mouseup', p.x, p.y, $('viewport'));
+};
+const beforeInk = new Set(topLevel());
+$('btn-pen').click();
+undoPenClick(1, 1);
+undoPenClick(3, 1);
+undoPenClick(3, 2.5);
+$('pen-finish').click();
+check('the pen drew a shape whose outline is held in inches',
+  await waitFor(() => topLevel().length === beforeInk.size + 1), errorText());
+$('btn-select').click();
+await sleep(60);
+
+const undoInked = topLevel().find(id => !beforeInk.has(id));
+groupEl(undoInked).dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+await sleep(80);
+const undoHandle = handleFor('se');
+check('the drawn shape has a corner to pull', undoHandle?.getAttribute('data-handle-shape') === undoInked,
+  String(undoHandle?.getAttribute('data-handle-shape')));
+const undoCorner = centreOf(undoHandle);
+const drawnBeforeResize = drawnExtent(undoInked);
+({ before } = await drag(undoInked, undoHandle, undoCorner,
+  { x: undoCorner.x + 45, y: undoCorner.y + 30 }));
+check('the resize to be undone commits',
+  await release(undoInked, { x: undoCorner.x + 45, y: undoCorner.y + 30 }, before), errorText());
+const drawnAfterResize = drawnExtent(undoInked);
+check('…and really did make the outline bigger',
+  drawnAfterResize.w > drawnBeforeResize.w + 1,
+  `${JSON.stringify(drawnBeforeResize)} → ${JSON.stringify(drawnAfterResize)}`);
+
+await pressUndo();
+const drawnUndone = drawnExtent(undoInked);
+check('undoing a resize brings the outline back, not just the box',
+  drawnUndone && Math.abs(drawnUndone.w - drawnBeforeResize.w) < 0.01
+  && Math.abs(drawnUndone.h - drawnBeforeResize.h) < 0.01,
+  `${JSON.stringify(drawnUndone)} vs ${JSON.stringify(drawnBeforeResize)}`);
+
+// Turning a shape back to exactly square is the one placement the model route
+// cannot take. Writing Angle=0 on a shape that has no Angle cell of its own
+// would be writing a default, and a default is what `transformVsdxShapes`
+// leaves alone — so the shape would come back turned. There is nothing in the
+// model that says whether the cell is the shape's own, so that case goes the
+// long way instead of guessing, and this is the undo that has to survive it.
+groupEl(undoTarget.id).dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+await sleep(80);
+const squareOrigin = originOf(undoTarget.id);
+const undoGrip = handleFor('rotate');
+check('the shape has a grip to turn', !!undoGrip);
+const undoGripAt = centreOf(undoGrip);
+({ before } = await drag(undoTarget.id, undoGrip, undoGripAt,
+  { x: undoGripAt.x + 120, y: undoGripAt.y + 120 }));
+check('the turn to be undone commits', await release(undoTarget.id,
+  { x: undoGripAt.x + 120, y: undoGripAt.y + 120 }, before), errorText());
+check('the shape is no longer a plain translate, so it really turned',
+  !/^translate\([^)]*\)$/.test(placementOf(undoTarget.id) || ''), placementOf(undoTarget.id));
+
+const beforeTurnUndo = currentSvg();
+await pressUndo();
+check('undoing a turn back to square reloads the drawing, because it has to',
+  await waitFor(() => currentSvg() && currentSvg() !== beforeTurnUndo
+    && currentSvg().querySelector('g[data-shape-id]')), errorText());
+check('and the shape comes back square, exactly where it was',
+  /^translate\([^)]*\)$/.test(placementOf(undoTarget.id) || '')
+  && Math.abs(originOf(undoTarget.id).x - squareOrigin.x) < 0.01
+  && Math.abs(originOf(undoTarget.id).y - squareOrigin.y) < 0.01,
+  `${placementOf(undoTarget.id)} vs translate(${squareOrigin.x}, ${squareOrigin.y})`);
+check('and the long way round says which shape it was too, same as the short one',
+  selectedIds().join(',') === undoTarget.id, selectedIds().join(','));
+
+// The screen is not the file. A placement is made on the model and written into
+// the bytes later, so an undo that only put the group back on the canvas would
+// be quietly overwritten by whatever the package still believed.
+const beforeUndoSave = captured.length;
+$('btn-save-vsdx').click();
+await waitFor(() => captured.length > beforeUndoSave);
+const undoBytes = Buffer.from(await captured.at(-1).arrayBuffer());
+const undoOnScreen = placementOf(undoTarget.id);
+window.document.querySelector('#svg-container').innerHTML = '';
+await dropFile(new window.File([undoBytes], 'undo-reopened.vsdx'));
+check('the saved file has what the undo left, not what it took back',
+  placementOf(undoTarget.id) === undoOnScreen,
+  `${placementOf(undoTarget.id)} vs ${undoOnScreen}`);
+check('and the outline the undo restored with it',
+  (() => {
+    const back = drawnExtent(undoInked);
+    return back && Math.abs(back.w - drawnUndone.w) < 0.01 && Math.abs(back.h - drawnUndone.h) < 0.01;
+  })(), `${JSON.stringify(drawnExtent(undoInked))} vs ${JSON.stringify(drawnUndone)}`);
+
+// --- 14b. Undo with nothing behind it, and undo that no longer fits ----------
+// The drawing that was just opened is a different one, whose pages are numbered
+// from one like everybody else's. Anything left in the history would be offered
+// as an undo of a change made to another file.
+clearError();
+await pressUndo();
+check('a freshly opened drawing has nothing to undo',
+  errorText().includes('Nothing to undo'), errorText());
+clearError();
+
+// A shape's placement cells are read against whatever it hangs off. Group it
+// after moving it and the numbers taken then describe somewhere else entirely
+// — so the entry is dropped rather than applied to the wrong frame. (A
+// different fixture: the pair in this one is a rectangle and a connector, and a
+// connector is one of the things that cannot be taken into a group at all.)
+await dropFile(new window.File([readFileSync('test-files/test4_connectors.vsdx')], 'undo-group.vsdx'));
+const undoGroupIds = translated().map(entry => entry.id);
+check('the fixture has two shapes to group and one to leave out of it',
+  undoGroupIds.length >= 3, undoGroupIds.join(','));
+const [regrouped, partner, bystander] = undoGroupIds;
+
+// The older of the two moves, on a shape the grouping does not touch. It is
+// what says the refused entry above it is *dropped* rather than left in the way:
+// one placement nobody can put back must not jam every undo behind it.
+const dragShape = async (id, dx, dy) => {
+  groupEl(id).dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+  await sleep(80);
+  const from = originOf(id);
+  const to = { x: from.x + 4 + dx, y: from.y + 4 + dy };
+  const started = await drag(id, groupEl(id), { x: from.x + 4, y: from.y + 4 }, to);
+  return { from, moved: await release(id, to, started.before) };
+};
+const bystanderDrag = await dragShape(bystander, 26, -18);
+check('a shape the grouping will not touch moves first', bystanderDrag.moved, errorText());
+const regroupedDrag = await dragShape(regrouped, 30, 24);
+check('and then the one that will be grouped moves', regroupedDrag.moved, errorText());
+
+groupEl(partner).dispatchEvent(new window.MouseEvent('click', {
+  bubbles: true, cancelable: true, ctrlKey: true }));
+await sleep(80);
+const beforeGrouping = currentSvg();
+groupEl(regrouped).dispatchEvent(new window.MouseEvent('contextmenu', {
+  bubbles: true, cancelable: true, clientX: 30, clientY: 30 }));
+await sleep(80);
+check('the menu offers Group', !$('shape-arrange-group').disabled);
+$('shape-arrange-group').click();
+check('grouping reloads the drawing', await waitFor(() => currentSvg()
+  && currentSvg() !== beforeGrouping && currentSvg().querySelector('g[data-shape-id]')), errorText());
+const placedByGrouping = placementOf(regrouped);
+check('the moved shape is still on the page, inside the new group', !!placedByGrouping,
+  topLevel().join(','));
+
+clearError();
+await pressUndo();
+check('undoing does not report failure — there was still something it could do', !errorText(),
+  errorText());
+check('the move made before the shape was grouped is left alone, not guessed at',
+  placementOf(regrouped) === placedByGrouping,
+  `${placementOf(regrouped)} vs ${placedByGrouping}`);
+check('and the undo behind it was not jammed by it',
+  Math.abs(originOf(bystander).x - bystanderDrag.from.x) < 0.01
+  && Math.abs(originOf(bystander).y - bystanderDrag.from.y) < 0.01,
+  `${JSON.stringify(originOf(bystander))} vs ${JSON.stringify(bystanderDrag.from)}`);
+
+clearError();
+await pressUndo();
+check('and with both of them spent there is nothing left to undo',
+  errorText().includes('Nothing to undo'), errorText());
+clearError();
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

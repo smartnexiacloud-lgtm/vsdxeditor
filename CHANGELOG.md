@@ -7,6 +7,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Ctrl+Z now takes back a drag, not only a layer toggle.** Moving, resizing or
+  turning a shape was the one change in the app with no way back: hiding a layer
+  had an undo, pushing a shape around did not, so Ctrl+Z answered "nothing to
+  undo on this page" at exactly the moment there was. It now does — the whole
+  selection at once, resized outlines and all — and **Ctrl+Shift+Z** (or
+  **Ctrl+Y**) puts the drag back. The shapes it moved are left selected, so an
+  undo says what it undid rather than quietly changing something off screen. It
+  shares the per-page stack the layer undo already used, so Ctrl+Z takes back
+  whichever of the two you did last, and it reaches the file rather than only
+  the canvas. A drag made before the shape was grouped, or let out of a group,
+  is not offered: a shape's position is stored against whatever it hangs off, so
+  those numbers describe somewhere else now — the app steps past that entry to
+  the one behind it instead of guessing.
 - **Switching a layer off now takes its shapes out of the lists too, and out of
   the selection.** Hiding a layer took its shapes off the canvas and left them
   everywhere else: listed in the Shape Tree, found by the shape search, offered

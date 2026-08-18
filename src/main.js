@@ -11,7 +11,7 @@ import {
   planGroupShapes, planUngroupShape, isGroupShape, inheritsFromMaster,
   planMoveShapes, planRotateShapes, planResizeShape, buildShapeIndex
 } from './shape-arrange.js';
-import { applyGeometryScale } from './geometry-resize.js';
+import { applyGeometryScale, captureGeometryScale } from './geometry-resize.js';
 import { openDiffView } from './diff-view.js';
 import { splitLayerPath, buildLayerTree, layersUnder, flattenLayerTree, groupKeys } from './layer-tree.js';
 import { EXPORT_SIZE_MODES, computeExportSize, describeExportSize, applyExportSize, svgViewBoxSize, defaultSizeMode, PDF_MAX_PX } from './export-scale.js';
@@ -1977,29 +1977,42 @@ function updateLayerBulkButtons(visibleCount) {
   layersDeselectFiltered.disabled = disabled || visibleCount === 0;
 }
 
-// ── Undoing a change of what is shown ─────────────────────────────────────
+// ── Undoing ───────────────────────────────────────────────────────────────
 // "Hide all" is one click and undoing it by hand is one click per layer, which
-// is the wrong trade. Visibility is a small, self-contained piece of state — the
-// set of hidden layer indexes — so the undo for it is a stack of those sets
-// rather than a general command history. It is per page, because restoring one
-// page's visibility onto another would be nonsense; switching pages leaves each
-// page's stack where it was.
-const MAX_VISIBILITY_UNDO = 60;
-const visibilityHistoryByPage = new Map();
+// is the wrong trade — and a shape nudged with the mouse is worse, because
+// there is no click that puts it back at all. So Ctrl+Z answers for both.
+//
+// What is stored is not a general command history: it is one entry per kind of
+// change, each holding whatever the smallest description of "what it was
+// before" happens to be. Visibility is a set of hidden layer indexes. A
+// placement — a move, a resize or a turn — is a plan in exactly the form the
+// drag itself produced, only filled with the numbers the shapes held before it.
+// Both are per page, because restoring one page's state onto another would be
+// nonsense; switching pages leaves each page's stack where it was.
+const MAX_EDIT_UNDO = 60;
+const editHistoryByPage = new Map();
 
-function visibilityHistory(pageKey = getCurrentPageKey()) {
-  if (!visibilityHistoryByPage.has(pageKey)) visibilityHistoryByPage.set(pageKey, { undo: [], redo: [] });
-  return visibilityHistoryByPage.get(pageKey);
+function editHistory(pageKey = getCurrentPageKey()) {
+  if (!editHistoryByPage.has(pageKey)) editHistoryByPage.set(pageKey, { undo: [], redo: [] });
+  return editHistoryByPage.get(pageKey);
 }
 
 // Called before the change, never after: what is recorded is what to go back to.
-function pushLayerVisibilityUndo() {
+function pushEditUndo(entry) {
   if (!currentPages.length) return;
-  const history = visibilityHistory();
-  history.undo.push(new Set(hiddenLayers));
-  if (history.undo.length > MAX_VISIBILITY_UNDO) history.undo.shift();
-  // A fresh change is a new branch; anything undone past this point is gone.
+  const history = editHistory();
+  // A fresh change is a new branch; anything undone past this point is gone —
+  // and that holds even when the change itself turns out not to be undoable.
   history.redo.length = 0;
+  // A change nothing could be read back off the drawing for is left out
+  // altogether, rather than offered as an undo that does nothing.
+  if (!entry || (entry.kind === 'placement' && !entry.updates?.length)) return;
+  history.undo.push(entry);
+  if (history.undo.length > MAX_EDIT_UNDO) history.undo.shift();
+}
+
+function pushLayerVisibilityUndo() {
+  pushEditUndo({ kind: 'visibility', hidden: new Set(hiddenLayers) });
 }
 
 function applyLayerVisibilitySnapshot(hidden) {
@@ -2009,16 +2022,89 @@ function applyLayerVisibilitySnapshot(hidden) {
   applyLayerVisibilityChange();
 }
 
-function stepLayerVisibilityHistory(back) {
+/**
+ * The plan that puts `updates` back, read off the shapes as they are right now.
+ * Null if it cannot be had — see `under` below.
+ *
+ * `index` is the flattened page the caller already built, if it has one; a drag
+ * has one from the press, and building a second on release costs what the page
+ * costs.
+ */
+function capturePlacementUpdates(updates, index = null) {
+  const page = getCurrentPage();
+  if (!page || !updates?.length) return null;
+  const byId = index || (() => {
+    const composed = composedPage(page);
+    return buildShapeIndex(composed, pageShapeBoxes(composed));
+  })();
+  const captured = [];
+  for (const update of updates) {
+    const shape = findShapeById(page.shapes || [], update.id);
+    const entry = byId.get(String(update.id));
+    if (!shape || !entry || entry.shape !== shape) return null;
+    // A shape's placement cells are read against whatever it hangs off, so the
+    // same numbers mean somewhere else once it has been grouped, or let out of
+    // a group. An entry recorded under one parent is not an answer under
+    // another, and there is no honest way to convert it — so it is dropped.
+    const under = entry.ancestors.map(String).join('/');
+    if (update.under !== undefined && update.under !== under) return null;
+
+    const cells = {};
+    for (const name of PLACEMENT_CELLS) {
+      if (!Number.isFinite(update.cells?.[name])) continue;
+      if (!Number.isFinite(shape[name])) continue;
+      cells[name] = shapeCellNumber(shape[name]);
+    }
+    if ('angle' in (update.cells || {})) cells.angle = shapeCellNumber(shape.angle || 0);
+    if ('flipX' in (update.cells || {})) cells.flipX = Boolean(shape.flipX);
+    if ('flipY' in (update.cells || {})) cells.flipY = Boolean(shape.flipY);
+    captured.push({ id: String(update.id), under, cells, geometry: captureGeometryScale(shape, update.geometry) });
+  }
+  return captured;
+}
+
+// Put a placement plan back on the drawing, by the same two routes a drag uses:
+// on the model if every part of it can be mirrored there, through the package
+// if not. The shapes it touches end up selected, so an undo says what it undid.
+function applyPlacementUpdates(updates) {
+  const page = getCurrentPage();
+  if (!page || !currentPackageEditable || !updates?.length) return false;
+  const ids = updates.map(update => String(update.id));
+  if (commitPlacementLocally(updates)) {
+    selectShapes(ids);
+    return true;
+  }
+  // The package route is asynchronous: the plan is accepted here, and runArrange
+  // is the one that says so if the bytes refuse it.
+  runArrange('Undo', async (current, base) => {
+    const { buffer } = await transformVsdxShapes(base, current.id, updates);
+    return { buffer, select: ids };
+  });
+  return true;
+}
+
+function stepEditHistory(back) {
   if (!currentPages.length) return false;
-  const history = visibilityHistory();
+  const history = editHistory();
   const from = back ? history.undo : history.redo;
   const to = back ? history.redo : history.undo;
-  if (!from.length) return false;
 
-  to.push(new Set(hiddenLayers));
-  applyLayerVisibilitySnapshot(from.pop());
-  return true;
+  // An entry that no longer describes anything on this page — its shapes have
+  // been deleted, or grouped since — is dropped rather than left to block
+  // everything behind it.
+  while (from.length) {
+    const entry = from.pop();
+    if (entry.kind === 'visibility') {
+      to.push({ kind: 'visibility', hidden: new Set(hiddenLayers) });
+      applyLayerVisibilitySnapshot(entry.hidden);
+      return true;
+    }
+    const inverse = capturePlacementUpdates(entry.updates);
+    if (!inverse || !applyPlacementUpdates(entry.updates)) continue;
+    to.push({ kind: 'placement', updates: inverse });
+    return true;
+  }
+  return false;
 }
 
 function setLayerSelected(layerIndex, selected) {
@@ -4574,6 +4660,10 @@ async function loadFile(file) {
     selectedViewIndex = null;
     hiddenShapeIdsByPage.clear();
     collapsedShapeIdsByPage.clear();
+    // This is a different drawing. Its pages are numbered from one like every
+    // other drawing's, so anything left in the history would be offered as an
+    // undo of a change made to somebody else's file.
+    editHistoryByPage.clear();
     saveVsdxButton.disabled = !currentPackageEditable;
     saveVsdxButton.textContent = currentPackageEditable
       ? `Save ${currentFileExtension.slice(1).toUpperCase()}`
@@ -5176,6 +5266,11 @@ function endShapeDrag() {
 
   const label = drag.kind === 'move' ? 'Move' : drag.kind === 'resize' ? 'Resize' : 'Rotate';
   const updates = drag.plan;
+  // Where the shapes were before this drag, taken while they are still there —
+  // this is the only moment it can be had. The index the press built says which
+  // shape hangs off which, so the release does not have to flatten the page a
+  // second time to find out.
+  pushEditUndo({ kind: 'placement', updates: capturePlacementUpdates(updates, drag.index) });
   // Letting go of a shape should cost what the shape cost, not what the file
   // costs. The package is rewritten later, if at all.
   if (commitPlacementLocally(updates)) return;
@@ -5911,9 +6006,10 @@ layerMatrixBody.addEventListener('keydown', (e) => {
   e.preventDefault();
   focusMatrixInput(nextRow, nextCol);
 });
-// Ctrl+Z / Ctrl+Shift+Z (Ctrl+Y too) take back the last change to what is
-// shown. Inside a text box the browser's own undo is the right one, and while
-// drawing Backspace already owns "take that point back", so neither is touched.
+// Ctrl+Z / Ctrl+Shift+Z (Ctrl+Y too) take back the last change — to what is
+// shown, or to where a shape was left. Inside a text box the browser's own undo
+// is the right one, and while drawing Backspace already owns "take that point
+// back", so neither is touched.
 window.addEventListener('keydown', (e) => {
   if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
   const tag = e.target?.tagName?.toLowerCase();
@@ -5927,7 +6023,7 @@ window.addEventListener('keydown', (e) => {
   if (!undo && !redo) return;
 
   e.preventDefault();
-  if (!stepLayerVisibilityHistory(undo)) {
+  if (!stepEditHistory(undo)) {
     showError(undo ? 'Nothing to undo on this page' : 'Nothing to redo on this page');
   }
 });

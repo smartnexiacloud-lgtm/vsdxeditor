@@ -134,8 +134,9 @@ with them are each occasional, so:
   click and undoing it by hand is one click per layer. **Ctrl+Shift+Z** (or
   **Ctrl+Y**) puts it back. The history is per page and covers single toggles,
   the bulk buttons, a group's checkbox, and applying a
-  [named view](#named-views-layer-presets); it is about visibility only, not
-  about edits to the drawing.
+  [named view](#named-views-layer-presets). It is the same stack that takes back
+  a [drag on the canvas](#moving-resizing-and-turning-shapes-select), so Ctrl+Z
+  always undoes whichever you did last.
 
 ### Grouping layers by a delimiter
 
@@ -461,6 +462,16 @@ part and is not something to make you wait for at the moment you let go of the
 mouse: **Save Visio**, **Export…**, **Compare…**, the shape XML editor and any
 edit that does change the structure of the document (group, ungroup, z-order,
 delete) all fold your moves in first. Nothing leaves the app without them.
+
+**Ctrl+Z** takes a drag back — a move, a resize or a turn, the whole selection
+at once, and the shapes it put back are left selected so you can see what it
+did. **Ctrl+Shift+Z** (or **Ctrl+Y**) does it again. It is the same per-page
+history the [layer visibility undo](#the-layers-sidebar) uses, so the two share
+one stack and Ctrl+Z always takes back whichever you did last. A drag made
+before the shape was grouped, or let out of a group, is not offered: a shape's
+position is stored against whatever it hangs off, so those numbers describe
+somewhere else now, and the app steps past that entry to the one behind it
+rather than guessing. Undo reaches the file, not just the screen.
 
 Dragging a group takes everything inside it, and resizing one scales its
 contents with it, the way Visio does. All of it works on a shape nested several
