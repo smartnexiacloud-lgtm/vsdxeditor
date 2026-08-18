@@ -791,51 +791,155 @@ export function connectorRenderBounds(shape, pageHeight) {
   return { minX, minY, maxX, maxY };
 }
 
-function wrapTextLines(text, maxWidthPx, fontSize) {
-  const explicitLines = String(text).split('\n').map(line => line.trim()).filter(Boolean);
-  if (explicitLines.length > 1) return explicitLines;
-  const source = explicitLines.length === 1 ? explicitLines[0] : String(text).trim();
-  if (!source) return [];
-  if (!maxWidthPx || maxWidthPx <= 0 || !fontSize) return [source];
+// Advance widths as a fraction of the em, for Calibri - the font Visio lays a
+// drawing out with unless the shape names another one. Line breaking has to
+// agree with the metrics the *file* was written against rather than with
+// whatever font the machine viewing the SVG substitutes, so this is a table and
+// not a canvas measurement: it gives the same answer on screen, in a headless
+// export and in jsdom.
+const CALIBRI_EM = {
+  ' ': 0.226, '!': 0.259, '"': 0.391, '#': 0.498, '$': 0.498, '%': 0.734, '&': 0.638,
+  "'": 0.215, '(': 0.311, ')': 0.311, '*': 0.412, '+': 0.498, ',': 0.252, '-': 0.312,
+  '.': 0.252, '/': 0.397, ':': 0.267, ';': 0.267, '<': 0.498, '=': 0.498, '>': 0.498,
+  '?': 0.412, '@': 0.834, '[': 0.311, '\\': 0.397, ']': 0.311, '^': 0.498, '_': 0.498,
+  '`': 0.301, '{': 0.311, '|': 0.397, '}': 0.311, '~': 0.498,
+  0: 0.507, 1: 0.507, 2: 0.507, 3: 0.507, 4: 0.507, 5: 0.507,
+  6: 0.507, 7: 0.507, 8: 0.507, 9: 0.507,
+  A: 0.580, B: 0.545, C: 0.530, D: 0.605, E: 0.485, F: 0.459, G: 0.626, H: 0.626,
+  I: 0.259, J: 0.290, K: 0.523, L: 0.429, M: 0.926, N: 0.666, O: 0.661, P: 0.530,
+  Q: 0.661, R: 0.548, S: 0.459, T: 0.499, U: 0.640, V: 0.581, W: 0.894, X: 0.521,
+  Y: 0.500, Z: 0.483,
+  a: 0.479, b: 0.514, c: 0.426, d: 0.514, e: 0.498, f: 0.309, g: 0.471, h: 0.514,
+  i: 0.230, j: 0.230, k: 0.457, l: 0.230, m: 0.790, n: 0.514, o: 0.511, p: 0.514,
+  q: 0.514, r: 0.342, s: 0.402, t: 0.332, u: 0.514, v: 0.459, w: 0.717, x: 0.440,
+  y: 0.459, z: 0.403
+};
+const DEFAULT_EM = 0.5;
 
-  const words = source.split(/\s+/).filter(Boolean);
-  if (words.length <= 1) return [source];
+// Every other family is approximated by scaling that table, the factor being
+// how much wider its average lowercase letter is. Close enough to put the line
+// breaks in the same places, which is all wrapping asks of a measurement.
+const FONT_EM_FACTORS = [
+  [/courier|consolas|mono/i, 1.20],
+  [/verdana|tahoma|segoe/i, 1.16],
+  [/arial|helvetica|liberation sans/i, 1.12],
+  [/times|georgia|garamond|serif/i, 1.03]
+];
 
-  const avgCharWidth = fontSize * 0.36;
-  const maxChars = Math.max(8, Math.floor(maxWidthPx / avgCharWidth));
-  if (source.length <= maxChars) return [source];
+function fontEmFactor(fontFamily, bold) {
+  let factor = bold ? 1.03 : 1;
+  const name = String(fontFamily || '');
+  for (const [pattern, scale] of FONT_EM_FACTORS) {
+    if (pattern.test(name)) {
+      factor *= scale;
+      break;
+    }
+  }
+  return factor;
+}
+
+// Width of `text` in the same units as `fontSize`. Combining marks (the accent
+// half of a decomposed "ö") advance nothing.
+function measureTextWidth(text, fontSize, factor) {
+  let em = 0;
+  for (const ch of String(text)) {
+    const code = ch.codePointAt(0);
+    if (code >= 0x0300 && code <= 0x036f) continue;
+    em += CALIBRI_EM[ch] ?? DEFAULT_EM;
+  }
+  return em * fontSize * factor;
+}
+
+// Where a line may be broken: after a run of spaces, and after a hyphen inside
+// a word. The second is what turns Visio's "Podest-höhe:" into "Podest-" and
+// "höhe:" rather than one line that runs out of its box. Each chunk carries its
+// own trailing spaces, so a chunk never *starts* with one.
+function breakChunks(text) {
+  const chunks = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const here = text[i];
+    const next = text[i + 1];
+    if (next === undefined || /\s/.test(next)) continue;
+    if (/\s/.test(here) || here === '-') {
+      chunks.push(text.slice(start, i + 1));
+      start = i + 1;
+    }
+  }
+  if (start < text.length) chunks.push(text.slice(start));
+  return chunks;
+}
+
+// A chunk with no break opportunity in it that still does not fit. Visio breaks
+// it mid-word, which is why a 4mm-wide box holding "Schalter BSK" comes out one
+// letter per line. Always at least one character, or this would not terminate.
+function hardBreak(chunk, maxWidthPx, measure) {
+  const parts = [];
+  let current = '';
+  for (const ch of chunk) {
+    if (current && measure(current + ch) > maxWidthPx) {
+      parts.push(current);
+      current = ch;
+    } else {
+      current += ch;
+    }
+  }
+  if (current) parts.push(current);
+  return parts.length ? parts : [chunk];
+}
+
+function wrapParagraph(text, maxWidthPx, measure) {
+  const lines = [];
+  let current = '';
+  const flush = () => {
+    const line = current.replace(/\s+$/, '');
+    if (line) lines.push(line);
+    current = '';
+  };
+
+  for (const chunk of breakChunks(text)) {
+    const chunkWidth = measure(chunk.replace(/\s+$/, ''));
+    if (chunkWidth > maxWidthPx) {
+      flush();
+      const parts = hardBreak(chunk, maxWidthPx, measure);
+      current = parts.pop();
+      for (const part of parts) lines.push(part);
+      continue;
+    }
+    if (!current || measure((current + chunk).replace(/\s+$/, '')) <= maxWidthPx) {
+      current += chunk;
+    } else {
+      flush();
+      current = chunk;
+    }
+  }
+  flush();
+  return lines;
+}
+
+/**
+ * The lines `text` breaks into inside a text block `maxWidthPx` wide.
+ *
+ * `maxWidthPx` is the *usable* width - the block less its left and right
+ * margins - and `fontSize` is in the same units, which for a scaled drawing
+ * means both have already been multiplied by the drawing scale.
+ *
+ * A width of 0 means "not known": the text is left on one line rather than
+ * broken at a guess.
+ */
+function wrapTextLines(text, maxWidthPx, fontSize, fontFamily, bold) {
+  const paragraphs = String(text).split('\n').map(line => line.trim()).filter(Boolean);
+  if (!paragraphs.length) return [];
+  if (!maxWidthPx || maxWidthPx <= 0 || !fontSize) return paragraphs;
+
+  const factor = fontEmFactor(fontFamily, bold);
+  const measure = (s) => measureTextWidth(s, fontSize, factor);
 
   const lines = [];
-  let current = words[0];
-  for (let i = 1; i < words.length; i++) {
-    const candidate = `${current} ${words[i]}`;
-    if (candidate.length <= maxChars) {
-      current = candidate;
-    } else {
-      lines.push(current);
-      current = words[i];
-    }
+  for (const paragraph of paragraphs) {
+    if (measure(paragraph) <= maxWidthPx) lines.push(paragraph);
+    else lines.push(...wrapParagraph(paragraph, maxWidthPx, measure));
   }
-  if (current) lines.push(current);
-
-  if (lines.length > 2 && words.length >= 4) {
-    let bestSplit = 1;
-    let bestScore = Infinity;
-    for (let i = 1; i < words.length; i++) {
-      const left = words.slice(0, i).join(' ');
-      const right = words.slice(i).join(' ');
-      const score = Math.abs(left.length - right.length);
-      if (score < bestScore) {
-        bestScore = score;
-        bestSplit = i;
-      }
-    }
-    return [
-      words.slice(0, bestSplit).join(' '),
-      words.slice(bestSplit).join(' ')
-    ];
-  }
-
   return lines;
 }
 
@@ -863,8 +967,11 @@ function appendTextNode(target, shape, svgNS, pageHeight, fontScale, isConnector
   if (shape.bold) text.setAttribute('font-weight', 'bold');
   if (shape.italic) text.setAttribute('font-style', 'italic');
 
-  const maxWidthPx = inToPx(Math.abs(shape.txtWidth || shape.width || 0));
-  const lines = wrapTextLines(xmlSafe(shape.text), maxWidthPx, fontSize);
+  // Visio wraps inside the text block less its left and right margins, and the
+  // margins are paper-sized like the font is - so both are scaled the same way.
+  const blockWidthPx = inToPx(Math.abs(shape.txtWidth || shape.width || 0));
+  const maxWidthPx = blockWidthPx > 0 ? Math.max(blockWidthPx - 2 * margin, 0) : 0;
+  const lines = wrapTextLines(xmlSafe(shape.text), maxWidthPx, fontSize, shape.fontFamily, shape.bold);
 
   // Anchor point of the text block. Visio centres the block on TxtPin with size
   // TxtWidth/TxtHeight; left/right and top/bottom alignment move the anchor to
@@ -1199,7 +1306,22 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
       }
 
       path.setAttribute('stroke-linejoin', 'round');
-      if (geo.noShow) addClass(path, 'vsdx-hidden');
+      // Visio's NoShow geometry: construction lines, a dimension's arrowheads
+      // when the dimension is switched off. Visio's own SVG export leaves them
+      // out of the file altogether; we keep them, because the shape they belong
+      // to is still in the drawing and a reader looking at one should find its
+      // geometry rather than an empty group.
+      //
+      // Kept means kept *unpainted*, and that has to hold in whatever opens the
+      // file. `display` is the only way to say so that every renderer agrees on:
+      // hiding these through the stylesheet alone left them showing in Inkscape,
+      // which does not apply CSS `visibility`, and would have shown them
+      // anywhere else too the moment a tool tidied the <style> element away. The
+      // class stays for anyone who wants to select them.
+      if (geo.noShow) {
+        addClass(path, 'vsdx-hidden');
+        path.setAttribute('display', 'none');
+      }
 
       // Arrow markers. Visio only puts them on an open subpath - a section that
       // returns to its starting point (a dimension line's extension "bracket")

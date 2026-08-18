@@ -392,6 +392,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   would draw it. **Hairlines: fit zoom** is still in the toolbar, one click away.
 
 ### Fixed
+- **Geometry Visio hides was hidden by a stylesheet rule, so Inkscape drew it
+  anyway.** A Visio drawing carries geometry marked *NoShow* — construction
+  lines, the arrowheads of a dimension that is switched off. Visio's own SVG
+  export leaves it out of the file; we keep it, so that a shape which is still
+  in the drawing is not an empty group when you go looking at it. It was kept
+  unpainted by a `.vsdx-hidden{visibility:hidden}` rule in the file's one
+  `<style>` element, which is a promise only some readers keep: browsers and
+  librsvg hid it, Inkscape — which does not apply CSS `visibility` — showed
+  every one of those triangles, and any tool that tidied the `<style>` element
+  away would have shown them everywhere. Each such path now carries
+  `display="none"` itself, which every renderer honours and which travels with
+  the element. The class stays for anyone selecting on it, and the geometry is
+  still in the file.
+- **Text ran out of the shape it belongs to instead of wrapping the way Visio
+  wrapped it.** Line breaking measured a line by counting its characters against
+  a flat guess of 0.36em each, gave every text block its full width to fill, and
+  could only break at a space — so a label Visio had laid out on three lines came
+  out on one, running past the box it was drawn in and over the drawing beside
+  it. It now measures with per-character Calibri advance widths, wraps inside the
+  text block *less its 4pt margins* as Visio does, and breaks a word that has
+  nowhere else to go: at a hyphen if it has one, otherwise mid-word — which is
+  how a 4mm-wide box gets "Schalter BSK" one letter per line, the same as the
+  drawing's own Visio SVG export. Text long enough to need four lines gets four,
+  rather than being squeezed back into two. Other fonts are measured by scaling
+  the same table, so an Arial label breaks earlier than a Calibri one.
 - **Clicking a shape that is on no layer marked no row at all.** The sidebar has
   a row for exactly that — the editor-only *Unlayered* one — but the click looked
   for a layer tag on the shape, and a shape on no layer carries none, so it gave

@@ -1,6 +1,7 @@
-// Renderer checks for the three things a scaled Visio drawing (a 1:100 floor
+// Renderer checks for the four things a scaled Visio drawing (a 1:100 floor
 // plan) exposed: hairlines disappearing, hatch fills painted as solid blocks,
-// and dashed line patterns coming out solid.
+// dashed line patterns coming out solid, and geometry Visio marks NoShow
+// turning up in editors that do not apply CSS.
 //
 // The reference values come from a Microsoft Visio 16 SVG export of such a
 // drawing: LineWeight 0 exports at 0.25pt, FillPattern 4 exports as a 6pt tile
@@ -78,7 +79,7 @@ function render(shapes, { drawingScale = 1, options = undefined } = {}) {
 const strokeOf = (svg, id) => parseFloat(svg.querySelector(`#shape${id} path`).getAttribute('stroke-width'));
 const pathOf = (svg, id) => svg.querySelector(`#shape${id} path`);
 
-console.log('── renderer: hairlines, hatch fills, line patterns ──');
+console.log('── renderer: hairlines, hatch fills, line patterns, hidden geometry ──');
 
 // 1. Hairlines. Visio's LineWeight 0 means "thinnest the device can draw" and
 // its own export uses 0.25pt; on a 1:100 drawing the coordinate space is 100×
@@ -173,6 +174,29 @@ const HAIRLINE_UNSCALED = 96 * 0.25 / 72; // 0.25pt in our 96-per-inch space
   check('dotted patterns get a round cap so the dots paint',
     pathOf(svg, 'dashdot').getAttribute('stroke-linecap') === 'round');
   check('solid lines carry no dash array', dashOf('plain') === null, dashOf('plain'));
+}
+
+// 5. Geometry Visio marks NoShow — construction lines, an arrowhead belonging
+// to a dimension that is switched off. Visio's own export drops it from the
+// file; we keep it, so it has to be hidden in a way every renderer honours.
+// A stylesheet rule is not that way: Inkscape does not apply CSS `visibility`,
+// so hiding these by class alone drew them, and any tool that tidied away the
+// <style> element would have done the same everywhere else.
+{
+  const hidden = shape('hidden', { geometry: [{ rows: squareRows, noFill: false, noLine: false, noShow: true }] });
+  const svg = render([shape('shown'), hidden]);
+
+  check('NoShow geometry is hidden by an attribute, not only by the stylesheet',
+    pathOf(svg, 'hidden').getAttribute('display') === 'none',
+    String(pathOf(svg, 'hidden').getAttribute('display')));
+  check('visible geometry is left alone', pathOf(svg, 'shown').getAttribute('display') === null,
+    String(pathOf(svg, 'shown').getAttribute('display')));
+  check('the class stays, for anyone selecting on it',
+    /\bvsdx-hidden\b/.test(pathOf(svg, 'hidden').getAttribute('class') || ''),
+    String(pathOf(svg, 'hidden').getAttribute('class')));
+  check('and the geometry itself is still in the file',
+    (pathOf(svg, 'hidden').getAttribute('d') || '').startsWith('M '),
+    String(pathOf(svg, 'hidden').getAttribute('d')).slice(0, 40));
 }
 
 console.log(`\nrender-strokes: ${pass} passed, ${fail} failed`);
