@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.5] — 2026-08-25
+
 ### Added
 - **Opening a drawing now says it is opening.** Unzipping a .vsdx, reading its
   masters and pages and drawing the first one is seconds of work on a large
@@ -794,6 +796,8 @@ First tagged release.
 - Test suites for the diff engine and diff view (`npm test`).
 - Automatic GitHub Pages deployment.
 
+[0.0.5]: https://github.com/smartnexiacloud-lgtm/vsdxeditor/releases/tag/v0.0.5
+[0.0.4]: https://github.com/smartnexiacloud-lgtm/vsdxeditor/releases/tag/v0.0.4
 [0.0.3]: https://github.com/smartnexiacloud-lgtm/vsdxeditor/releases/tag/v0.0.3
 [0.0.2]: https://github.com/smartnexiacloud-lgtm/vsdxeditor/releases/tag/v0.0.2
 [0.0.1]: https://github.com/smartnexiacloud-lgtm/vsdxeditor/releases/tag/v0.0.1

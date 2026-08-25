@@ -1,6 +1,6 @@
 {
   "name": "vsdxeditor",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "Browser-based viewer, editor, and visual differ for Visio drawings, templates, and stencils, with a deterministic git diff/merge toolchain for .vsdx files.",
   "main": "index.js",
   "scripts": {
