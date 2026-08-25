@@ -12,7 +12,8 @@
 // This test is about that metadata being right, and about it staying invisible
 // to everything that only cares what the drawing looks like.
 import { JSDOM } from 'jsdom';
-import { readFileSync, mkdtempSync, rmSync, cpSync, writeFileSync, symlinkSync, existsSync } from 'fs';
+import { readFileSync, mkdtempSync, rmSync, cpSync, writeFileSync, symlinkSync } from 'fs';
+import { localFixtures } from './local-fixtures.mjs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { pathToFileURL } from 'url';
@@ -45,12 +46,15 @@ const allShapes = (shapes, out = []) => {
 const allRows = (shape) => (shape.geometry || []).flatMap(section =>
   (section.rows || []).map(row => ({ row, section })));
 
+// The drawings in test-files/ are small and public; anything in local-fixtures/
+// is a real drawing somebody dropped there and is picked up by listing the
+// directory, so no private file is named here. See scripts/local-fixtures.mjs.
 const FIXTURES = [
   'test-files/test3_house.vsdx',
   'test-files/test4_connectors.vsdx',
   'test-files/test9_rect_and_line.vsdx',
-  'testraum mit Legende.vsdx',
-].filter(existsSync);
+  ...localFixtures(),
+];
 
 const SOURCES = new Set(['shape', 'master', 'override']);
 let sawMaster = false, sawShape = false, sawOverride = false, sawFormula = false;

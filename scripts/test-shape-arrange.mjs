@@ -7,7 +7,8 @@
 // it for real (rewriting the .vsdx and parsing it back), and checks every shape
 // is still drawn in the same place — matrix and bounding box both.
 import { JSDOM } from 'jsdom';
-import { readFileSync, mkdtempSync, rmSync, cpSync, writeFileSync, symlinkSync, existsSync } from 'fs';
+import { readFileSync, mkdtempSync, rmSync, cpSync, writeFileSync, symlinkSync } from 'fs';
+import { localFixtures } from './local-fixtures.mjs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { pathToFileURL } from 'url';
@@ -76,16 +77,15 @@ const groupable = (page) => (page.shapes || [])
 // A drift under a ten-thousandth of an inch is below anything Visio stores.
 const TOLERANCE = 1e-6;
 
-// Some of these drawings are big private samples that live beside the repo
-// rather than in it (see .gitignore), so a fixture that is not here is skipped
-// rather than failing the run: on a machine that has it the checks run, and on
-// a machine that does not — CI, a fresh clone — the rest of the suite still does.
+// The drawings in test-files/ are small and public; anything in local-fixtures/
+// is a real drawing somebody dropped there and is picked up by listing the
+// directory, so no private file is named here. See scripts/local-fixtures.mjs.
 const FIXTURES = [
   'test-files/test4_connectors.vsdx',
   'test-files/test3_house.vsdx',
   'test-files/test9_rect_and_line.vsdx',
-  'testraum mit Legende.vsdx',
-].filter(existsSync);
+  ...localFixtures(),
+];
 
 for (const fixture of FIXTURES) {
   console.log(`\narrange: ${fixture}`);

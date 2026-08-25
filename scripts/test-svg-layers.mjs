@@ -7,7 +7,8 @@
 // its layers — so the interesting checks here are not "are there groups", they
 // are "did grouping quietly restack the drawing".
 import { JSDOM } from 'jsdom';
-import { readFileSync, mkdtempSync, rmSync, cpSync, writeFileSync, symlinkSync, existsSync } from 'fs';
+import { readFileSync, mkdtempSync, rmSync, cpSync, writeFileSync, symlinkSync } from 'fs';
+import { localFixtures, noLocalFixtures } from './local-fixtures.mjs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { pathToFileURL } from 'url';
@@ -95,12 +96,10 @@ async function renderFixture(file, pageIndex = 0) {
   return { drawing, page, svg, bounds };
 }
 
-// Some of these drawings are big private samples that live beside the repo
-// rather than in it (see .gitignore), so a fixture that is not here is skipped
-// rather than failing the run: on a machine that has it the checks run, and on
-// a machine that does not — CI, a fresh clone — the rest of the suite still does.
-const LOCAL_FIXTURE = 'testraum mit Legende.vsdx';
-const FIXTURES = ['test-files/test9_rect_and_line.vsdx', LOCAL_FIXTURE].filter(existsSync);
+// The drawing in test-files/ is small and public; anything in local-fixtures/
+// is a real drawing somebody dropped there and is picked up by listing the
+// directory, so no private file is named here. See scripts/local-fixtures.mjs.
+const FIXTURES = ['test-files/test9_rect_and_line.vsdx', ...localFixtures()];
 
 for (const fixture of FIXTURES) {
   console.log(`\n  ${fixture}`);
@@ -150,15 +149,30 @@ for (const fixture of FIXTURES) {
 
 // ---------------------------------------------------------------------------
 console.log('\na hidden layer is a hidden layer, not hidden shapes');
-if (!existsSync(LOCAL_FIXTURE)) {
-  console.log(`  skipped — ${LOCAL_FIXTURE} is not in this checkout`);
+// Whichever fixture can actually demonstrate it: the check needs a page with a
+// layer that has shapes on it, and asking the drawings rather than naming one
+// means this runs on a bare checkout instead of only where a rich local sample
+// happens to sit.
+async function firstHideableFixture() {
+  for (const fixture of FIXTURES) {
+    const rendered = await renderFixture(fixture);
+    const layer = (rendered.page.layers || [])[0];
+    if (!layer) continue;
+    layer.visible = false;
+    const svg = renderPage(rendered.page, document.getElementById('stage'));
+    const hidden = [...svg.querySelectorAll('[data-shape-id][display="none"]')].length;
+    if (hidden > 0) return { fixture, layer, svg, hidden, page: rendered.page, bounds: rendered.bounds };
+    layer.visible = true; // put it back: the next fixture gets a clean look at it
+  }
+  return null;
+}
+const hideable = await firstHideableFixture();
+if (!hideable) {
+  console.log(noLocalFixtures('the hidden-layer check') + ' with a layer that has shapes on it');
 } else {
-  const { page, svg, bounds } = await renderFixture(LOCAL_FIXTURE);
-  const layer = (page.layers || [])[0];
+  const { page, bounds, layer, hidden: hiddenBefore, svg: rendered } = hideable;
+  console.log(`  using ${hideable.fixture}`);
   check('the fixture has a layer to switch off', !!layer);
-  layer.visible = false;
-  const rendered = renderPage(page, document.getElementById('stage'));
-  const hiddenBefore = [...rendered.querySelectorAll('[data-shape-id][display="none"]')].length;
   check('switching it off hides its shapes one by one', hiddenBefore > 0, String(hiddenBefore));
 
   groupSvgShapesByLayer(rendered, page, { bounds });

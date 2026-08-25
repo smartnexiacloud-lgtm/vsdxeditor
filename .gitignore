@@ -7,12 +7,23 @@ dist-portable/
 .scratch/
 *.log
 
-# Ad-hoc sample & dump files kept out of the repo
-why*.vsdx
-testraum*
-test.vsd
-test.vsdx
-test.svg
+# Real drawings and the dumps taken from them: private files that must never be
+# committed. A drawing a check should run against goes in local-fixtures/, which
+# the test scripts read by listing it, so no sample is ever named in a tracked
+# file. Anything else dropped at the repo root is ignored too — the fixtures
+# that belong to this repo all live under test-files/, so a drawing sitting at
+# the top level is somebody's own and cannot be staged by accident.
+local-fixtures/
+/*.vsd
+/*.vsdx
+/*.vsdm
+/*.vss
+/*.vssx
+/*.vssm
+/*.vst
+/*.vstx
+/*.vstm
+/*.svg
 schema.json
 dump-*.mjs
 inspect-schema.mjs

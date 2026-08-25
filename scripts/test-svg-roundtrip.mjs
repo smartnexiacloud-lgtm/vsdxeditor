@@ -62,7 +62,7 @@ const plainSvg = new XMLSerializer().serializeToString(svgEl);
 check('plain export has no embedded document', extractVsdxFromSvg(plainSvg) === null);
 
 // 3. Embed and extract.
-const name = 'testraum & <friends>.vsdx';
+const name = 'a drawing & <friends>.vsdx';
 const embeddedSvg = embedVsdxInSvg(plainSvg, original, name);
 check('embedded SVG still starts with the svg element', /<svg[\s>]/.test(embeddedSvg));
 const recovered = extractVsdxFromSvg(embeddedSvg);
