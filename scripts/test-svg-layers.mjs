@@ -7,7 +7,7 @@
 // its layers — so the interesting checks here are not "are there groups", they
 // are "did grouping quietly restack the drawing".
 import { JSDOM } from 'jsdom';
-import { readFileSync, mkdtempSync, rmSync, cpSync, writeFileSync, symlinkSync } from 'fs';
+import { readFileSync, mkdtempSync, rmSync, cpSync, writeFileSync, symlinkSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { pathToFileURL } from 'url';
@@ -95,7 +95,14 @@ async function renderFixture(file, pageIndex = 0) {
   return { drawing, page, svg, bounds };
 }
 
-for (const fixture of ['test-files/test9_rect_and_line.vsdx', 'testraum mit Legende.vsdx']) {
+// Some of these drawings are big private samples that live beside the repo
+// rather than in it (see .gitignore), so a fixture that is not here is skipped
+// rather than failing the run: on a machine that has it the checks run, and on
+// a machine that does not — CI, a fresh clone — the rest of the suite still does.
+const LOCAL_FIXTURE = 'testraum mit Legende.vsdx';
+const FIXTURES = ['test-files/test9_rect_and_line.vsdx', LOCAL_FIXTURE].filter(existsSync);
+
+for (const fixture of FIXTURES) {
   console.log(`\n  ${fixture}`);
   const { page, svg, bounds } = await renderFixture(fixture);
   const before = shapeOrder(svg);
@@ -143,8 +150,10 @@ for (const fixture of ['test-files/test9_rect_and_line.vsdx', 'testraum mit Lege
 
 // ---------------------------------------------------------------------------
 console.log('\na hidden layer is a hidden layer, not hidden shapes');
-{
-  const { page, svg, bounds } = await renderFixture('testraum mit Legende.vsdx');
+if (!existsSync(LOCAL_FIXTURE)) {
+  console.log(`  skipped — ${LOCAL_FIXTURE} is not in this checkout`);
+} else {
+  const { page, svg, bounds } = await renderFixture(LOCAL_FIXTURE);
   const layer = (page.layers || [])[0];
   check('the fixture has a layer to switch off', !!layer);
   layer.visible = false;

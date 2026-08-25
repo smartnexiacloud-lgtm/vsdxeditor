@@ -5,7 +5,7 @@
 // rotation and flips) and checks the picker's matrix against it, shape by
 // shape, on real drawings.
 import { JSDOM } from 'jsdom';
-import { readFileSync, mkdtempSync, rmSync, cpSync, writeFileSync, symlinkSync } from 'fs';
+import { readFileSync, mkdtempSync, rmSync, cpSync, writeFileSync, symlinkSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { pathToFileURL } from 'url';
@@ -68,12 +68,16 @@ function domMatrix(group) {
   return m;
 }
 
+// Some of these drawings are big private samples that live beside the repo
+// rather than in it (see .gitignore), so a fixture that is not here is skipped
+// rather than failing the run: on a machine that has it the checks run, and on
+// a machine that does not — CI, a fresh clone — the rest of the suite still does.
 const FIXTURES = [
   'test-files/test3_house.vsdx',
   'test-files/test4_connectors.vsdx',
   'test-files/test9_rect_and_line.vsdx',
   'testraum mit Legende.vsdx',
-];
+].filter(existsSync);
 
 for (const fixture of FIXTURES) {
   console.log(`\nshape picker: ${fixture}`);

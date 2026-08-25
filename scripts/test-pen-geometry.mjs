@@ -4,7 +4,7 @@
 // back at the page coordinate it was drawn at — and that the curve survives as
 // a curve all the way into the rendered SVG.
 import { JSDOM } from 'jsdom';
-import { readFileSync, mkdtempSync, rmSync, cpSync, writeFileSync, symlinkSync } from 'fs';
+import { readFileSync, mkdtempSync, rmSync, cpSync, writeFileSync, symlinkSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { pathToFileURL } from 'url';
@@ -155,15 +155,24 @@ if (shape) {
 // Visio never produces, which is the one thing we cannot verify by round-
 // tripping through our own parser. (Only @T is checked: the tool caps how many
 // distinct @N values it samples, so its Cell list is not exhaustive.)
-const observed = new Set(JSON.parse(readFileSync('schema.json', 'utf8')).schema.elements.Row.attrs.T);
-check('schema records a real Visio corpus', observed.size > 5 && observed.has('NURBSTo'),
-  [...observed].join(','));
-const emitted = new Set(
-  [...xml.matchAll(/<Row T="([^"]+)"/g), ...flat.matchAll(/<Row T="([^"]+)"/g)].map(m => m[1]));
-const unknown = [...emitted].filter(type => !observed.has(type));
-check('every emitted row type occurs in real Visio output', unknown.length === 0,
-  `unknown: ${unknown.join(',')} (emitted ${[...emitted].join(',')})`);
-check('the cubic we emit is one Visio writes itself', observed.has('RelCubBezTo'));
+//
+// That dump is taken from a private drawing and is kept out of the repo (see
+// .gitignore), so this last check runs on a machine that has one and is skipped
+// where there is none — CI, a fresh clone — rather than failing the run over a
+// file nobody there could have.
+if (!existsSync('schema.json')) {
+  console.log('  skipped — schema.json is not in this checkout (run inspect-schema.mjs to make one)');
+} else {
+  const observed = new Set(JSON.parse(readFileSync('schema.json', 'utf8')).schema.elements.Row.attrs.T);
+  check('schema records a real Visio corpus', observed.size > 5 && observed.has('NURBSTo'),
+    [...observed].join(','));
+  const emitted = new Set(
+    [...xml.matchAll(/<Row T="([^"]+)"/g), ...flat.matchAll(/<Row T="([^"]+)"/g)].map(m => m[1]));
+  const unknown = [...emitted].filter(type => !observed.has(type));
+  check('every emitted row type occurs in real Visio output', unknown.length === 0,
+    `unknown: ${unknown.join(',')} (emitted ${[...emitted].join(',')})`);
+  check('the cubic we emit is one Visio writes itself', observed.has('RelCubBezTo'));
+}
 
 // --- preview path matches what gets committed ----------------------------
 const previewD = penPathToSvgD(NODES, { dpi: 96, pageHeight: 11 });
