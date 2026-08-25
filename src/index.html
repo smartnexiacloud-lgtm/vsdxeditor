@@ -1651,6 +1651,58 @@
       box-shadow: 0 0 0 2px rgba(233, 69, 96, 0.18);
     }
 
+    /* Opening a drawing.
+       Unzipping, parsing and drawing a large .vsdx is seconds of work on the
+       thread that would otherwise be painting, so without this the window
+       simply stops answering and a load that is working looks like a hang. The
+       overlay covers the drop zone and the viewer alike, because a file can be
+       opened from either. */
+    #load-progress {
+      position: fixed;
+      inset: 0;
+      z-index: 1100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(15, 16, 36, 0.82);
+    }
+    #load-progress[hidden] { display: none; }
+    .load-card {
+      width: min(420px, 80vw);
+      background: #16213e;
+      border: 1px solid #0f3460;
+      border-radius: 10px;
+      padding: 20px 24px;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+    }
+    .load-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: #e94560;
+      margin-bottom: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .load-track {
+      height: 8px;
+      border-radius: 4px;
+      background: #0f3460;
+      overflow: hidden;
+    }
+    .load-fill {
+      height: 100%;
+      width: 0;
+      border-radius: 4px;
+      background: linear-gradient(90deg, #533483, #e94560);
+      transition: width 0.15s linear;
+    }
+    .load-stage {
+      margin-top: 10px;
+      font-size: 13px;
+      opacity: 0.75;
+    }
+
     /* Error */
     #error-box {
       display: none;
@@ -1974,6 +2026,13 @@
     </div>
   </div>
 
+  <div id="load-progress" hidden role="status" aria-live="polite">
+    <div class="load-card">
+      <div class="load-title" id="load-progress-name"></div>
+      <div class="load-track"><div class="load-fill" id="load-progress-fill"></div></div>
+      <div class="load-stage" id="load-progress-stage"></div>
+    </div>
+  </div>
   <div id="error-box"></div>
   <div id="page-tab-context-menu" class="page-tab-context-menu" role="menu">
     <button type="button" role="menuitem" data-tab-action="rename">Rename sheet…</button>

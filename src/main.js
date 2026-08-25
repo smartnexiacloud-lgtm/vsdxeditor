@@ -30,6 +30,10 @@ const strokeModeSelect = document.getElementById('stroke-mode');
 const rerenderButton = document.getElementById('btn-rerender');
 const fileName = document.getElementById('file-name');
 const errorBox = document.getElementById('error-box');
+const loadProgress = document.getElementById('load-progress');
+const loadProgressName = document.getElementById('load-progress-name');
+const loadProgressFill = document.getElementById('load-progress-fill');
+const loadProgressStage = document.getElementById('load-progress-stage');
 const layersSidebar = document.getElementById('layers-sidebar');
 const layersList = document.getElementById('layers-list');
 const layerFilterMode = document.getElementById('layer-filter-mode');
@@ -320,6 +324,98 @@ function showError(msg) {
 function showViewer() {
   dropZone.style.display = 'none';
   viewer.style.display = 'flex';
+}
+
+// ── Saying that a drawing is being opened ─────────────────────────────────
+// Opening a 20 MB drawing is seconds of unzipping, parsing and drawing, every
+// bit of it on the thread that would otherwise be painting. Nothing said so,
+// which is the worst way for it to go: the window stops answering, and a load
+// that is working looks exactly like one that has hung.
+//
+// So the parsers report where they are (src/parse-progress.js) and this draws
+// it. The part that makes it visible at all is that the report is awaited: a
+// callback that only set the width of the bar would never be seen, because the
+// thread that would paint the bar is the one inside the parse. What is handed
+// back instead is a promise resolved after a frame, which is the browser's one
+// chance to draw.
+//
+// That chance is not taken on every report - it is taken whenever the phase
+// changes, so each of them is seen even on a small file, and otherwise no more
+// often than every 80ms, so a drawing of a hundred parts is not read one
+// event-loop turn at a time.
+const LOAD_YIELD_MS = 80;
+
+// How far along the bar sits is the parser's word, not this file's guess: only
+// the parser knows the drawing has 133 masters and one page. What is here is
+// only what to call each phase. A phase a format never reports simply never
+// shows up - a .vsdx has no streams and a .vsd has no zip to unpack.
+const LOAD_PHASE_LABELS = {
+  read: 'Reading the file',
+  unzip: 'Unpacking',
+  media: 'Reading pictures',
+  streams: 'Reading streams',
+  masters: 'Reading masters',
+  pages: 'Reading pages',
+  render: 'Drawing',
+};
+
+// Reading is the long part but not the last one, so it is given the bar up to
+// here and the drawing that follows gets the rest.
+const LOAD_PARSE_SHARE = 0.9;
+
+let loadShown = 0;
+let loadPhaseKey = null;
+let loadLastYield = 0;
+
+// A turn of the event loop that comes *after* a paint. Resolving inside the
+// frame callback would only continue this same task, and what was drawn would
+// never reach the screen; the timeout that follows the frame is the first
+// moment it has.
+function afterPaint() {
+  return new Promise(resolve => {
+    if (typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => setTimeout(resolve, 0));
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
+
+function beginLoadProgress(name) {
+  loadShown = 0;
+  loadPhaseKey = null;
+  loadLastYield = Date.now();
+  loadProgressName.textContent = name || '';
+  loadProgressFill.style.width = '0%';
+  loadProgressStage.textContent = LOAD_PHASE_LABELS.read;
+  loadProgress.hidden = false;
+}
+
+function endLoadProgress() {
+  loadProgress.hidden = true;
+}
+
+async function reportLoadProgress({ stage, done = 1, total = 1, overall = 0 }) {
+  const label = LOAD_PHASE_LABELS[stage];
+  if (!label) return;
+  const changed = stage !== loadPhaseKey;
+  loadPhaseKey = stage;
+  const fraction = stage === 'render'
+    ? LOAD_PARSE_SHARE + (1 - LOAD_PARSE_SHARE) * Math.min(Math.max(done / (total || 1), 0), 1)
+    : LOAD_PARSE_SHARE * Math.min(Math.max(overall, 0), 1);
+  // Never backwards: the drawing that follows the read is measured separately
+  // from it, and a bar that retreats reads as something having gone wrong.
+  loadShown = Math.max(loadShown, fraction);
+  loadProgressFill.style.width = `${Math.round(loadShown * 100)}%`;
+  // Counting from one, because "0 of 133" is not a thing anybody is reading.
+  loadProgressStage.textContent = total > 1
+    ? `${label} — ${Math.min(done + 1, total)} of ${total}`
+    : label;
+
+  const now = Date.now();
+  if (!changed && now - loadLastYield < LOAD_YIELD_MS) return;
+  loadLastYield = now;
+  await afterPaint();
 }
 
 // Zoom used to be a plain `scale()` on the container, and scaling a composited
@@ -4616,7 +4712,19 @@ function describeSkippedSvgElements(plan) {
   return `Not imported:\n  ${shown.join('\n  ')}`;
 }
 
+// Opening a drawing is the one thing in the app long enough to look broken
+// while it works, so the bar is up for all of it - the .svg unwrap included -
+// and comes down whichever way it ends.
 async function loadFile(file) {
+  beginLoadProgress(file.name);
+  try {
+    return await openFile(file);
+  } finally {
+    endLoadProgress();
+  }
+}
+
+async function openFile(file) {
   // Each document gets its own export default: a size chosen for the last
   // drawing is meaningless for this one, and the drawing most in need of being
   // rescaled would otherwise be the one that opens on "Original size".
@@ -4645,12 +4753,20 @@ async function loadFile(file) {
   }
   try {
     fileName.textContent = file.name;
+    // Said again rather than only at the start, because an exported .svg is
+    // opened by unwrapping the drawing inside it: what is being read now is
+    // that drawing, and the bar should say which one.
+    loadProgressName.textContent = file.name;
     const buffer = await file.arrayBuffer();
     currentFileBuffer = buffer;
     pendingShapeEdits = [];
     currentFileType = format.family === 'xml' ? 'vsdx' : 'vsd';
     currentFileExtension = format.extension;
-    const result = currentFileType === 'vsd' ? await parseVsd(buffer) : await parseVsdx(buffer);
+    // The bytes are in; everything after this is the parser's to report.
+    await reportLoadProgress({ stage: 'read', done: 1, total: 1, overall: 0 });
+    const result = currentFileType === 'vsd'
+      ? await parseVsd(buffer, { onProgress: reportLoadProgress })
+      : await parseVsdx(buffer, { onProgress: reportLoadProgress });
     if (!result.pages?.length) throw new Error(`No renderable pages or masters found in ${currentFileExtension}`);
     currentPackageEditable = currentFileType === 'vsdx' && result.hasPagesPart !== false;
     currentPages = result.pages;
@@ -4698,6 +4814,9 @@ async function loadFile(file) {
     buildLayersSidebar();
     refreshViewsUI();
     resetView();
+    // Drawing a large page is a freeze of its own, and it is the last one, so
+    // it is worth saying so before it starts rather than after it ends.
+    await reportLoadProgress({ stage: 'render', done: 0, total: 1, overall: 1 });
     renderCurrentPage();
   } catch (e) {
     console.error(e);

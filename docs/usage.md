@@ -23,6 +23,18 @@ The file name appears in the toolbar and the first page renders as SVG.
 Multi-page documents show one tab per page beneath the toolbar — click a tab to
 switch pages.
 
+While the file is being read, a bar says so: it names the file, names the phase
+it is in — unpacking, pictures, masters, pages, drawing — and counts through the
+parts as it reads them. How far along it sits is worked out from how much there
+is left to read rather than from a fixed idea of what each phase is worth, so a
+drawing that is a hundred stencil masters and one page spends the bar where it
+spends the time. On a large drawing that is seconds of work, and all of
+it happens on the one thread that would otherwise be drawing the window, so
+without the bar the app looks hung at exactly the moment it is busiest. A `.vsd`
+is read nothing like a `.vsdx` and reports its own phases: streams, stencils,
+pages. The bar goes away whichever way the load ends — a file that cannot be
+read leaves you an error and the app you had, not a covered window.
+
 ## Navigating the drawing
 
 | Control | Action |

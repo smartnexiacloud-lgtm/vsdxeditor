@@ -26,10 +26,12 @@ const copy = (src, dst, reps = []) => {
   writeFileSync(join(tmp, dst), code);
 };
 copy('src/shape-inheritance.js', 'shape-inheritance.mjs');
+copy('src/parse-progress.js', 'parse-progress.mjs');
 copy('src/svg-renderer.js', 'svg-renderer.mjs');
 copy('src/svg-vsdx-embed.js', 'svg-vsdx-embed.mjs');
 copy('src/vsdx-parser.js', 'vsdx-parser.mjs', [
   [/from '\.\/shape-inheritance\.js'/g, "from './shape-inheritance.mjs'"],
+  [/from '\.\/parse-progress\.js'/g, "from './parse-progress.mjs'"],
   [/from '\.\/svg-renderer\.js'/g, "from './svg-renderer.mjs'"],
 ]);
 const imp = (n) => import(pathToFileURL(join(tmp, n)).href);

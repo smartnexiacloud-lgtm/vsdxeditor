@@ -1,5 +1,6 @@
 import CFB from 'cfb';
 import { inheritFromMaster, resolveFields } from './shape-inheritance.js';
+import { progressReporter } from './parse-progress.js';
 
 // Base Visio palette shared with the VSDX parser. Classic VSD files can store
 // layer/style colors as palette indices; resolve the common built-in table so
@@ -1975,7 +1976,11 @@ export function debugParseVsdChunks(arrayBuffer) {
   return allChunks;
 }
 
-export async function parseVsd(arrayBuffer) {
+export async function parseVsd(arrayBuffer, options = {}) {
+  // Same bargain as the VSDX side - see src/parse-progress.js. A .vsd is read
+  // out of one decompressed blob rather than a zip of parts, so the phases it
+  // can report on are its own: the streams, then the stencils, then the pages.
+  const report = progressReporter(options.onProgress);
   const u8 = new Uint8Array(arrayBuffer);
   const cfb = CFB.read(u8, { type: 'array' });
   const visioEntry = CFB.find(cfb, 'VisioDocument');
@@ -2013,18 +2018,29 @@ export async function parseVsd(arrayBuffer) {
   // Process in order if available. Pass the pointer's ORIGINAL index (not order position)
   // as ptrIdx so that SHAPE chunks can be identified by their pointer-index (libvisio's
   // MINUS_ONE id fallback scheme).
+  // Every stream is walked exactly once whichever branch is taken below, so
+  // one counter over a known total describes all three of them. The stencils
+  // and the pages are built out of what those streams yield, and neither can be
+  // counted before the walk is over, so they are given a nominal share of the
+  // whole between them - a fifth, which is about what they cost.
+  const streamTotal = order.length > 0 ? order.length + pointers.length : pointers.length;
+  const overall = (done) => Math.min(done / (streamTotal || 1), 1) * 0.8;
+  let streamDone = 0;
   if (order.length > 0) {
     for (const oi of order) {
+      await report('streams', streamDone, streamTotal, overall(streamDone++));
       if (pointers[oi]) handleStream(mainContent, pointers[oi], allChunks, 0, oi);
     }
     const seen = new Set(order);
     for (let i = 0; i < pointers.length; i++) {
+      await report('streams', streamDone, streamTotal, overall(streamDone++));
       if (!seen.has(i) && pointers[i].type !== 0) {
         handleStream(mainContent, pointers[i], allChunks, 0, i);
       }
     }
   } else {
     for (let i = 0; i < pointers.length; i++) {
+      await report('streams', streamDone, streamTotal, overall(streamDone++));
       handleStream(mainContent, pointers[i], allChunks, 0, i);
     }
   }
@@ -2057,7 +2073,10 @@ export async function parseVsd(arrayBuffer) {
   // Build the masters table: stencilPtrIdx -> Map(shapeId -> masterShape).
   const mastersMap = new Map();
   const stencilPages = [];
+  let stencilDone = 0;
   for (const [stencilPtrIdx, bucket] of stencilChunksByPage) {
+    await report('masters', stencilDone, stencilChunksByPage.size,
+      0.8 + 0.1 * (stencilDone++ / (stencilChunksByPage.size || 1)));
     const masterPages = buildShapesFromChunks(bucket, { isMasterStream: true, stylesById });
     const shapeIndex = new Map();
     function indexShapes(arr) {
@@ -2082,8 +2101,12 @@ export async function parseVsd(arrayBuffer) {
     }
   }
 
-  // Build pages with master lookup available.
+  // Build pages with master lookup available. This is one call that builds
+  // every page, so there is nothing to count inside it - the report is what
+  // says the phase has changed, and it goes out before the work starts.
+  await report('pages', 0, 1, 0.9);
   const pages = buildShapesFromChunks(regularChunks, { mastersMap, stylesById });
+  await report('pages', 1, 1, 1);
 
   // If no pages found, return empty
   if (pages.length === 0) {

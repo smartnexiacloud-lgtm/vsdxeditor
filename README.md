@@ -151,7 +151,10 @@ portable offline builds.
 ## Quick start (using the app)
 
 1. Open <https://smartnexiacloud-lgtm.github.io/vsdxeditor/app.html> (or run it locally, below).
-2. Click **Open** — or drag a `.vsd`/`.vsdx` file onto the drop zone.
+2. Click **Open** — or drag a `.vsd`/`.vsdx` file onto the drop zone. A large
+   drawing takes a few seconds to read; a bar says which phase it is in and how
+   far through the pages it has got, so a busy app is never mistaken for a hung
+   one.
 3. Use the page tabs, zoom, and **Layers** controls to explore the drawing.
 4. Right-click a shape to edit its XML or move it between layers.
 5. Click **Compare…** and pick a second `.vsdx` to diff the two visually.

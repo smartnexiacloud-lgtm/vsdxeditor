@@ -7,6 +7,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Opening a drawing now says it is opening.** Unzipping a .vsdx, reading its
+  masters and pages and drawing the first one is seconds of work on a large
+  file, and all of it happens on the one thread that would otherwise be
+  painting — so the window stopped answering and a load that was working looked
+  exactly like one that had hung. There is now a bar for it, naming the file and
+  the phase it is in (unpacking, pictures, masters, pages, drawing) and counting
+  through the parts as they are read. It is not decoration bolted on top: the
+  parsers hand progress out and *wait* for whoever is drawing it, which is the
+  only way the browser gets a turn to put it on screen mid-parse. How far along
+  the bar sits is the parser's word rather than a guess at what a phase is
+  worth, because only the parser knows a drawing is 133 masters and one page —
+  weighting the phases by eye would crawl through the part that takes the time
+  and leap through the part that does not. .vsd files
+  report their own phases — streams, stencils, pages — because they are read
+  nothing like a .vsdx. The bar goes away whichever way the load ends, so a file
+  that fails to parse leaves the app usable rather than covered.
 - **Ctrl+Z now takes back a drag, not only a layer toggle.** Moving, resizing or
   turning a shape was the one change in the app with no way back: hiding a layer
   had an undo, pushing a shape around did not, so Ctrl+Z answered "nothing to

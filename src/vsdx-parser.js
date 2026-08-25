@@ -1,8 +1,13 @@
 import JSZip from 'jszip';
 import { inheritFromMaster, resolveFields } from './shape-inheritance.js';
 import { renderPage } from './svg-renderer.js';
+import { progressReporter } from './parse-progress.js';
 
 const VISIO_MAIN_NS = 'http://schemas.microsoft.com/office/visio/2012/main';
+
+// What unpacking the zip is worth against reading what comes out of it - see
+// where the parse reports its progress, at the end of this file.
+const UNPACK_SHARE = 0.05;
 
 // MS-VSDX color table (indices 0-23). Values above 23 are resolved through
 // visio/document.xml <Colors><ColorEntry .../></Colors>.
@@ -1277,8 +1282,12 @@ function parseMasterShapes(masterDoc) {
   return { shapes, shapesById };
 }
 
-export async function parseVsdx(arrayBuffer) {
+export async function parseVsdx(arrayBuffer, options = {}) {
+  // Reading a drawing is the slowest thing this app does, so it says how far
+  // along it is if anyone asked - see src/parse-progress.js.
+  const report = progressReporter(options.onProgress);
   const zip = await JSZip.loadAsync(arrayBuffer);
+  await report('unzip', 1, 1, UNPACK_SHARE / 2);
 
   // Helper to read a file from zip
   async function readFile(path) {
@@ -1313,6 +1322,7 @@ export async function parseVsdx(arrayBuffer) {
     }
   });
   await Promise.all(mediaPromises);
+  await report('media', 1, 1, UNPACK_SHARE);
 
   // Parse relationships to find page and master files
   async function parseRels(basePath) {
@@ -1348,11 +1358,33 @@ export async function parseVsdx(arrayBuffer) {
   // Parse masters
   const masters = new Map();
   const mastersXml = await readFile('visio/masters/masters.xml');
+  const mastersDoc = mastersXml ? parseXml(mastersXml) : null;
+  const masterEls = mastersDoc ? byTag(mastersDoc, 'Master') : [];
+
+  // The page list is read here rather than where it is used, because how far
+  // along this parse is cannot be said without knowing how much of it there is,
+  // and the masters are read first. It is one more entry out of the zip.
+  const pagesXml = await readFile('visio/pages/pages.xml');
+  const pagesDoc = pagesXml ? parseXml(pagesXml) : null;
+  const pageEls = pagesDoc ? byTag(pagesDoc, 'Page') : [];
+
+  // What the whole read is worth, in parts. A master and a page are each one
+  // XML part to unpack and walk, which is near enough the same work for the two
+  // of them that counting parts beats any fixed guess at their shares: a
+  // drawing with 133 masters and one page spends most of its wait in the
+  // masters, and a drawing with 40 pages and no masters spends none of it there.
+  //
+  // Unpacking the zip and reading its pictures come before any of this is
+  // known, so they are given a nominal twentieth between them: it is the wrong
+  // number, but a bar pinned at zero through the first second of a large file
+  // is a worse one.
+  const budget = masterEls.length + pageEls.length || 1;
+  const overall = (done) => UNPACK_SHARE + (1 - UNPACK_SHARE) * Math.min(done / budget, 1);
+
   if (mastersXml) {
-    const mastersDoc = parseXml(mastersXml);
     const mastersRels = await parseRels('visio/masters/masters.xml');
-    const masterEls = byTag(mastersDoc, 'Master');
     for (let i = 0; i < masterEls.length; i++) {
+      await report('masters', i, masterEls.length, overall(i));
       const masterEl = masterEls[i];
       const id = masterEl.getAttribute('ID');
       const name = masterEl.getAttribute('Name');
@@ -1377,12 +1409,13 @@ export async function parseVsdx(arrayBuffer) {
 
   // Parse pages
   const pages = [];
-  const pagesXml = await readFile('visio/pages/pages.xml');
   if (!pagesXml) {
     // Stencil packages have masters but no drawing pages. Expose every master
     // as a synthetic, read-only page so .vssx/.vssm files are useful in the
     // viewer without pretending those pages can be written back as drawings.
+    let stencilDone = 0;
     for (const master of masters.values()) {
+      await report('pages', stencilDone, masters.size, overall(masterEls.length + stencilDone++));
       if (!master.document) continue;
       const root = master.document.documentElement;
       const pageSheet = getDirectChildren(root, 'PageSheet')[0];
@@ -1430,11 +1463,10 @@ export async function parseVsdx(arrayBuffer) {
     };
   }
 
-  const pagesDoc = parseXml(pagesXml);
   const pagesRels = await parseRels('visio/pages/pages.xml');
-  const pageEls = byTag(pagesDoc, 'Page');
 
   for (let i = 0; i < pageEls.length; i++) {
+    await report('pages', i, pageEls.length, overall(masterEls.length + i));
     const pageEl = pageEls[i];
     const pageId = pageEl.getAttribute('ID');
     const pageName = pageEl.getAttribute('Name') || `Page ${i + 1}`;
@@ -1591,6 +1623,7 @@ export async function parseVsdx(arrayBuffer) {
     });
   }
 
+  await report('pages', pageEls.length, pageEls.length, 1);
   const viewTemplates = await readViewTemplatesFromZip(zip);
   const { pages: layerTags, tagColors: layerTagColors } = await readLayerTagsFromZip(zip);
   applyLayerTagsToPages(pages, layerTags);
