@@ -1173,8 +1173,17 @@ export function shapeTransform(shape, pageHeight) {
   // Visio: shape positioned by PinX,PinY (in page coords), LocPinX,LocPinY is the pin within the shape
   const px = inToPx(shape.pinX);
   const py = inToPx(pageHeight - shape.pinY); // flip Y for page
-  const lpx = inToPx(shape.locPinX);
-  const lpy = inToPx(shape.height - shape.locPinY); // flip Y for shape-local
+  let lpx = inToPx(shape.locPinX);
+  let lpy = inToPx(shape.height - shape.locPinY); // flip Y for shape-local
+  // A flip mirrors the shape about its pin, not about its box: Visio keeps the
+  // point under LocPin where it was and turns the geometry around it. The
+  // mirror below is written as a mirror within the box, so read the pin back
+  // off the mirrored box — otherwise a shape whose LocPin is not in the middle
+  // lands (Width - 2*LocPinX) from home. That is nothing at all for the usual
+  // centred pin, and a whole shape-width for the swing arc of a door, whose
+  // LocPin sits on the hinge at (0, 0).
+  if (shape.flipX) lpx = inToPx(shape.width) - lpx;
+  if (shape.flipY) lpy = inToPx(shape.height) - lpy;
   const angleDeg = -shape.angle * (180 / Math.PI); // Visio radians, CCW → SVG CW
 
   let transform = `translate(${px - lpx}, ${py - lpy})`;

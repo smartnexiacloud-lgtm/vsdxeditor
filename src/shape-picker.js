@@ -38,8 +38,12 @@ function apply(m, x, y) {
 export function shapeLocalMatrix(shape, parentHeight) {
   const px = (shape.pinX || 0) * DPI;
   const py = (parentHeight - (shape.pinY || 0)) * DPI;
-  const lpx = (shape.locPinX || 0) * DPI;
-  const lpy = ((shape.height || 0) - (shape.locPinY || 0)) * DPI;
+  let lpx = (shape.locPinX || 0) * DPI;
+  let lpy = ((shape.height || 0) - (shape.locPinY || 0)) * DPI;
+  // A flip turns the shape about its pin, so the pin is where the mirrored box
+  // leaves it — see shapeTransform in src/svg-renderer.js.
+  if (shape.flipX) lpx = (shape.width || 0) * DPI - lpx;
+  if (shape.flipY) lpy = (shape.height || 0) * DPI - lpy;
 
   let m = [1, 0, 0, 1, px - lpx, py - lpy];
 

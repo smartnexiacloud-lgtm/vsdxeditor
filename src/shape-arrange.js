@@ -68,8 +68,11 @@ export function cellsForNewParent(worldMatrix, shape, parentMatrix, parentHeight
 
   const w = (shape.width || 0) * DPI;
   const h = (shape.height || 0) * DPI;
-  const lpx = (shape.locPinX || 0) * DPI;
-  const lpy = ((shape.height || 0) - (shape.locPinY || 0)) * DPI;
+  // The pin sits where the mirror leaves it, matching shapeTransform.
+  let lpx = (shape.locPinX || 0) * DPI;
+  let lpy = ((shape.height || 0) - (shape.locPinY || 0)) * DPI;
+  if (flipX) lpx = w - lpx;
+  if (flipY) lpy = h - lpy;
   const fx = flipX ? w : 0;
   const fy = flipY ? h : 0;
 
