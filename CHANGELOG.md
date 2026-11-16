@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.6] — 2026-11-16
+
+### Fixed
+- Use stylesheet fills when a master references theme data that is unavailable,
+  so themed callouts render with their intended fill instead of losing it.
+- Flip shapes about their pin, preserving the placement of shapes whose pin is
+  offset from the centre of their bounding box.
+
+### Changed
+- Discover optional local sample drawings by listing the fixtures directory.
+
 ## [0.0.5] — 2026-08-25
 
 ### Added
@@ -796,6 +807,7 @@ First tagged release.
 - Test suites for the diff engine and diff view (`npm test`).
 - Automatic GitHub Pages deployment.
 
+[0.0.6]: https://github.com/smartnexiacloud-lgtm/vsdxeditor/releases/tag/v0.0.6
 [0.0.5]: https://github.com/smartnexiacloud-lgtm/vsdxeditor/releases/tag/v0.0.5
 [0.0.4]: https://github.com/smartnexiacloud-lgtm/vsdxeditor/releases/tag/v0.0.4
 [0.0.3]: https://github.com/smartnexiacloud-lgtm/vsdxeditor/releases/tag/v0.0.3
