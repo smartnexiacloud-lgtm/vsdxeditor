@@ -64,6 +64,7 @@ const dropFile = async (file) => {
   Object.defineProperty(ev, 'dataTransfer', { value: { files: [file] } });
   $('drop-zone').dispatchEvent(ev);
   await waitFor(() => currentSvg() && currentSvg() !== previous);
+  $('btn-select').click();
 };
 const layerItems = () => [...window.document.querySelectorAll('#layers-list .layer-item')];
 const realLayerItems = () => layerItems().filter(item => !item.classList.contains('virtual-layer'));

@@ -177,6 +177,26 @@ export function shapesAtPoint(page, x, y, options = {}) {
   return topmostFirst(hits);
 }
 
+// Window selection contains the whole box; crossing selection accepts any
+// overlap, including an edge or a zero-height line. Coordinates are page
+// inches, Y up, just like the point picker. Callers can supply measured boxes
+// when the browser has more accurate extents than the model.
+export function shapesInRect(page, rect, options = {}) {
+  const limits = [rect?.minX, rect?.minY, rect?.maxX, rect?.maxY];
+  if (!limits.every(Number.isFinite)) return [];
+  const minX = Math.min(rect.minX, rect.maxX);
+  const maxX = Math.max(rect.minX, rect.maxX);
+  const minY = Math.min(rect.minY, rect.maxY);
+  const maxY = Math.max(rect.minY, rect.maxY);
+  return (options.entries || collectShapeBoxes(page)).filter(entry => {
+    const b = entry.bounds;
+    if (![b.minX, b.minY, b.maxX, b.maxY].every(Number.isFinite)) return false;
+    return options.mode === 'touching'
+      ? b.maxX >= minX && b.minX <= maxX && b.maxY >= minY && b.minY <= maxY
+      : b.minX >= minX && b.maxX <= maxX && b.minY >= minY && b.maxY <= maxY;
+  });
+}
+
 // Every shape whose name or text matches, in paint order. Visio's own Find
 // searches shape text, but a drawing's useful handle is often the shape *name*
 // instead ("Feeder cable"), so both count — as does `#7`, which searches by ID

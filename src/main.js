@@ -4,7 +4,7 @@ import { parseVsd } from './vsd-parser.js';
 import { renderPage, redrawShape, shapeTransform, pageCoordinateWidth, attachVisioMetadata } from './svg-renderer.js';
 import { buildPenShapeXml, penPathToSvgD } from './pen-geometry.js';
 import {
-  shapesAtPoint, shapesOnLayer, shapesOnLayers, searchShapes,
+  shapesAtPoint, shapesInRect, shapesOnLayer, shapesOnLayers, searchShapes,
   collectShapeBoxes, topmostFirst, dedupeById
 } from './shape-picker.js';
 import {
@@ -119,6 +119,10 @@ const exportPdfConsent = document.getElementById('export-pdf-consent');
 const exportStatus = document.getElementById('export-status');
 const penButton = document.getElementById('btn-pen');
 const selectButton = document.getElementById('btn-select');
+const selectionModeSelect = document.getElementById('selection-mode');
+const selectionTargetSelect = document.getElementById('selection-target');
+const isolationBar = document.getElementById('group-isolation-bar');
+const isolationPath = document.getElementById('group-isolation-path');
 const panButton = document.getElementById('btn-pan');
 const penBar = document.getElementById('pen-bar');
 const penStrokeOn = document.getElementById('pen-stroke-on');
@@ -195,7 +199,11 @@ let penActive = false;
 // no use on a drawing whose shapes cover it — and on a big one that is most of
 // it. With the hand out every press pans, shapes included, and nothing on the
 // page is picked or moved.
-let panToolActive = false;
+let panToolActive = true;
+let selectionMode = 'point';
+let areaSelection = null;
+let isolatedGroupId = null;
+let isolatedPageId = null;
 let penNodes = [];
 let penDrag = null;
 let penCursor = null;
@@ -615,6 +623,7 @@ function pageShapeBoxes(page) {
 
 function renderCurrentPage() {
   if (!currentPages.length) return;
+  cancelAreaSelection();
   invalidatePageGeometryCaches();
   const page = currentPages[currentPageIndex];
   const renderedPage = composedPage(page);
@@ -2522,6 +2531,7 @@ function promptRenameShape(shape) {
 // The group still carries data-selected, because "is this shape selected" is a
 // question the rest of the app and the tests ask of the DOM.
 function syncSelectedShapeHighlight() {
+  syncGroupIsolation();
   const svg = svgContainer.querySelector('svg');
   const page = getCurrentPage();
   svgContainer.querySelector('#shape-selection')?.remove();
@@ -2536,17 +2546,21 @@ function syncSelectedShapeHighlight() {
   // the selection itself on a large file, and there are rarely more than a
   // handful of either.
   const selected = [];
+  // A rectangle can pick thousands of objects. Resolve their DOM groups in
+  // one walk rather than running a document-wide selector for every object.
+  const groups = selectedShapeIds.size > 8 ? new Map([...svgContainer.querySelectorAll('g[data-shape-id]')]
+    .map(group => [group.getAttribute('data-shape-id'), group])) : null;
   for (const group of svgContainer.querySelectorAll('g[data-selected]')) {
     if (!isShapeSelected(group.getAttribute('data-shape-id'))) delete group.dataset.selected;
   }
   for (const id of selectedShapeIds) {
-    const group = shapeGroupElement(id);
+    const group = groups ? groups.get(String(id)) : shapeGroupElement(id);
     if (!group) continue;
     // The primary is solid, the rest dashed — with several shapes selected it
     // still has to be clear which one the Shape Tree and the layer list mean.
     const isPrimary = selectedShapeId !== null && String(id) === String(selectedShapeId);
     group.dataset.selected = isPrimary ? 'primary' : 'secondary';
-    if (entries.has(String(id))) selected.push({ entry: entries.get(String(id)), isPrimary });
+    if (entries.has(String(id))) selected.push({ entry: entries.get(String(id)), isPrimary, group });
   }
   if (!svg || !page || !selected.length) return;
 
@@ -2554,15 +2568,15 @@ function syncSelectedShapeHighlight() {
   overlay.setAttribute('id', 'shape-selection');
   overlay.setAttribute('pointer-events', 'none');
   const unit = unitsPerDevicePixel(page);
-  for (const { entry, isPrimary } of selected) {
-    appendShapeBoxDecoration(overlay, shapeOverlayBox(entry, page), unit, { solid: isPrimary });
+  for (const { entry, isPrimary, group } of selected) {
+    appendShapeBoxDecoration(overlay, shapeOverlayBox(entry, page, group), unit, { solid: isPrimary });
   }
   // Handles go on one shape at a time. Resizing several at once is a different
   // question — which of them is the box being dragged? — and rotating several
   // about one point is another, so the drag tools ask about the shape the rest
   // of the app already calls the selected one.
   const primary = selected.find(item => item.isPrimary);
-  if (primary && selected.length === 1 && currentPackageEditable && !penActive && !panToolActive
+  if (primary && selected.length === 1 && currentPackageEditable && !penActive && !panToolActive && selectionMode === 'point'
       && findShapeById(page.shapes || [], primary.entry.id)) {
     appendShapeHandles(overlay, primary.entry, unit);
   }
@@ -2674,7 +2688,9 @@ function getSelectedShapes() {
 
 // Takes any iterable of ids — callers pass an array or the Set they just built.
 function selectShapes(shapeIds, primaryId = null) {
-  const next = new Set([...(shapeIds || [])].map(String));
+  const scope = isolatedGroupId === null ? null : new Set(pageShapeBoxes(getCurrentPage())
+    .filter(entry => entry.ancestors.includes(isolatedGroupId)).map(entry => entry.id));
+  const next = new Set([...(shapeIds || [])].map(String).filter(id => !scope || scope.has(id)));
   const preferred = primaryId === null || primaryId === undefined ? null : String(primaryId);
   const nextPrimary = preferred && next.has(preferred)
     ? preferred
@@ -2988,7 +3004,8 @@ function createShapeTreeNode(shape, depth, rootShapeId, list = null) {
 // so the panel answers "what is in this drawing, and where is this shape in
 // it", and clicking a row moves the selection somewhere.
 function shapeTreeRoots() {
-  return getCurrentPage()?.shapes || [];
+  const shapes = getCurrentPage()?.shapes || [];
+  return isolatedGroupId === null ? shapes : (findShapeById(shapes, isolatedGroupId)?.subShapes || []);
 }
 
 // ── The tree and the layer that is marked ──────────────────────────────────
@@ -3048,6 +3065,7 @@ function hiddenByLayerShapeIds() {
 function applyLayerVisibilityChange() {
   applyLayerVisibility();
   dropHiddenSelection();
+  syncSelectedShapeHighlight();
   renderShapeTree();
   renderLayerObjects();
 }
@@ -3240,7 +3258,7 @@ function renderShapeTree() {
   }
   // A marked layer is a question about the drawing on its own — "what is on
   // this one?" — so the tree has something to say even with nothing selected.
-  if (selectedShapeId === null && shapeTreeLayerKey === null) {
+  if (selectedShapeId === null && shapeTreeLayerKey === null && isolatedGroupId === null) {
     shapeTreeSidebar.classList.remove('visible');
     shapeTreeCursorId = null;
     return;
@@ -3858,8 +3876,7 @@ function clearShapeHighlight() {
 // all, so ask it — getBoundingClientRect on the rendered group — and only fall
 // back to the geometric box where there is no layout to ask (headless DOMs, a
 // group that is display:none).
-function renderedShapeBox(shapeId) {
-  const group = shapeGroupElement(shapeId);
+function renderedShapeBox(shapeId, group = shapeGroupElement(shapeId)) {
   const rect = group?.getBoundingClientRect?.();
   if (!rect || !(rect.width > 0 || rect.height > 0)) return null;
   const topLeft = clientToUserUnits(rect.left, rect.top);
@@ -3886,10 +3903,10 @@ function geometricShapeBox(entry, page) {
 
 // One box per shape, padded, with a floor so a horizontal line still gets
 // something grabbable rather than a zero-height sliver.
-function shapeOverlayBox(entry, page) {
+function shapeOverlayBox(entry, page, group = shapeGroupElement(entry.id)) {
   const unit = unitsPerDevicePixel(page);
   const pad = unit * 2;
-  const box = renderedShapeBox(entry.id) || geometricShapeBox(entry, page);
+  const box = renderedShapeBox(entry.id, group) || geometricShapeBox(entry, page);
   return {
     x: box.x - pad,
     y: box.y - pad,
@@ -4045,17 +4062,17 @@ function renderLayerObjects() {
     // asked about that layer by name, and hidden or not, this is what is on it.
     const hidden = hiddenByLayerShapeIds();
     entries = searchShapes(page, shapeSearchQuery, { limit: MAX_SHAPE_SEARCH_RESULTS })
-      .filter(entry => !hidden.has(String(entry.id)));
+      .filter(entry => !hidden.has(String(entry.id)) && entryInIsolation(entry));
     const capped = entries.length >= MAX_SHAPE_SEARCH_RESULTS;
     title = `“${shapeSearchQuery.trim()}” — ${capped ? 'first ' : ''}${entries.length} match${entries.length === 1 ? '' : 'es'}`;
     emptyText = 'No shape on this page matches.';
   } else if (layerObjectsGroup) {
-    entries = shapesOnLayers(page, layerObjectsGroup.indexes, { unlayeredIndex: UNLAYERED_LAYER_INDEX });
+    entries = shapesOnLayers(page, layerObjectsGroup.indexes, { unlayeredIndex: UNLAYERED_LAYER_INDEX }).filter(entryInIsolation);
     title = `${layerObjectsGroup.path} — ${entries.length} object${entries.length === 1 ? '' : 's'}`;
     emptyText = 'No shapes on the layers in this group.';
   } else {
     const layer = getUiLayers(page).find(candidate => String(candidate.index) === String(layerObjectsIndex));
-    entries = shapesOnLayer(page, layerObjectsIndex, { unlayeredIndex: UNLAYERED_LAYER_INDEX });
+    entries = shapesOnLayer(page, layerObjectsIndex, { unlayeredIndex: UNLAYERED_LAYER_INDEX }).filter(entryInIsolation);
     title = `${layer ? getLayerDisplayName(layer) : 'Layer'} — ${entries.length} object${entries.length === 1 ? '' : 's'}`;
     emptyText = 'No shapes on this layer.';
   }
@@ -4202,7 +4219,7 @@ function shapesUnderCursor(clientX, clientY) {
   // would let a right-click select something nobody can see — and then move it.
   const hidden = hiddenByLayerShapeIds();
   const found = [...geometric, ...domShapeEntriesAt(clientX, clientY, byId)]
-    .filter(entry => !hidden.has(String(entry.id)));
+    .filter(entry => !hidden.has(String(entry.id)) && entryInIsolation(entry));
   return topmostFirst(dedupeById(found));
 }
 
@@ -4220,10 +4237,11 @@ function attachSvgLayerFocusHandlers() {
       suppressNextCanvasClick = false;
       return;
     }
-    focusLayerFromSvgElement(e.target);
     const group = e.target.closest?.('g[data-shape-id]');
     if (!group) return;
     const id = group.getAttribute('data-shape-id');
+    if (!shapeInIsolation(id)) return;
+    focusLayerFromSvgElement(e.target);
     if (e.ctrlKey || e.metaKey || e.shiftKey) toggleSelectedShape(id);
     else setSelectedShape(id);
   });
@@ -4233,7 +4251,7 @@ function attachSvgLayerFocusHandlers() {
 
     const group = e.target.closest?.('g[data-shape-id]');
     const targetId = group?.getAttribute('data-shape-id') ?? entries[0]?.id ?? null;
-    if (targetId === null) return;
+    if (targetId === null || !shapeInIsolation(targetId)) return;
 
     e.preventDefault();
     // Right-clicking inside a multiple selection acts on all of it; right-
@@ -4789,7 +4807,9 @@ async function openFile(file) {
     compareButton.disabled = currentFileType !== 'vsdx';
     // Drawing writes back into the package, so it needs an editable one.
     if (penButton) penButton.disabled = !currentPackageEditable;
-    if (selectButton) selectButton.disabled = !currentPackageEditable;
+    if (selectButton) selectButton.disabled = currentPages.length === 0;
+    if (selectionModeSelect) selectionModeSelect.disabled = currentPages.length === 0;
+    if (selectionTargetSelect) selectionTargetSelect.disabled = currentPages.length === 0;
     // Looking at a drawing is not editing it, so the hand needs only a drawing.
     if (panButton) panButton.disabled = currentPages.length === 0;
     // So does adding a layer — a read-only stencil has nowhere to put one.
@@ -4798,8 +4818,10 @@ async function openFile(file) {
     // A rename is written back into the package, so a read-only stencil has
     // nowhere to put one.
     if (shapeContextRename) shapeContextRename.style.display = currentPackageEditable ? '' : 'none';
+    isolatedGroupId = null;
+    isolatedPageId = null;
     setPenActive(false);
-    setPanToolActive(false);
+    setPanToolActive(true);
     closeLayerObjects();
     // Default to first foreground page
     const firstFg = currentPages.findIndex(p => !p.isBackground);
@@ -5061,9 +5083,16 @@ viewportEl.addEventListener('keydown', (e) => {
 });
 
 viewportEl.addEventListener('mousedown', (e) => {
+  // A new press starts a new gesture even if the previous mouse-up was outside
+  // the canvas and the browser never delivered its trailing click here.
+  suppressNextCanvasClick = false;
   if (penActive && e.button === 0) {
     e.preventDefault();
     penMouseDown(e);
+    return;
+  }
+  if (beginAreaSelection(e)) {
+    e.preventDefault();
     return;
   }
   // A press on a selected shape, or on one of its handles, drags the shape.
@@ -5087,6 +5116,10 @@ viewportEl.addEventListener('mousedown', (e) => {
 
 window.addEventListener('mousemove', (e) => {
   if (penActive) penMouseMove(e);
+  if (areaSelection) {
+    updateAreaSelection(e);
+    return;
+  }
   if (shapeDrag) {
     queueShapeDrag(e);
     return;
@@ -5098,18 +5131,127 @@ window.addEventListener('mousemove', (e) => {
   panBy((e.clientX - panStartX) - panX, (e.clientY - panStartY) - panY);
 });
 
-window.addEventListener('mouseup', () => {
+window.addEventListener('mouseup', (e) => {
+  if (areaSelection) endAreaSelection(e);
   if (penActive) penMouseUp();
   if (shapeDrag) endShapeDrag();
   isPanning = false;
-  viewportEl.style.cursor = 'grab';
+  viewportEl.style.cursor = '';
 });
 
+window.addEventListener('blur', () => cancelAreaSelection());
+viewportEl.addEventListener('wheel', () => cancelAreaSelection(), { passive: true });
+
 viewportEl.addEventListener('dblclick', (e) => {
-  if (!penActive) return;
-  e.preventDefault();
-  finishPenPathFromDoubleClick();
+  if (penActive) {
+    e.preventDefault();
+    finishPenPathFromDoubleClick();
+    return;
+  }
+  const id = e.target?.closest?.('g[data-shape-id]')?.getAttribute('data-shape-id');
+  const entry = pageShapeBoxes(getCurrentPage()).find(candidate => candidate.id === id);
+  if (!entry || !entryInIsolation(entry)) {
+    if (isolatedGroupId !== null) exitGroupIsolation();
+    return;
+  }
+  const groups = [...entry.ancestors, ...(entry.isGroup ? [entry.id] : [])];
+  const next = groups[isolatedGroupId === null ? 0 : groups.indexOf(isolatedGroupId) + 1];
+  if (next) {
+    e.preventDefault();
+    selectionMode = 'point';
+    if (selectionModeSelect) selectionModeSelect.value = selectionMode;
+    setPenActive(false);
+    setPanToolActive(false);
+    setGroupIsolation(next);
+  }
 });
+
+function entryInIsolation(entry) {
+  return isolatedGroupId === null || entry.ancestors.includes(isolatedGroupId);
+}
+
+function shapeInIsolation(id) {
+  return isolatedGroupId === null || pageShapeBoxes(getCurrentPage())
+    .some(entry => entry.id === String(id) && entryInIsolation(entry));
+}
+
+function setGroupIsolation(id) {
+  cancelAreaSelection();
+  isolatedGroupId = id === null ? null : String(id);
+  isolatedPageId = isolatedGroupId === null ? null : String(getCurrentPage()?.id);
+  clearShapeSelection();
+  clearShapeHighlight();
+  editingShapeId = null;
+  closeShapeContextMenu();
+  syncSelectedShapeHighlight();
+  renderShapeTree();
+  renderLayerObjects();
+}
+
+function exitGroupIsolation() {
+  const path = findShapePath(getCurrentPage()?.shapes || [], isolatedGroupId) || [];
+  const parent = path.slice(0, -1).reverse().find(shape => isGroupShape(shape));
+  setGroupIsolation(parent?.id ?? null);
+}
+
+// Fade the whole drawing, then draw the active group above the white wash.
+// Its original stays in place for hit testing and edits. The visual copy has
+// no shape IDs and never participates in picking or export.
+function syncGroupIsolation() {
+  const svg = svgContainer.querySelector('svg');
+  svg?.querySelector('#group-isolation-shade')?.remove();
+  const path = isolatedGroupId === null ? null
+    : findShapePath(getCurrentPage()?.shapes || [], isolatedGroupId);
+  if (!path || String(getCurrentPage()?.id) !== isolatedPageId) {
+    isolatedGroupId = null;
+    isolatedPageId = null;
+  }
+  if (isolationBar) isolationBar.hidden = isolatedGroupId === null;
+  if (isolationPath) isolationPath.replaceChildren();
+  if (isolatedGroupId === null || !svg) return;
+
+  const breadcrumb = (label, id) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = label;
+    button.addEventListener('click', () => setGroupIsolation(id));
+    isolationPath?.appendChild(button);
+  };
+  breadcrumb('Drawing', null);
+  for (const shape of path.filter(shape => isGroupShape(shape))) {
+    const separator = document.createElement('span');
+    separator.textContent = '›';
+    isolationPath?.appendChild(separator);
+    breadcrumb(getShapeLabel(shape), String(shape.id));
+  }
+
+  const original = shapeGroupElement(isolatedGroupId);
+  if (!original) return;
+  const ns = 'http://www.w3.org/2000/svg';
+  const overlay = document.createElementNS(ns, 'g');
+  overlay.id = 'group-isolation-shade';
+  overlay.setAttribute('pointer-events', 'none');
+  const wash = document.createElementNS(ns, 'rect');
+  const viewBox = svg.getAttribute('viewBox')?.trim().split(/[\s,]+/).map(Number);
+  if (!viewBox || viewBox.length !== 4) return;
+  for (const [name, value] of [['x', viewBox[0]], ['y', viewBox[1]], ['width', viewBox[2]], ['height', viewBox[3]]]) {
+    wash.setAttribute(name, String(value));
+  }
+  wash.setAttribute('fill', '#fff');
+  wash.setAttribute('fill-opacity', '0.82');
+  overlay.appendChild(wash);
+  let copy = original.cloneNode(true);
+  for (let parent = original.parentElement; parent && parent !== svg; parent = parent.parentElement) {
+    const wrapper = parent.cloneNode(false);
+    wrapper.appendChild(copy);
+    copy = wrapper;
+  }
+  for (const node of [copy, ...copy.querySelectorAll('*')]) {
+    for (const attr of ['id', 'data-shape-id', 'data-selected', 'data-layers']) node.removeAttribute(attr);
+  }
+  overlay.appendChild(copy);
+  svg.appendChild(overlay);
+}
 
 // --- Pen tool -------------------------------------------------------------
 // Click places a corner, drag pulls a bezier handle out of the point just
@@ -5178,6 +5320,91 @@ function clientToPageUnits(clientX, clientY) {
   if (!page || !local) return null;
   const dpi = getPageDpi(page);
   return { x: local.x / dpi, y: page.height - local.y / dpi };
+}
+
+function cancelAreaSelection() {
+  if (areaSelection?.moved) suppressNextCanvasClick = true;
+  areaSelection = null;
+  document.getElementById('area-selection')?.remove();
+}
+
+function beginAreaSelection(e) {
+  if (e.button !== 0 || penActive || panToolActive || selectionMode === 'point') return false;
+  const start = clientToPageUnits(e.clientX, e.clientY);
+  if (!start) return false;
+  cancelAreaSelection();
+  viewportEl.focus?.({ preventScroll: true });
+  areaSelection = {
+    start, clientX: e.clientX, clientY: e.clientY, moved: false,
+    page: getCurrentPage(), mode: selectionMode,
+    additive: e.ctrlKey || e.metaKey || e.shiftKey
+  };
+  return true;
+}
+
+function updateAreaSelection(e) {
+  const drag = areaSelection;
+  if (!drag) return;
+  if (Math.hypot(e.clientX - drag.clientX, e.clientY - drag.clientY) < DRAG_SLOP_PX && !drag.moved) return;
+  drag.moved = true;
+  let overlay = document.getElementById('area-selection');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'area-selection';
+    overlay.dataset.mode = drag.mode;
+    overlay.setAttribute('aria-hidden', 'true');
+    viewportEl.appendChild(overlay);
+  }
+  const viewport = viewportEl.getBoundingClientRect();
+  overlay.style.left = `${Math.min(drag.clientX, e.clientX) - viewport.left}px`;
+  overlay.style.top = `${Math.min(drag.clientY, e.clientY) - viewport.top}px`;
+  overlay.style.width = `${Math.abs(e.clientX - drag.clientX)}px`;
+  overlay.style.height = `${Math.abs(e.clientY - drag.clientY)}px`;
+}
+
+function endAreaSelection(e) {
+  updateAreaSelection(e);
+  const drag = areaSelection;
+  const end = clientToPageUnits(e.clientX, e.clientY);
+  cancelAreaSelection();
+  if (!drag?.moved || !end || drag.page !== getCurrentPage()) return;
+
+  const page = drag.page;
+  const hidden = new Set([...hiddenByLayerShapeIds(), ...getHiddenShapeIds()]);
+  const dpi = getPageDpi(page);
+  const groups = new Map([...svgContainer.querySelectorAll('g[data-shape-id]')]
+    .map(group => [group.getAttribute('data-shape-id'), group]));
+  const entries = pageShapeBoxes(page)
+    .filter(entry => !hidden.has(entry.id) && !entry.ancestors.some(id => hidden.has(id)))
+    .map(entry => {
+      const box = renderedShapeBox(entry.id, groups.get(entry.id));
+      return { ...entry, bounds: box ? {
+        minX: box.x / dpi, maxX: (box.x + box.w) / dpi,
+        minY: page.height - (box.y + box.h) / dpi, maxY: page.height - box.y / dpi
+      } : { ...entry.bounds } };
+    });
+  // Children can draw outside a group's Width/Height box. The window must
+  // enclose that content too, including in DOMs with no layout measurements.
+  const byId = new Map(entries.map(entry => [entry.id, entry]));
+  for (const entry of [...entries].reverse()) {
+    const parent = byId.get(entry.ancestors.at(-1));
+    if (!parent) continue;
+    parent.bounds.minX = Math.min(parent.bounds.minX, entry.bounds.minX);
+    parent.bounds.minY = Math.min(parent.bounds.minY, entry.bounds.minY);
+    parent.bounds.maxX = Math.max(parent.bounds.maxX, entry.bounds.maxX);
+    parent.bounds.maxY = Math.max(parent.bounds.maxY, entry.bounds.maxY);
+  }
+  const hits = shapesInRect(page, {
+    minX: drag.start.x, minY: drag.start.y, maxX: end.x, maxY: end.y
+  }, { entries: entries.filter(entry => entryInIsolation(entry) && (
+    selectionTargetSelect?.value === 'groups'
+      ? (entry.ancestors.at(-1) ?? null) === isolatedGroupId
+      : !entry.isGroup
+  )), mode: drag.mode });
+  // A selected group already includes its children. Selecting both would make
+  // later moves and grouping act on the same part of the drawing twice.
+  const matched = new Set(drag.additive ? [...selectedShapeIds, ...hits.map(entry => entry.id)] : hits.map(entry => entry.id));
+  selectShapes([...matched].filter(id => !byId.get(id)?.ancestors.some(parent => matched.has(parent))));
 }
 
 // ---------------------------------------------------------------------------
@@ -5269,7 +5496,7 @@ function beginShapeDrag(e) {
   const id = group?.getAttribute('data-shape-id');
   // Shapes drawn from the background page belong to another page and are not
   // this page's to move — the same rule the layer list and Delete both follow.
-  if (!id || !findShapeById(page.shapes || [], id)) return false;
+  if (!id || !shapeInIsolation(id) || !findShapeById(page.shapes || [], id)) return false;
   // Pressing something not yet selected selects it first, so a shape can be
   // grabbed and moved in one gesture rather than needing a click to arm it.
   if (!isShapeSelected(id)) setSelectedShape(id);
@@ -5426,16 +5653,17 @@ function updatePenBarState() {
   }
 }
 
-// One tool at a time, and the toolbar says which. Select is not a mode with any
-// state of its own — it is what the canvas does when neither of the others is
-// holding it — but calling it nothing at all left people looking for it.
+// Pan is the default. Select remembers whether clicks move shapes or drags
+// draw a contained/touching selection window.
 function syncToolButtons() {
   penButton?.classList.toggle('active', penActive);
   panButton?.classList.toggle('active', panToolActive);
   selectButton?.classList.toggle('active', !penActive && !panToolActive);
+  viewportEl.classList.toggle('area-select-active', !penActive && !panToolActive && selectionMode !== 'point');
 }
 
 function setPanToolActive(active) {
+  cancelAreaSelection();
   // Panning is a way of looking at a drawing rather than a way of changing one,
   // so the hand works on a read-only file as well as an editable one.
   const next = Boolean(active) && currentPages.length > 0;
@@ -5447,7 +5675,11 @@ function setPanToolActive(active) {
 }
 
 function setPenActive(active) {
+  cancelAreaSelection();
   const next = Boolean(active) && currentPackageEditable && currentPages.length > 0;
+  // New pen paths belong to the page. Leaving isolation visibly before drawing
+  // keeps a new path from silently landing outside the group being edited.
+  if (next && isolatedGroupId !== null) setGroupIsolation(null);
   penActive = next;
   if (next) panToolActive = false;
   syncToolButtons();
@@ -5699,6 +5931,15 @@ shapeSearchInput?.addEventListener('keydown', (e) => {
 });
 
 selectButton?.addEventListener('click', () => { setPenActive(false); setPanToolActive(false); });
+selectionModeSelect?.addEventListener('change', () => {
+  selectionMode = selectionModeSelect.value;
+  setPenActive(false);
+  setPanToolActive(false);
+});
+selectionTargetSelect?.addEventListener('change', () => {
+  cancelAreaSelection();
+});
+document.getElementById('group-isolation-exit')?.addEventListener('click', exitGroupIsolation);
 panButton?.addEventListener('click', () => setPanToolActive(!panToolActive));
 penButton?.addEventListener('click', () => setPenActive(!penActive));
 penFinishButton?.addEventListener('click', () => commitPenPath());
@@ -6171,6 +6412,17 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
+  if (e.key === 'Escape' && areaSelection && !isTypingTarget(e.target)) {
+    e.preventDefault();
+    cancelAreaSelection();
+    return;
+  }
+  if (e.key === 'Escape' && isolatedGroupId !== null && !isTypingTarget(e.target)) {
+    e.preventDefault();
+    exitGroupIsolation();
+    return;
+  }
+
   // Escape lets the selection go. Everything else in the app closes on Escape,
   // and the selection was the one thing on screen with no way out but clicking
   // bare canvas — which on a drawing whose shapes cover the page there may not
@@ -6288,6 +6540,7 @@ function buildExportSvg(size) {
   exported.querySelector('#shape-highlight')?.remove();
   exported.querySelector('#shape-selection')?.remove();
   exported.querySelector('#shape-drag-preview')?.remove();
+  exported.querySelector('#group-isolation-shade')?.remove();
   // The canvas is rendered without the Visio property blocks, for speed. A file
   // is not, so they go back on here — from the model the canvas was drawn from,
   // matched to the shapes by id.

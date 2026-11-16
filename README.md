@@ -109,8 +109,12 @@ portable offline builds.
 - **Per-shape editing** — right-click a shape to *Rename* it (its Visio
   `Name`/`NameU`, so the Shape Tree and diffs call it `Feeder cable` rather than
   `Shape.7`), *Edit XML*, or send it to a different layer.
-- **Select several shapes and arrange them** — ctrl-click (or shift-click) to
-  add shapes to the selection, then right-click for **Group**, **Ungroup**,
+- **Select several shapes and arrange them** — use **Select** to click shapes
+  or drag an area that fully contains or touches them. Choose individual
+  elements inside groups or groups as whole objects. Double-click a group to
+  work inside it while the rest of the drawing fades out. Drawings open in
+  **Pan** mode. Ctrl-click (or shift-click) adds shapes to the selection;
+  right-click for **Group**, **Ungroup**,
   **Bring to front**, **Send to back** and **Delete** (or press **Delete** /
   **Backspace**; deleting a group takes what is inside it, and unglues any
   connector left pointing at nothing). **Esc** lets the whole selection go, which

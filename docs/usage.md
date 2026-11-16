@@ -44,7 +44,7 @@ read leaves you an error and the app you had, not a covered window.
 | **Ctrl** / **⌘** + wheel, or a trackpad pinch | Zoom about the pointer |
 | **+** / **−** | Zoom in / out about the middle of the window |
 | **Fit** | Scale the page to fit the window — including *up*, for a drawing smaller than the window |
-| Drag on empty canvas | Pan (dragging a *selected* shape moves it instead — see [Select](#moving-resizing-and-turning-shapes-select)) |
+| Drag on the canvas | Pan by default. In **Select**, **Click / move** moves shapes and the area modes draw a selection rectangle — see [Select](#moving-resizing-and-turning-shapes-select). |
 | **✋ Pan** in the toolbar, then drag anywhere | Pan, shapes included — nothing on the page is picked or moved while it is out. Click **Select** to go back to editing. |
 | Scrollbars | Drag a thumb, or click its track to jump |
 | **←** **↑** **→** **↓** | Pan a step; hold **Shift** for a bigger one |
@@ -427,9 +427,9 @@ re-saved in the real Microsoft Visio desktop app — see
 
 ### Moving, resizing and turning shapes (Select)
 
-**Select** is what the canvas does whenever neither of the other two tools —
-**Pen** and **Pan** — is out. Click a shape to pick it, and it grows eight
-square handles and a round grip above it:
+Drawings open with **Pan** active, so dragging anywhere moves the view. Click
+**Select** and choose **Click / move** from its dropdown to edit shapes. Click
+a shape to pick it, and it grows eight square handles and a round grip above it:
 
 | Drag | What happens |
 | --- | --- |
@@ -505,6 +505,39 @@ not built yet either; the pen writes geometry but nothing edits it afterwards
 except **Edit XML**.
 
 ### Selecting several shapes, and arranging them
+
+Choose an area mode from the dropdown beside **Select**, then drag a rectangle
+in any direction:
+
+| Mode | What gets selected |
+| --- | --- |
+| **Area: fully contained** | Shapes entirely inside the rectangle. A shape that sticks outside is excluded. |
+| **Area: touching** | Shapes that overlap or touch the rectangle, even partially. |
+
+The second dropdown chooses **Individual elements** (the default), which
+searches recursively inside groups, or **Groups as objects**, which treats
+groups at the current level as whole objects. Individual elements avoids
+selecting an enormous group just because the rectangle touches one small part
+of it. Hidden shapes are excluded in both modes.
+
+Hold **Ctrl**, **Command**, or **Shift** when starting an area selection to add
+to the existing selection. **Escape** cancels a rectangle being drawn. Choose
+**Click / move** to move selected shapes, or **Pan** to move the view.
+
+#### Editing inside a group
+
+Double-click a group or one of its parts to enter the group. Everything outside
+it fades toward white; only the group's contents can be selected or moved, and
+the Shape Tree lists those contents. Area selection uses the same boundary.
+Double-click a nested group to go further inside.
+
+The breadcrumb above the canvas shows where you are. **Exit group** or
+**Escape** goes up one level; **Drawing** returns to the whole page. Opening a
+different drawing also exits isolation. Choosing **Pen** returns to the whole
+page before drawing a new shape. Exporting keeps the complete drawing with its
+normal appearance.
+
+#### Picking individual shapes
 
 **Ctrl-click** (⌘-click on a Mac) or **shift-click** a shape to add it to the
 selection, and again to drop it; a plain click selects just that one. Selected

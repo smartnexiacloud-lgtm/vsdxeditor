@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Rectangle selection with fully contained and touching modes, plus a choice
+  between individual elements inside groups and groups as whole objects.
+- Group isolation: double-click to work inside a group while the rest of the
+  drawing fades toward white. Nested groups have breadcrumbs; Escape or
+  **Exit group** goes up one level.
+
+### Changed
+- Open drawings in Pan mode by default. Use the selection dropdown to switch
+  to clicking/moving shapes or selecting an area.
+
 ## [0.0.6] — 2026-11-16
 
 ### Fixed

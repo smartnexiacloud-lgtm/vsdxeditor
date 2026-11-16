@@ -68,6 +68,7 @@ const dropFile = async (file) => {
   $('drop-zone').dispatchEvent(ev);
   await waitFor(() => currentSvg() && currentSvg() !== previous
     && currentSvg().querySelector('g[data-shape-id]'));
+  $('btn-select').click();
 };
 
 const treeRows = () => [...window.document.querySelectorAll('#shape-tree-body .shape-tree-node')];

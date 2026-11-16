@@ -212,6 +212,7 @@ if (doomed) {
         orphanIds.join(' | '));
       if (orphanGroup) {
         const text = orphanGroup.querySelector('text, tspan');
+        $('btn-select').click();
         orphanGroup.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
         await sleep(60);
         check('clicking it marks the Unlayered row',

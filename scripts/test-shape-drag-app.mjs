@@ -75,6 +75,7 @@ const dropFile = async (file) => {
   $('drop-zone').dispatchEvent(ev);
   await waitFor(() => currentSvg() && currentSvg() !== previous
     && currentSvg().querySelector('g[data-shape-id]'));
+  $('btn-select').click();
 };
 
 // jsdom has no layout, so the app falls back to the viewBox/pan/zoom mapping:

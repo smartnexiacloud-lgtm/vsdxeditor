@@ -73,6 +73,7 @@ const dropFile = async (file) => {
   Object.defineProperty(ev, 'dataTransfer', { value: { files: [file] } });
   $('drop-zone').dispatchEvent(ev);
   await waitFor(() => currentSvg() && currentSvg() !== previous);
+  $('btn-select').click();
 };
 
 const errorText = () => $('error-box')?.textContent.trim() || '';

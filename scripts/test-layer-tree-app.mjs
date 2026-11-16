@@ -455,6 +455,7 @@ if (drawnLayer) {
   check('with every group folded, the layer has no row to point at',
     !layerItem(drawnLayer), rowOrder().join(' '));
 
+  $('btn-select').click();
   onLayer.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
   await sleep(80);
   check('clicking the shape unfolds the groups its layer is buried under',

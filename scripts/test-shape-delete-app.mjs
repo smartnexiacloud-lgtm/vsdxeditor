@@ -76,6 +76,7 @@ const dropFile = async (file) => {
   $('drop-zone').dispatchEvent(ev);
   await waitFor(() => currentSvg() && currentSvg() !== previous
     && currentSvg().querySelector('g[data-shape-id]'));
+  $('btn-select').click();
 };
 
 const errorText = () => $('error-box')?.textContent.trim() || '';

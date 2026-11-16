@@ -63,6 +63,7 @@
     /* Toolbar */
     .toolbar {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       gap: 8px;
       padding: 8px 16px;
@@ -102,7 +103,7 @@
       margin-left: 8px;
       color: #e94560;
     }
-    #stroke-mode {
+    #stroke-mode, #selection-mode, #selection-target {
       background: #0f3460;
       color: #e0e0e0;
       border: 1px solid #1b4b8a;
@@ -794,6 +795,39 @@
       margin-left: auto;
     }
     #viewport.pen-active { cursor: crosshair; }
+    #viewport.area-select-active { cursor: crosshair; }
+    #area-selection {
+      position: absolute;
+      pointer-events: none;
+      z-index: 4;
+      box-sizing: border-box;
+      border: 1px solid #4a9eff;
+      background: rgba(74, 158, 255, 0.12);
+    }
+    #area-selection[data-mode="touching"] {
+      border-style: dashed;
+      border-color: #52cf9a;
+      background: rgba(82, 207, 154, 0.12);
+    }
+    #group-isolation-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 16px;
+      background: #16213e;
+      font-size: 13px;
+    }
+    #group-isolation-bar[hidden] { display: none; }
+    #group-isolation-path { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    #group-isolation-bar button {
+      color: #c9e2ff;
+      background: #0f3460;
+      border: 1px solid #1b4b8a;
+      border-radius: 4px;
+      padding: 4px 8px;
+      cursor: pointer;
+    }
 
     .layer-objects {
       margin: 8px 10px 0;
@@ -1790,8 +1824,17 @@
       <button id="btn-save-vsdx" disabled>Save Visio</button>
       <button id="btn-export" title="Export this page as SVG or PDF, at original or rescaled size">Export&hellip;</button>
       <button id="btn-compare" disabled>Compare…</button>
-      <button id="btn-select" class="active" disabled title="Select: click a shape to pick it, drag it to move it, drag a handle to resize it or the grip to turn it. Delete removes it.">&#10021; Select</button>
-      <button id="btn-pan" disabled title="Pan: drag anywhere to move the drawing about, shapes included. Nothing on the page is picked or moved while this is out.">&#9995;&#65038; Pan</button>
+      <button id="btn-select" disabled title="Select using the mode in the dropdown. Click / move picks and moves shapes; area modes select with a rectangle.">&#10021; Select</button>
+      <select id="selection-mode" aria-label="Selection mode" disabled title="Choose how to select. Hold Ctrl, Command, or Shift while dragging to add to the selection.">
+        <option value="point">Click / move</option>
+        <option value="contained">Area: fully contained</option>
+        <option value="touching">Area: touching</option>
+      </select>
+      <select id="selection-target" aria-label="Area selection targets" disabled title="Individual elements searches inside every group. Groups as objects selects whole groups at the current level.">
+        <option value="elements">Individual elements</option>
+        <option value="groups">Groups as objects</option>
+      </select>
+      <button id="btn-pan" class="active" disabled title="Pan: drag anywhere to move the drawing about, shapes included. Nothing on the page is picked or moved while this is out.">&#9995;&#65038; Pan</button>
       <button id="btn-pen" disabled title="Pen: click to add a corner, drag to pull a curve. Enter or double-click finishes, Esc cancels.">&#9998; Pen</button>
       <select id="stroke-mode" aria-label="Thin line rendering" title="How thin lines (Visio hairlines) are drawn">
         <option value="true" selected>Hairlines: true size</option>
@@ -1800,6 +1843,11 @@
       <button id="btn-rerender" title="Re-render this page for the current zoom">&#8635; Update</button>
       <span id="zoom-info">100%</span>
       <a id="link-help" href="usage.html" target="_blank" rel="noopener">Help</a>
+    </div>
+    <div id="group-isolation-bar" hidden aria-label="Group isolation">
+      <span>Editing group:</span>
+      <nav id="group-isolation-path" aria-label="Group breadcrumb"></nav>
+      <button id="group-isolation-exit" type="button" title="Leave this group (Escape)">Exit group</button>
     </div>
     <div class="pen-bar" id="pen-bar" hidden>
       <span class="pen-bar-title">Pen</span>

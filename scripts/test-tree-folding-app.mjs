@@ -65,6 +65,7 @@ Object.defineProperty(ev, 'dataTransfer', {
 });
 $('drop-zone').dispatchEvent(ev);
 await waitFor(() => currentSvg());
+$('btn-select').click();
 check('the drawing opened', !!currentSvg(), $('error-box')?.textContent || '');
 
 // ── Shape Tree ───────────────────────────────────────────────────────────────
