@@ -248,26 +248,46 @@ function getVisioFormat(name) {
 // the re-parse reverts it — which is why a hand-edit of one shape's XML used to
 // reset the layers. The prune paths already fold this in themselves
 // (patchVsdxLayerPermissions); this is the same step for the edit paths.
-// Placements made on the drawing that the package bytes have not been told
-// about yet — see commitPlacementLocally. Rewriting a 20 MB .vsdx to nudge one
-// shape is work nobody asked for at the moment they let go of the mouse, so it
+// Placements and deletions made on the drawing that the package bytes have
+// not been told about yet. Rebuilding and parsing a large file for each edit
 // waits until something actually wants the bytes.
 //
 // Every read of currentFileBuffer therefore goes through here first.
 let pendingShapeEdits = [];
+let arrangeBusy = false;
+let packageFlush = null;
+let packageGeneration = 0;
 
 async function packageBuffer() {
+  if (packageFlush) {
+    await packageFlush;
+    return packageBuffer();
+  }
   if (!currentFileBuffer || !pendingShapeEdits.length) return currentFileBuffer;
-  // Taken off the queue before the first await: a second caller arriving while
-  // the zip is being rebuilt must not write the same edits in twice.
   const edits = pendingShapeEdits;
   pendingShapeEdits = [];
-  let buffer = currentFileBuffer;
-  for (const edit of edits) {
-    ({ buffer } = await transformVsdxShapes(buffer, edit.pageId, edit.updates));
-  }
-  currentFileBuffer = buffer;
-  return buffer;
+  const generation = packageGeneration;
+  packageFlush = (async () => {
+    let buffer = currentFileBuffer;
+    try {
+      for (const edit of edits) {
+        ({ buffer } = edit.kind === 'delete'
+          ? await deleteVsdxShapes(buffer, edit.pageId, edit.shapeIds)
+          : await transformVsdxShapes(buffer, edit.pageId, edit.updates));
+      }
+      // A file opened while this was being saved is a different document.
+      if (generation === packageGeneration) currentFileBuffer = buffer;
+      return buffer;
+    } catch (error) {
+      // A failed save must not quietly discard edits. None of the temporary
+      // buffers have replaced the original yet, so the whole batch can retry.
+      if (generation === packageGeneration) pendingShapeEdits.unshift(...edits);
+      throw error;
+    } finally {
+      packageFlush = null;
+    }
+  })();
+  return packageFlush;
 }
 
 async function getPackageBufferWithPendingEdits() {
@@ -278,16 +298,18 @@ async function getPackageBufferWithPendingEdits() {
   return saveVsdxLayerPermissions(buffer, currentPages, viewTemplates, layerTagColors, currentLayerTreeSettings());
 }
 
-async function applyUpdatedVsdxBuffer(buffer, pageId = null) {
+async function applyUpdatedVsdxBuffer(buffer, pageId = null, options = {}) {
   // The "Unlayered" row is an editor-only construct with nowhere to live in the
   // file, so it cannot survive the round-trip above; carry it across by hand.
   const unlayeredHidden = hiddenLayers.has(UNLAYERED_LAYER_INDEX);
-  const result = await parseVsdx(buffer);
+  const result = await parseVsdx(buffer, { onProgress: options.onProgress });
+  await options.beforeRender?.();
   currentFileBuffer = buffer;
-  // Whatever the model was carrying, this is the model now. A queued placement
+  // Whatever the model was carrying, this is the model now. A queued edit
   // that did not make it into these bytes describes a page that no longer
   // exists in memory, so it is dropped rather than replayed onto a stranger.
   pendingShapeEdits = [];
+  packageGeneration++;
   currentPages = result.pages;
   layerTagColors = { ...(result.layerTagColors || {}) };
   hiddenShapeIdsByPage.clear();
@@ -394,6 +416,7 @@ function beginLoadProgress(name) {
   loadPhaseKey = null;
   loadLastYield = Date.now();
   loadProgressName.textContent = name || '';
+  loadProgress.classList.remove('indeterminate');
   loadProgressFill.style.width = '0%';
   loadProgressStage.textContent = LOAD_PHASE_LABELS.read;
   loadProgress.hidden = false;
@@ -401,6 +424,7 @@ function beginLoadProgress(name) {
 
 function endLoadProgress() {
   loadProgress.hidden = true;
+  loadProgress.classList.remove('indeterminate');
 }
 
 async function reportLoadProgress({ stage, done = 1, total = 1, overall = 0 }) {
@@ -2809,15 +2833,12 @@ function setShapeTreeFolding(mode) {
 // The row's ✕. It used to splice the shape out of the in-memory page only,
 // which looked like a delete and then quietly came back on Save VSDX, because
 // saving patches the original package and simply skips shapes it no longer
-// knows about. It deletes for real now, through the same path as everything
-// else that edits the drawing.
+// knows about. The local deletion queues an explicit package edit, so Save and
+// export remove it from the bytes too.
 function deleteShapeFromTree(shapeId) {
   const key = String(shapeId);
   if (!findShapeById(getCurrentPage()?.shapes || [], key)) return;
-  return runArrange('Delete', async (page, base) => {
-    const { buffer } = await deleteVsdxShapes(base, page.id, [key]);
-    return { buffer };
-  });
+  return deleteShapesLocally([key]);
 }
 
 function createShapeTreeNode(shape, depth, rootShapeId, list = null) {
@@ -3559,11 +3580,9 @@ function renderShapeContextMenu() {
 
 // --- Arrange: group, ungroup, z-order --------------------------------------
 // Z-order in Visio *is* the order the <Shape> elements appear in, and a shape's
-// position is written in its parent's coordinates — so all four of these are a
-// move of an element in the page part, not an in-memory tweak. They go through
-// the package the way the pen tool commits a path: serialize what is pending,
-// edit the XML, reload. The arithmetic that keeps a re-parented shape where it
-// is drawn lives in shape-arrange.js.
+// position is written in its parent's coordinates. These operations change the
+// package: serialize pending local edits, edit the XML, reload. The arithmetic
+// that keeps a re-parented shape where it is drawn lives in shape-arrange.js.
 
 function isTopLevelShape(shape) {
   return (getCurrentPage()?.shapes || []).some(candidate => String(candidate.id) === String(shape.id));
@@ -3612,28 +3631,64 @@ function renderShapeArrangeSection() {
   }
 }
 
-async function runArrange(label, work) {
+async function runArrange(label, work, options = {}) {
   const page = getCurrentPage();
-  if (!page || !currentPackageEditable || !currentFileBuffer) return false;
+  if (!page || !currentPackageEditable || !currentFileBuffer || arrangeBusy || !loadProgress.hidden) return false;
+  const titles = {
+    Delete: 'Deleting shapes…', Group: 'Grouping shapes…', Ungroup: 'Ungrouping shapes…',
+    Undo: 'Undoing changes…', Move: 'Moving shapes…', Resize: 'Resizing shapes…', Rotate: 'Rotating shapes…',
+    'Bring to front': 'Bringing shapes to front…', 'Send to back': 'Sending shapes to back…',
+    Save: 'Saving drawing…'
+  };
+  const focused = document.activeElement;
+  arrangeBusy = true;
+  viewer.setAttribute('aria-busy', 'true');
+  viewer.setAttribute('inert', '');
+  beginLoadProgress(titles[label] || `${label}…`);
+  loadProgress.classList.add('indeterminate');
+  loadProgressStage.textContent = options.local
+    ? (label === 'Save' ? 'Writing the file' : 'Updating the drawing')
+    : 'Preparing changes';
   closeShapeContextMenu();
   try {
-    const { buffer, select } = await work(page, await getPackageBufferWithPendingEdits());
-    await applyUpdatedVsdxBuffer(buffer, page.id);
+    // A promise alone does not make CPU work visible. Paint the status before
+    // rebuilding the package, and again before the next expensive phase.
+    await afterPaint();
+    if (options.local) {
+      await work(page);
+      return true;
+    }
+    const base = await getPackageBufferWithPendingEdits();
+    loadProgressStage.textContent = 'Updating the drawing';
+    await afterPaint();
+    const { buffer, select } = await work(page, base);
+    await applyUpdatedVsdxBuffer(buffer, page.id, {
+      onProgress: async event => {
+        loadProgress.classList.remove('indeterminate');
+        await reportLoadProgress(event);
+      },
+      beforeRender: () => reportLoadProgress({ stage: 'render', done: 0, total: 1, overall: 1 })
+    });
     if (select?.length) selectShapes(select);
     return true;
   } catch (e) {
     console.error(e);
     showError(`${label} failed: ${e.message}`);
     return false;
+  } finally {
+    endLoadProgress();
+    viewer.removeAttribute('inert');
+    viewer.removeAttribute('aria-busy');
+    arrangeBusy = false;
+    (focused?.isConnected && viewer.contains(focused) ? focused : viewportEl).focus?.({ preventScroll: true });
   }
 }
 
 // --- Committing a placement without reloading the file ----------------------
-// Group, ungroup, z-order and delete all change the *shape* of the document —
-// which element lives inside which, and in what order — so they go through the
-// package and come back as a fresh model. A move, a resize or a turn does not.
-// It changes at most six numbers on a handful of shapes, and every one of them
-// is already in memory and already on the canvas.
+// Group, ungroup and z-order change how elements hang together, so they go
+// through the package and come back as a fresh model. Placements and deletions
+// can update the current drawing directly and queue their package edits.
+// A move, resize or turn changes only a handful of shapes already in memory.
 //
 // So it is made where it can be seen. The model gets the numbers, the shapes
 // that moved are drawn again and nothing else is, and the package is left to
@@ -3818,26 +3873,60 @@ function reorderSelection(place) {
   });
 }
 
-// Deleting goes through the package like the other three, so what is gone is
-// gone from the file and not only from the drawing on screen.
+// Deletion updates the current drawing immediately. Its package edit waits
+// alongside pending placements until Save, export, or another package edit.
 //
 // Shapes on the background page are drawn here but belong to another page, so
 // they are dropped from the request rather than deleted out from under whoever
 // owns them — the same reason the layer list refuses to reassign them.
 function deletableSelectionIds() {
-  const shapes = getCurrentPage()?.shapes || [];
-  return [...selectedShapeIds].filter(id => findShapeById(shapes, id));
+  const ids = new Set(pageShapeBoxes(getCurrentPage()).map(entry => entry.id));
+  return [...selectedShapeIds].filter(id => ids.has(String(id)));
 }
 
 function deleteSelection() {
   const ids = deletableSelectionIds();
-  return runArrange('Delete', async (page, base) => {
+  return deleteShapesLocally(ids);
+}
+
+function deleteShapesLocally(ids) {
+  return runArrange('Delete', page => {
     if (!ids.length) throw new Error('Nothing on this page is selected');
-    const { buffer } = await deleteVsdxShapes(base, page.id, ids);
-    // Nothing to re-select: reloading the package clears the selection, and
-    // every id in it just stopped existing.
-    return { buffer };
-  });
+    const entries = pageShapeBoxes(page);
+    const byId = new Map(entries.map(entry => [entry.id, entry]));
+    const wanted = new Set(ids.map(String));
+    for (const id of wanted) {
+      if (!byId.has(id)) throw new Error(`Could not find shape ${id} on this page`);
+    }
+    const roots = [...wanted].filter(id => !byId.get(id).ancestors.some(parent => wanted.has(parent)));
+    const removed = new Set(entries.filter(entry => wanted.has(entry.id)
+      || entry.ancestors.some(parent => wanted.has(parent))).map(entry => entry.id));
+    const prune = shapes => (shapes || []).filter(shape => !removed.has(String(shape.id))).map(shape => {
+      if (shape.subShapes?.length) shape.subShapes = prune(shape.subShapes);
+      return shape;
+    });
+    page.shapes = prune(page.shapes);
+    page.connects = (page.connects || []).filter(connection => !removed.has(String(connection.fromSheet))
+      && !removed.has(String(connection.toSheet)));
+
+    const last = pendingShapeEdits.at(-1);
+    if (last?.kind === 'delete' && String(last.pageId) === String(page.id)) {
+      last.shapeIds = [...new Set([...last.shapeIds, ...roots])];
+    } else {
+      pendingShapeEdits.push({ kind: 'delete', pageId: page.id, shapeIds: roots });
+    }
+    // Starting a new edit invalidates redo, just like moving a shape does.
+    editHistory().redo.length = 0;
+    for (const id of removed) {
+      getHiddenShapeIds().delete(id);
+      getCollapsedShapeIds().delete(id);
+    }
+    clearShapeSelection();
+    editingShapeId = null;
+    clearShapeHighlight();
+    buildLayersSidebar();
+    renderCurrentPage();
+  }, { local: true });
 }
 
 function openShapeContextMenu(shapeId, clientX, clientY, pickEntries = []) {
@@ -4730,10 +4819,10 @@ function describeSkippedSvgElements(plan) {
   return `Not imported:\n  ${shown.join('\n  ')}`;
 }
 
-// Opening a drawing is the one thing in the app long enough to look broken
-// while it works, so the bar is up for all of it - the .svg unwrap included -
-// and comes down whichever way it ends.
+// Keep the status up for the whole load, including an SVG's embedded drawing,
+// and take it down whichever way the load ends.
 async function loadFile(file) {
+  if (arrangeBusy) return;
   beginLoadProgress(file.name);
   try {
     return await openFile(file);
@@ -4778,6 +4867,7 @@ async function openFile(file) {
     const buffer = await file.arrayBuffer();
     currentFileBuffer = buffer;
     pendingShapeEdits = [];
+    packageGeneration++;
     currentFileType = format.family === 'xml' ? 'vsdx' : 'vsd';
     currentFileExtension = format.extension;
     // The bytes are in; everything after this is the parser's to report.
@@ -6202,7 +6292,7 @@ saveVsdxButton.addEventListener('click', async () => {
     return;
   }
 
-  try {
+  await runArrange('Save', async () => {
     const output = await saveVsdxLayerPermissions(await packageBuffer(), currentPages, viewTemplates, layerTagColors, currentLayerTreeSettings());
     const blob = new Blob([output], { type: 'application/octet-stream' });
     const url = URL.createObjectURL(blob);
@@ -6212,10 +6302,7 @@ saveVsdxButton.addEventListener('click', async () => {
     a.download = sourceName.replace(/\.[^.]+$/i, '') + `-edited${currentFileExtension}`;
     a.click();
     URL.revokeObjectURL(url);
-  } catch (e) {
-    console.error(e);
-    showError('Failed to save VSDX: ' + e.message);
-  }
+  }, { local: true });
 });
 removeNonSelectedButton.addEventListener('click', async () => {
   if (!currentPackageEditable || !currentFileBuffer) {
@@ -6372,6 +6459,7 @@ layerMatrixBody.addEventListener('keydown', (e) => {
 // back", so neither is touched.
 window.addEventListener('keydown', (e) => {
   if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+  if (arrangeBusy) { e.preventDefault(); return; }
   const tag = e.target?.tagName?.toLowerCase();
   if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
   if (shapeXmlModal.classList.contains('visible')) return;
@@ -6445,6 +6533,7 @@ window.addEventListener('keydown', (e) => {
   // back the last node, and not while a modal is up, where the selection behind
   // it is not what the user is looking at.
   if ((e.key === 'Delete' || e.key === 'Backspace') && !penActive && !isTypingTarget(e.target)) {
+    if (arrangeBusy) { e.preventDefault(); return; }
     if (layerMatrixModal.classList.contains('visible') || shapeXmlModal.classList.contains('visible')) return;
     if (exportModal.classList.contains('visible')) return;
     if (!selectedShapeIds.size || !currentPackageEditable) return;

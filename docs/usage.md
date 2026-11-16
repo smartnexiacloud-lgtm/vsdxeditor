@@ -568,6 +568,12 @@ selected:
 | **Send to back** | Draws them behind their siblings. |
 | **Delete** | Removes the selected shapes from the drawing. Deleting a group deletes everything inside it, and any connector glued to a shape that goes is unglued rather than left pointing at nothing. **Delete** and **Backspace** do the same from the keyboard, except while the pen tool is active or you are typing in a box. |
 
+Deletion updates the current drawing immediately; **Save Visio** and export
+write the deletions into the file. Consecutive deletions are saved together.
+Saving and arranging shapes can take a moment on a large drawing: a status
+overlay names the work, and measured reading progress appears when the drawing
+needs to be reread. Further edits wait until the operation finishes.
+
 Z-order in Visio *is* the order the shapes are written in, so front and back
 move a shape among its own siblings — a shape inside a group is brought to the
 front of that group, not of the page.

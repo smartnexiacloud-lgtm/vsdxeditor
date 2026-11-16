@@ -107,7 +107,7 @@ const rect = (x1, y1, x2, y2, extra = {}, startTarget = svg()) => {
   mouse('mouseup', window, end.x, end.y, extra);
   // A real browser sends a click after the release. It must not collapse the
   // area selection to whichever object happens to be under its endpoint.
-  mouse('click', group(1), end.x, end.y, extra);
+  mouse('click', group(1) || svg(), end.x, end.y, extra);
 };
 
 await load();
@@ -241,6 +241,115 @@ mouse('dblclick', group(13), 0, 0);
 expect($('group-isolation-bar').hidden, false, 'Double-click also enters a group from Pan');
 $('btn-pen').click();
 expect($('group-isolation-bar').hidden, true, 'Choosing Pen exits isolation before creating page shapes');
+
+await load();
+mode('contained');
+rect(0.5, 0.5, 3.5, 3.5);
+expect(selected(), [1, 5], 'An area selection is ready for Delete');
+const deletionKey = new window.KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true });
+window.document.activeElement.dispatchEvent(deletionKey);
+expect($('load-progress').hidden, false, 'Delete immediately announces that it is working');
+expect($('load-progress-name').textContent, 'Deleting shapes…', 'The status names the deletion');
+expect($('load-progress').classList.contains('indeterminate'), true, 'Updating the drawing does not invent a percentage');
+expect($('viewer').hasAttribute('inert'), true, 'The drawing cannot be edited during deletion');
+const repeated = new window.KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true });
+window.document.activeElement.dispatchEvent(repeated);
+expect(repeated.defaultPrevented, true, 'Repeated Delete presses are consumed while busy');
+const parseXML = window.DOMParser.prototype.parseFromString;
+let deleteParses = 0;
+window.DOMParser.prototype.parseFromString = function (...args) {
+  deleteParses++;
+  return parseXML.apply(this, args);
+};
+try { await waitFor(() => !group(1) && !group(5) && $('load-progress').hidden); }
+finally { window.DOMParser.prototype.parseFromString = parseXML; }
+expect(deleteParses, 0, 'Deletion does not reparse the package or its masters');
+expect(!!group(2), true, 'Delete removes only the area selection');
+expect($('viewer').hasAttribute('inert'), false, 'Deletion releases the drawing afterwards');
+expect($('viewer').hasAttribute('aria-busy'), false, 'The accessible busy state is cleared');
+expect($('error-box').textContent, '', 'A repeated Delete does not start a second deletion');
+
+// Another delete joins the pending batch. A failed save must retain that whole
+// batch so retrying cannot resurrect any of the deleted objects.
+mode('contained');
+rect(6.5, 6.5, 8.5, 8.5);
+expect(selected(), [3], 'A second area can be deleted before saving');
+window.document.activeElement.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true }));
+await waitFor(() => !group(3) && $('load-progress').hidden);
+const serialize = window.XMLSerializer.prototype.serializeToString;
+const originalConsoleError = window.console.error;
+try {
+  window.console.error = () => {};
+  window.XMLSerializer.prototype.serializeToString = () => { throw new Error('test serialization failure'); };
+  $('btn-save-vsdx').click();
+  await waitFor(() => $('load-progress').hidden);
+  expect(!!group(3), false, 'A failed save keeps the edited drawing on screen');
+  expect($('viewer').hasAttribute('inert'), false, 'A failed save releases the drawing');
+  expect($('error-box').textContent.includes('test serialization failure'), true, 'Save failure reports its reason');
+} finally {
+  window.XMLSerializer.prototype.serializeToString = serialize;
+  window.console.error = originalConsoleError;
+}
+$('error-box').textContent = '';
+let pageWrites = 0;
+window.XMLSerializer.prototype.serializeToString = function (node) {
+  if (node.documentElement?.localName === 'PageContents') pageWrites++;
+  return serialize.call(this, node);
+};
+const downloads = window.__downloads.length;
+try {
+  $('btn-save-vsdx').click();
+  expect($('load-progress-name').textContent, 'Saving drawing…', 'Saving pending edits also announces its work');
+  await waitFor(() => window.__downloads.length > downloads && $('load-progress').hidden);
+} finally { window.XMLSerializer.prototype.serializeToString = serialize; }
+expect(pageWrites <= 2, true, 'Consecutive deletions share one page update before metadata is saved');
+const savedBytes = await window.__downloads.at(-1).arrayBuffer();
+const savedZip = await JSZip.loadAsync(Buffer.from(savedBytes));
+const savedPage = new window.DOMParser().parseFromString(await savedZip.file('visio/pages/page1.xml').async('string'), 'application/xml');
+const savedIds = [...savedPage.getElementsByTagNameNS('*', 'Shape')].map(shape => Number(shape.getAttribute('ID')));
+expect([1, 3, 5].some(id => savedIds.includes(id)), false, 'Retrying Save persists every deletion in the pending batch');
+expect(savedIds.includes(2), true, 'The saved drawing preserves unselected shapes');
+
+await load();
+mouse('dblclick', group(13), 0, 0);
+mouse('dblclick', group(13), 0, 0);
+mode('touching');
+rect(0, 0, 10, 10);
+expect(selected(), [13, 14], 'A nested area selection is ready for Delete');
+window.document.activeElement.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true }));
+await waitFor(() => !group(13) && !group(14));
+expect(!!group(11), true, 'Delete inside isolation preserves siblings outside the active group');
+
+// Flush a delete, then a move, then another delete through SVG export. The
+// embedded drawing must agree with the visible edit and survive reopening.
+$('group-isolation-path').querySelector('button').click();
+mode('point');
+const moveFrom = client(4, 1.5), moveTo = client(4.25, 1.75);
+const beforeMove = group(2).getAttribute('transform');
+mouse('mousedown', group(2), moveFrom.x, moveFrom.y);
+mouse('mousemove', window, moveTo.x, moveTo.y);
+mouse('mouseup', window, moveTo.x, moveTo.y);
+await waitFor(() => group(2).getAttribute('transform') !== beforeMove);
+const mixedPlacement = group(2).getAttribute('transform');
+mouse('click', group(2), moveTo.x, moveTo.y);
+mode('contained');
+rect(6.5, 6.5, 8.5, 8.5);
+window.document.activeElement.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true }));
+await waitFor(() => !group(3) && $('load-progress').hidden);
+const beforeExport = window.__downloads.length;
+$('btn-export').click();
+$('export-run').click();
+await waitFor(() => window.__downloads.length > beforeExport);
+const mixedSvg = await window.__downloads.at(-1).text();
+const embedded = /encoding="base64">([A-Za-z0-9+/=]+)</.exec(mixedSvg);
+assert.ok(embedded, 'The exported SVG embeds the edited drawing'); checks++;
+const oldSvg = svg();
+const reopen = new window.Event('drop', { bubbles: true, cancelable: true });
+Object.defineProperty(reopen, 'dataTransfer', { value: { files: [new window.File([Buffer.from(embedded[1], 'base64')], 'mixed.vsdx')] } });
+$('drop-zone').dispatchEvent(reopen);
+await waitFor(() => svg() && svg() !== oldSvg && group(2));
+expect([3, 13, 14].some(id => !!group(id)), false, 'Export persists deletions before and after a pending move');
+expect(group(2).getAttribute('transform'), mixedPlacement, 'Export preserves the move between the deletions');
 
 console.log(`area-selection-app: ${checks} assertions passed`);
 dom.window.close();

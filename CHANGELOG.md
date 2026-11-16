@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- Apply deletions to the current drawing without rebuilding the package or
+  reparsing masters. Persist them on Save/export, batch consecutive deletions,
+  and retain pending edits if saving fails.
+
+### Fixed
+- Show progress while deleting, grouping, and reordering shapes, including
+  preparing changes, updating the drawing, parsing, and redraw. Paint the
+  status before expensive work and prevent repeated edits while it is running.
+
 ## [0.0.7] — 2026-11-16
 
 ### Added
