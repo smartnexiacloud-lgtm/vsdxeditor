@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.7] — 2026-11-16
+
 ### Added
 - Rectangle selection with fully contained and touching modes, plus a choice
   between individual elements inside groups and groups as whole objects.
@@ -818,6 +820,7 @@ First tagged release.
 - Test suites for the diff engine and diff view (`npm test`).
 - Automatic GitHub Pages deployment.
 
+[0.0.7]: https://github.com/smartnexiacloud-lgtm/vsdxeditor/releases/tag/v0.0.7
 [0.0.6]: https://github.com/smartnexiacloud-lgtm/vsdxeditor/releases/tag/v0.0.6
 [0.0.5]: https://github.com/smartnexiacloud-lgtm/vsdxeditor/releases/tag/v0.0.5
 [0.0.4]: https://github.com/smartnexiacloud-lgtm/vsdxeditor/releases/tag/v0.0.4
