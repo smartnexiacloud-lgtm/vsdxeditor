@@ -952,11 +952,14 @@ function parseShape(shapeEl, masters, parentMaster, themeColors, context = {}) {
   const fillForegroundData = getCellData(shapeEl, 'FillForegnd');
   const masterFillForegroundData = masterShape ? getCellData(masterShape.el, 'FillForegnd') : null;
   const styleFillForegroundData = resolveStyleCellData(styleSheets, fillStyleId, 'FillForegnd', 'fill');
+  // A master can contain V="Themed" even when the package has no theme part.
+  // Keep the stylesheet's concrete default in that case, rather than falling
+  // through to FillBkgnd (often black) and painting white callout leaders black.
   let fillForeground = resolveThemedColor(fillForegroundData, masterFillForegroundData || styleFillForegroundData, themeColors, {
     role: 'fill',
     quickStyle: quickStyleFillColor,
     colorPalette
-  });
+  }) ?? parseColor(styleFillForegroundData?.value, colorPalette);
   const fillBackgroundData = getCellData(shapeEl, 'FillBkgnd');
   const masterFillBackgroundData = masterShape ? getCellData(masterShape.el, 'FillBkgnd') : null;
   const styleFillBackgroundData = resolveStyleCellData(styleSheets, fillStyleId, 'FillBkgnd', 'fill');
@@ -964,7 +967,7 @@ function parseShape(shapeEl, masters, parentMaster, themeColors, context = {}) {
     role: 'fill',
     quickStyle: quickStyleFillColor,
     colorPalette
-  });
+  }) ?? parseColor(styleFillBackgroundData?.value, colorPalette);
   const fillForegroundTrans = getCellFloat(shapeEl, 'FillForegndTrans')
     ?? (masterShape ? getCellFloat(masterShape.el, 'FillForegndTrans') : null)
     ?? styleCellFloat(styleSheets, fillStyleId, 'FillForegndTrans', 'fill')
