@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- Do not invent rectangle outlines for empty groups or text-only shapes whose
+  geometry is explicitly absent.
+- Respect hidden connector geometry instead of drawing a line from its
+  Begin/End cells, including hidden direction markers inside staircases.
+
 ### Changed
 - Apply deletions to the current drawing without rebuilding the package or
   reparsing masters. Persist them on Save/export, batch consecutive deletions,

@@ -705,6 +705,9 @@ function countVisibleGeometrySections(shape) {
 }
 
 function buildConnectorPath(shape, pageHeight) {
+  // Explicitly hidden geometry must not turn back into a visible Begin/End
+  // fallback. Staircase direction markers use precisely this arrangement.
+  if (shape.geometry?.length && shape.geometry.every(geo => geo.noShow)) return null;
   const points = [];
   let hasMoveTo = false;
   for (const geo of shape.geometry || []) {
@@ -1235,7 +1238,7 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
   // sections (extension lines, arrow legs, hidden construction geometry).
   // Flattening those drew phantom lines between the sections and lost both the
   // per-section flags and the arrowheads, so they take the normal path below.
-  if (shape.is1D && shape.subShapes.length === 0 && countVisibleGeometrySections(shape) <= 1) {
+  if (rendersAsFlatConnector(shape)) {
     const pathData = buildConnectorPath(shape, pageHeight);
     if (pathData) {
       const path = document.createElementNS(svgNS, 'path');
@@ -1421,8 +1424,11 @@ function renderShape(shape, svgNS, pageHeight, defs, arrowCounter, strokeScale, 
     }
     flushCompoundRun();
     flushStrokeQueue();
-  } else if (!shape.hasGeometry && shape.subShapes.length === 0 && shape.width > 0 && shape.height > 0) {
-    // No geometry and no sub-shapes - draw a rectangle as fallback
+  } else if (shape.hasGeometry === undefined && shape.type !== 'Group'
+      && shape.subShapes.length === 0 && shape.width > 0 && shape.height > 0) {
+    // Legacy callers may supply a box without geometry information. Parsed
+    // shapes explicitly say hasGeometry=false for empty groups and text-only
+    // helpers; their dimensions position content, and do not draw an outline.
     const rect = document.createElementNS(svgNS, 'rect');
     rect.setAttribute('x', '0');
     rect.setAttribute('y', '0');

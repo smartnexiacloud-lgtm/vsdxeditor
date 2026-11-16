@@ -26,7 +26,7 @@ symlinkSync(join(process.cwd(), 'node_modules'), join(tmp, 'node_modules'), 'dir
 const copy = (src, dst) => writeFileSync(join(tmp, dst), readFileSync(src, 'utf8'));
 copy('src/shape-inheritance.js', 'shape-inheritance.mjs');
 copy('src/svg-renderer.js', 'svg-renderer.mjs');
-const { renderPage } = await import(pathToFileURL(join(tmp, 'svg-renderer.mjs')).href);
+const { renderPage, rendersAsFlatConnector, connectorRenderBounds } = await import(pathToFileURL(join(tmp, 'svg-renderer.mjs')).href);
 
 let pass = 0, fail = 0;
 const check = (name, cond, detail = '') => {
@@ -197,6 +197,43 @@ const HAIRLINE_UNSCALED = 96 * 0.25 / 72; // 0.25pt in our 96-per-inch space
   check('and the geometry itself is still in the file',
     (pathOf(svg, 'hidden').getAttribute('d') || '').startsWith('M '),
     String(pathOf(svg, 'hidden').getAttribute('d')).slice(0, 40));
+}
+
+// 6. Dimensions position content; they do not imply a rectangular outline.
+// Empty structural groups and the text-only helpers inside stair masters are
+// real shapes with no Geometry section, and must stay unpainted.
+{
+  const svg = render([
+    shape('empty-group', { type: 'Group', hasGeometry: false, geometry: [] }),
+    shape('hidden-label', { hasGeometry: false, geometry: [], text: 'DOWN', hideText: true, fillPattern: 1 }),
+    shape('visible-label', { hasGeometry: false, geometry: [], text: 'UP', hideText: false, fillPattern: 1 })
+  ]);
+  check('an empty group keeps its identity without inventing an outline',
+    !!svg.querySelector('#groupempty-group') && !svg.querySelector('#groupempty-group rect, #groupempty-group path'));
+  check('a hidden text helper has neither a box nor text',
+    !svg.querySelector('#shapehidden-label rect, #shapehidden-label path, #shapehidden-label text'));
+  check('a visible text-only helper keeps its text without a box',
+    svg.querySelector('#shapevisible-label text')?.textContent === 'UP' && !svg.querySelector('#shapevisible-label rect'));
+
+  const legacy = render([shape('unknown-box', { hasGeometry: undefined, geometry: [] })]);
+  check('legacy shapes with unspecified geometry still have their placeholder', !!legacy.querySelector('#shapeunknown-box rect'));
+}
+
+// 7. A hidden direction line can still have Begin/End cells. Falling back to
+// those cells after skipping its NoShow geometry must not bring it back.
+{
+  const line = shape('direction', {
+    is1D: true, height: 0, beginX: 1, beginY: 1, endX: 2, endY: 1,
+    geometry: [{ rows: [{ type: 'MoveTo', x: 0, y: 0 }, { type: 'LineTo', x: 1, y: 0 }], noFill: true, noLine: false, noShow: true }]
+  });
+  const svg = render([line]);
+  check('NoShow on a connector also suppresses its endpoint fallback',
+    svg.querySelector('#shapedirection path')?.getAttribute('display') === 'none');
+  check('the picker does not claim a drawn flat connector for hidden geometry', !rendersAsFlatConnector(line));
+  check('hidden connector geometry has no rendered path bounds', connectorRenderBounds(line, 10) === null);
+
+  const endpointOnly = render([{ ...line, id: 'endpoint-only', geometry: [] }]);
+  check('a connector with no geometry still uses its legitimate endpoints', !!endpointOnly.querySelector('#shapeendpoint-only path'));
 }
 
 console.log(`\nrender-strokes: ${pass} passed, ${fail} failed`);
